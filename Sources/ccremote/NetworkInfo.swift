@@ -1,0 +1,28 @@
+import Foundation
+
+enum NetworkInfo {
+    /// IPv4 addresses of non-loopback interfaces, Wi-Fi/Ethernet first, then VPN/Tailscale (utun).
+    static func lanAddresses() -> [(interface: String, address: String)] {
+        var result: [(String, String)] = []
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return [] }
+        defer { freeifaddrs(ifaddr) }
+        var ptr: UnsafeMutablePointer<ifaddrs>? = first
+        while let p = ptr {
+            defer { ptr = p.pointee.ifa_next }
+            guard let addr = p.pointee.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let flags = Int32(p.pointee.ifa_flags)
+            guard flags & IFF_UP != 0, flags & IFF_LOOPBACK == 0 else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            let name = String(cString: p.pointee.ifa_name)
+            let ip = String(cString: host)
+            if ip.hasPrefix("169.254.") { continue }
+            result.append((name, ip))
+        }
+        return result.sorted { a, b in
+            func rank(_ n: String) -> Int { n.hasPrefix("en") ? 0 : n.hasPrefix("utun") ? 1 : 2 }
+            return rank(a.0) < rank(b.0)
+        }
+    }
+}
