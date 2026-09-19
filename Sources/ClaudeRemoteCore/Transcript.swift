@@ -66,6 +66,10 @@ public struct Transcript: Equatable, Sendable {
     public private(set) var items: [TranscriptItem] = []
     public private(set) var model: String?
     public private(set) var isStreaming = false
+    /// Cumulative session cost and token usage, from the latest `result` message.
+    public private(set) var totalCostUSD: Double = 0
+    public private(set) var inputTokens: Int = 0
+    public private(set) var outputTokens: Int = 0
 
     /// message.id → number of full assistant blocks already applied (to pair with streamed blocks).
     private var appliedBlocks: [String: Int] = [:]
@@ -244,6 +248,14 @@ public struct Transcript: Equatable, Sendable {
     private mutating func applyResult(_ message: JSONValue, timestamp: Date?) {
         isStreaming = false
         finishAllStreaming()
+        if let cost = message["total_cost_usd"]?.double, cost > 0 { totalCostUSD = cost }
+        if let usage = message["usage"] {
+            let cacheRead = usage["cache_read_input_tokens"]?.int ?? 0
+            let cacheCreate = usage["cache_creation_input_tokens"]?.int ?? 0
+            let base = usage["input_tokens"]?.int ?? 0
+            if base + cacheRead + cacheCreate > 0 { inputTokens = base + cacheRead + cacheCreate }
+            if let out = usage["output_tokens"]?.int, out > 0 { outputTokens = out }
+        }
         let isError = message["is_error"]?.bool ?? false
         var parts: [String] = []
         if let ms = message["duration_ms"]?.double { parts.append(Transcript.formatDuration(ms)) }

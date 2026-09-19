@@ -38,6 +38,8 @@ public enum ClientMessage: Codable, Sendable {
     /// Fuzzy-search files under the session's cwd for the composer's "@" mention picker. Empty query
     /// returns a first page of files.
     case listFiles(sessionId: String, query: String)
+    /// Ask for the `/usage` data (session cost + plan rate-limit windows) for the limits screen.
+    case getUsage(sessionId: String)
     /// Booted iOS Simulators on the Mac (also pushed as `simulators` whenever the set changes).
     case listSimulators
     /// Start / stop receiving live frames of a booted simulator. `maxPixelSize` bounds the frame's
@@ -64,6 +66,8 @@ public enum ServerMessage: Codable, Sendable {
     case gitDiff(sessionId: String, diff: String, error: String?)
     /// Files matching a `listFiles` query, as paths relative to the session's cwd.
     case fileList(sessionId: String, paths: [String])
+    /// The `/usage` payload (raw, as the CLI returns it) or an error when limits are unavailable.
+    case usage(sessionId: String, data: JSONValue?, error: String?)
     case simulators(items: [SimulatorInfo])
     case simulatorFrame(frame: SimulatorFrame)
     case pong

@@ -825,6 +825,26 @@ public actor SessionManager {
     }
 
     /// The session repo's uncommitted changes (status + diff), for reviewing before approving.
+    /// The `/usage` data (session cost + plan rate-limit windows). Rate limits are account-global, so if
+    /// this session has no live Claude process (e.g. a desktop session) any hosted one answers.
+    public func usage(sessionId: String) async throws -> JSONValue {
+        if let process = hosted[sessionId]?.process ?? hosted.values.first(where: { $0.process != nil })?.process {
+            return try await process.getUsage()
+        }
+        // No live Claude process here (e.g. viewing a desktop session) — spawn a short-lived one just to
+        // read the account's plan limits, then tear it down. Rate limits are account-global.
+        let resolved = cwdFor(sessionId) ?? NSHomeDirectory()
+        let cwd = FileManager.default.fileExists(atPath: resolved) ? resolved : NSHomeDirectory()
+        var config = CLIProcess.Config(cliPath: cli.path, cwd: cwd)
+        config.sessionId = UUID().uuidString.lowercased()
+        let probe = CLIProcess(config: config)
+        probe.log = { [weak self] line in self?.log("[usage] \(line)") }
+        try probe.start()
+        defer { probe.terminate() }
+        _ = try await probe.initialize()
+        return try await probe.getUsage()
+    }
+
     public func gitDiff(sessionId: String) throws -> String {
         guard let cwd = cwdFor(sessionId) else { throw ManagerError.unknownSession(sessionId) }
         guard FileManager.default.fileExists(atPath: cwd) else { throw ManagerError.cwdMissing(cwd) }

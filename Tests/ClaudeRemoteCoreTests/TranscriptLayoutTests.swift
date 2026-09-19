@@ -40,7 +40,8 @@ final class TranscriptLayoutTests: XCTestCase {
         let live = TranscriptLayout.blocks(for: t.items, sessionRunning: true)
         guard case .activity(let running)? = live.last else { return XCTFail() }
         XCTAssertTrue(running.isLive)
-        XCTAssertEqual(running.liveStatus, "Running Grep…")
+        // The live status now names the command being run, not just the tool.
+        XCTAssertEqual(running.liveStatus, "Grep: x")
 
         let stopped = TranscriptLayout.blocks(for: t.items, sessionRunning: false)
         guard case .activity(let idle)? = stopped.last else { return XCTFail() }

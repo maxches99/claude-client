@@ -304,6 +304,16 @@ final class AppModel {
         connection.send(.listFiles(sessionId: sessionId, query: query))
     }
 
+    /// Latest `/usage` payload (cost + plan rate-limit windows) and any error, for the limits screen.
+    var usageReport: JSONValue?
+    var usageError: String?
+
+    func requestUsage(_ sessionId: String) {
+        usageReport = nil
+        usageError = nil
+        connection.send(.getUsage(sessionId: sessionId))
+    }
+
     // MARK: inbound
 
     private func handle(_ message: ServerMessage) {
@@ -356,6 +366,9 @@ final class AppModel {
             gitDiffs[sessionId] = error.map { "⚠️ \($0)" } ?? diff
         case .fileList(_, let paths):
             fileMatches = paths
+        case .usage(_, let data, let error):
+            usageReport = data
+            usageError = error
         case .simulators(let items):
             simulatorFeed.devices = items
         case .simulatorFrame(let frame):

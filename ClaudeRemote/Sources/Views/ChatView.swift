@@ -14,6 +14,7 @@ struct ChatView: View {
     @State private var expandedSteps: Set<String> = []
     @State private var presentedPermission: PermissionRequest?
     @State private var showSimulator = false
+    @State private var showLimits = false
     @FocusState private var composerFocused: Bool
 
     private var transcript: Transcript { model.transcripts[sessionId] ?? Transcript() }
@@ -62,6 +63,10 @@ struct ChatView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    if !usageSummary.isEmpty {
+                        Section("Usage") { Label(usageSummary, systemImage: "dollarsign.circle") }
+                    }
+                    Button("Plan limits…", systemImage: "gauge.with.dots.needle.67percent") { showLimits = true }
                     Button("Reload transcript", systemImage: "arrow.clockwise") { model.open(sessionId) }
                     if !isChat {
                         Button("Continue a copy on the phone", systemImage: "arrow.triangle.branch") { model.fork(sessionId) }
@@ -82,6 +87,7 @@ struct ChatView: View {
                 .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showSimulator) { SimulatorView() }
+        .sheet(isPresented: $showLimits) { LimitsView(sessionId: sessionId) }
         .onChange(of: pending?.id) {
             // The inline card is the prompt; a stale details sheet just goes away.
             if pending == nil { presentedPermission = nil }
@@ -121,7 +127,28 @@ struct ChatView: View {
         case .idle where !isDesktop: parts.append("Idle")
         default: break
         }
+        if let costLabel { parts.append(costLabel) }
         return parts.joined(separator: " · ")
+    }
+
+    /// Compact session cost (finer precision for small amounts), nil until the first result lands.
+    private var costLabel: String? {
+        let c = transcript.totalCostUSD
+        guard c > 0 else { return nil }
+        return c < 0.1 ? String(format: "$%.3f", c) : String(format: "$%.2f", c)
+    }
+
+    /// "$0.12 · 15.2k in · 3.4k out" for the overflow menu; empty when nothing is recorded.
+    private var usageSummary: String {
+        var parts: [String] = []
+        if let costLabel { parts.append(costLabel) }
+        if transcript.inputTokens > 0 { parts.append("\(Self.formatTokens(transcript.inputTokens)) in") }
+        if transcript.outputTokens > 0 { parts.append("\(Self.formatTokens(transcript.outputTokens)) out") }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func formatTokens(_ n: Int) -> String {
+        n >= 1000 ? String(format: "%.1fk", Double(n) / 1000) : "\(n)"
     }
 
     // MARK: transcript

@@ -206,6 +206,9 @@ public final class CLIProcess: @unchecked Sendable {
     public func interrupt() async throws { try await control("interrupt") }
     public func setModel(_ model: String) async throws { try await control("set_model", ["model": .string(model)]) }
     public func setPermissionMode(_ mode: String) async throws { try await control("set_permission_mode", ["mode": .string(mode)]) }
+    /// The data behind Claude Code's `/usage`: session cost plus plan rate-limit windows. `skip_behaviors`
+    /// avoids the slow scan of the last 7 days of transcripts — we only need the plan limits.
+    public func getUsage() async throws -> JSONValue { try await control("get_usage", ["skip_behaviors": .bool(true)], timeout: 25) }
 
     public func respond(requestId: String, response: JSONValue) {
         try? send(.object(["type": "control_response", "response": .object(["subtype": "success", "request_id": .string(requestId), "response": response])]))

@@ -147,7 +147,19 @@ struct SessionListView: View {
         }
         .sheet(isPresented: $showAddMac) { PairingView() }
         .sheet(isPresented: $showSimulator) { SimulatorView() }
-        .onAppear { if model.isConnected { model.refresh() } }
+        .onAppear {
+            if model.isConnected { model.refresh() }
+            if collapsedProjects.isEmpty { collapsedProjects = Self.loadCollapsed() }
+        }
+        .onChange(of: collapsedProjects) { _, new in Self.saveCollapsed(new) }
+    }
+
+    private static let collapsedKey = "collapsedProjects"
+    private static func loadCollapsed() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: collapsedKey) ?? [])
+    }
+    private static func saveCollapsed(_ set: Set<String>) {
+        UserDefaults.standard.set(Array(set), forKey: collapsedKey)
     }
 
     /// One tap starts a chat; with Codex around, the agent is picked from a menu.
@@ -200,6 +212,11 @@ struct SessionListView: View {
         search.trimmingCharacters(in: .whitespaces).isEmpty && collapsedProjects.contains(group.id)
     }
 
+    /// How many sessions in a project are waiting on the user — shown as a badge even when collapsed.
+    private func pendingCount(_ group: ProjectGroup) -> Int {
+        group.sessions.filter { $0.status == .awaitingPermission || model.pendingPermission(for: $0.id) != nil }.count
+    }
+
     /// Collapsible project header with a "+" to start a session in that project — the Claude Code sidebar look.
     private func projectHeader(_ group: ProjectGroup) -> some View {
         HStack(spacing: 6) {
@@ -217,6 +234,16 @@ struct SessionListView: View {
                         .font(.caption2.weight(.semibold)).textCase(.uppercase)
                     Text("\(group.sessions.count)")
                         .font(.caption2).foregroundStyle(CDS.textMuted.opacity(0.6))
+                    if pendingCount(group) > 0 {
+                        HStack(spacing: 3) {
+                            Image(systemName: "bell.badge.fill").font(.system(size: 9))
+                            Text("\(pendingCount(group))").font(.caption2.weight(.bold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(CDS.warningFill, in: Capsule())
+                        .textCase(nil)
+                    }
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())

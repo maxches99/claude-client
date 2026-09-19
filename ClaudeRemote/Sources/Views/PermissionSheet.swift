@@ -80,11 +80,7 @@ struct PermissionSheet: View {
                         Text("No uncommitted changes.").font(CDS.caption).foregroundStyle(CDS.textMuted)
                     } else {
                         ScrollView {
-                            Text(diff)
-                                .font(CDS.codeSmall).foregroundStyle(CDS.textSecondary)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(8)
+                            DiffText(diff: diff).padding(8)
                         }
                         .frame(maxHeight: 280)
                         .background(CDS.surface2, in: RoundedRectangle(cornerRadius: CDS.radius))
@@ -129,5 +125,58 @@ struct PermissionSheet: View {
         .padding()
         .background(CDS.surface0)
         .overlay(alignment: .top) { Divider().overlay(CDS.border) }
+    }
+}
+
+/// Renders a unified git diff with added / removed / hunk lines coloured, like a compact diff viewer.
+/// Lazy so a large diff scrolls smoothly; caps very long diffs with a trailing note.
+struct DiffText: View {
+    let diff: String
+
+    private struct Line: Identifiable { let id: Int; let text: String }
+    private static let maxLines = 1500
+
+    private var lines: [Line] {
+        diff.split(separator: "\n", omittingEmptySubsequences: false)
+            .prefix(Self.maxLines).enumerated().map { Line(id: $0.offset, text: String($0.element)) }
+    }
+    private var truncated: Bool {
+        diff.split(separator: "\n", omittingEmptySubsequences: false).count > Self.maxLines
+    }
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(lines) { line in
+                Text(line.text.isEmpty ? " " : line.text)
+                    .font(CDS.codeSmall)
+                    .foregroundStyle(color(for: line.text))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+                    .background(background(for: line.text))
+            }
+            if truncated {
+                Text("… diff truncated")
+                    .font(CDS.caption).foregroundStyle(CDS.textMuted).padding(.top, 4)
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    private func color(for line: String) -> Color {
+        if line.hasPrefix("# ") { return CDS.textPrimary }
+        if line.hasPrefix("@@") { return CDS.accent }
+        if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("diff --git") || line.hasPrefix("index ") {
+            return CDS.textMuted
+        }
+        if line.hasPrefix("+") { return CDS.success }
+        if line.hasPrefix("-") { return CDS.danger }
+        return CDS.textSecondary
+    }
+
+    private func background(for line: String) -> Color {
+        if line.hasPrefix("+++") || line.hasPrefix("---") { return .clear }
+        if line.hasPrefix("+") { return CDS.successFill.opacity(0.10) }
+        if line.hasPrefix("-") { return CDS.dangerFill.opacity(0.10) }
+        return .clear
     }
 }
