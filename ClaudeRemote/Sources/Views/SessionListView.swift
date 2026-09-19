@@ -1,8 +1,11 @@
 import SwiftUI
 import ClaudeRemoteCore
 
-/// The session sidebar: "New session" on top, then live sessions and recent transcripts.
+/// One tab's list: work sessions in projects, or tool-less quick chats.
 struct SessionListView: View {
+    enum Scope { case sessions, chats }
+
+    let scope: Scope
     @Environment(AppModel.self) private var model
     @State private var showNewSession = false
     @State private var showSettings = false
@@ -11,10 +14,14 @@ struct SessionListView: View {
     @State private var confirmForget = false
     @State private var search = ""
 
+    private var isChats: Bool { scope == .chats }
+
     private var filtered: [SessionSummary] {
+        let wanted: SessionKind = isChats ? .chat : .agent
+        let scoped = model.sessions.filter { $0.kind == wanted }
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return model.sessions }
-        return model.sessions.filter { $0.title.lowercased().contains(q) || $0.projectName.lowercased().contains(q) }
+        guard !q.isEmpty else { return scoped }
+        return scoped.filter { $0.title.lowercased().contains(q) || $0.projectName.lowercased().contains(q) }
     }
 
     var body: some View {
@@ -23,33 +30,32 @@ struct SessionListView: View {
             if let error = model.errorBanner {
                 CDSBanner(kind: .danger, text: error, systemImage: "exclamationmark.triangle.fill") { model.errorBanner = nil }
             }
-            if model.connection.host?.loggedIn == false {
+            if model.hostNeedsUpdate {
+                CDSBanner(kind: .warning, text: "The ClaudeRemote Host app on the Mac is older than this app — update it to use chats and Codex.", systemImage: "arrow.down.circle")
+            }
+            if model.host?.loggedIn == false {
                 CDSBanner(kind: .warning, text: "claude on the Mac is not logged in — run `claude auth login` there.", systemImage: "person.crop.circle.badge.exclamationmark")
             }
             List {
                 let active = filtered.filter { $0.origin != .stored }
                 let stored = filtered.filter { $0.origin == .stored }
                 Section {
-                    Button { showNewSession = true } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "plus")
-                                .font(.system(size: 13, weight: .semibold))
-                                .frame(width: 22, height: 22)
-                                .background(CDS.fillNeutral, in: RoundedRectangle(cornerRadius: CDS.radiusSmall))
-                            Text("New session").font(CDS.bodyMedium)
+                    if isChats {
+                        if model.supportsChats { newChatRow }
+                    } else {
+                        Button { showNewSession = true } label: {
+                            newRowLabel("New session", systemImage: "plus")
                         }
-                        .foregroundStyle(model.isConnected ? CDS.textPrimary : CDS.textMuted)
-                        .padding(.vertical, 4)
+                        .disabled(!model.isConnected)
+                        .listRowBackground(CDS.surface0)
+                        .listRowSeparator(.hidden)
                     }
-                    .disabled(!model.isConnected)
-                    .listRowBackground(CDS.surface0)
-                    .listRowSeparator(.hidden)
                 }
                 if !active.isEmpty {
                     Section {
                         ForEach(active) { session in row(session) }
                     } header: {
-                        sectionHeader("Active on Mac")
+                        sectionHeader(isChats ? "Open" : "Active on Mac")
                     }
                 }
                 if !stored.isEmpty {
@@ -63,18 +69,19 @@ struct SessionListView: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
-            .searchable(text: $search, prompt: "Search sessions")
+            .searchable(text: $search, prompt: isChats ? "Search chats" : "Search sessions")
             .refreshable { model.refresh() }
             .overlay {
-                if model.sessions.isEmpty, model.isConnected {
-                    Text("No sessions yet")
+                if filtered.isEmpty, model.isConnected {
+                    Text(isChats ? (model.supportsChats ? "No chats yet" : "Update the Mac app to use chats") : "No sessions yet")
                         .font(CDS.body).foregroundStyle(CDS.textMuted)
+                        .multilineTextAlignment(.center).padding(.horizontal, 32)
                 }
             }
         }
         .background(CDS.surface0)
         .toolbarBackground(CDS.surface0, for: .navigationBar)
-        .navigationTitle(model.activeMac?.displayName ?? "Sessions")
+        .navigationTitle(isChats ? "Chats" : (model.activeMac?.displayName ?? "Sessions"))
         .navigationBarTitleDisplayMode(.inline)
         // Tapping the title switches between paired Macs (the title shows a chevron when a menu is attached).
         .toolbarTitleMenu {
@@ -117,6 +124,42 @@ struct SessionListView: View {
         .onAppear { if model.isConnected { model.refresh() } }
     }
 
+    /// One tap starts a chat; with Codex around, the agent is picked from a menu.
+    @ViewBuilder
+    private var newChatRow: some View {
+        Group {
+            if model.hasCodex {
+                Menu {
+                    Button("Chat with Claude") { model.startChat(.claude) }
+                    Button("Chat with Codex") { model.startChat(.codex) }
+                } label: {
+                    newRowLabel("New chat", systemImage: "bubble.left.and.bubble.right")
+                }
+            } else {
+                Button { model.startChat(.claude) } label: {
+                    newRowLabel("New chat", systemImage: "bubble.left.and.bubble.right")
+                }
+            }
+        }
+        .disabled(!model.isConnected)
+        .listRowBackground(CDS.surface0)
+        .listRowSeparator(.hidden)
+    }
+
+    private func newRowLabel(_ title: String, systemImage: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 22, height: 22)
+                .background(CDS.fillNeutral, in: RoundedRectangle(cornerRadius: CDS.radiusSmall))
+            Text(title).font(CDS.bodyMedium)
+        }
+        .foregroundStyle(model.isConnected ? CDS.textPrimary : CDS.textMuted)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
             .font(.caption2.weight(.semibold))
@@ -131,7 +174,7 @@ struct SessionListView: View {
             // Sidebar rows navigate without a disclosure chevron; the link stays for the tap.
             NavigationLink(value: session.id) { EmptyView() }.opacity(0)
             HStack(alignment: .top, spacing: 10) {
-                StatusDot(status: session.status, origin: session.origin)
+                StatusDot(status: session.status, origin: session.origin, agent: session.agent)
                     .frame(width: 8)
                     .padding(.top, 7)
                 VStack(alignment: .leading, spacing: 3) {
@@ -140,11 +183,18 @@ struct SessionListView: View {
                         .foregroundStyle(CDS.textPrimary)
                         .lineLimit(2)
                     HStack(spacing: 5) {
-                        Text(session.projectName).lineLimit(1)
+                        if session.kind == .chat {
+                            Text(session.agent.label).foregroundStyle(session.agent.tint).lineLimit(1)
+                        } else {
+                            Text(session.projectName).lineLimit(1)
+                        }
                         Text("·")
                         Text(RelativeTime.string(session.updatedAt))
-                        if session.origin == .desktop { CDSChip(text: session.sourceLabel) }
-                        if session.origin == .host { CDSChip(text: "Phone", systemImage: "iphone") }
+                        if session.origin == .desktop { CDSChip(text: session.sourceLabel, style: .agent(session.agent.tint)) }
+                        if session.kind == .agent, session.origin == .host { CDSChip(text: "Phone", systemImage: "iphone") }
+                        if session.kind == .agent, session.agent == .codex, session.origin != .desktop {
+                            CDSChip(text: "Codex", style: .agent(CDS.agentCodex))
+                        }
                         if session.status == .awaitingPermission || model.pendingPermission(for: session.id) != nil {
                             CDSChip(text: "Needs approval", style: .warning)
                         }
@@ -194,6 +244,7 @@ enum RelativeTime {
 struct StatusDot: View {
     let status: SessionStatus
     let origin: SessionOrigin
+    var agent: AgentKind = .claude
     @State private var pulsing = false
 
     var body: some View {
@@ -207,7 +258,7 @@ struct StatusDot: View {
 
     private var color: Color {
         switch status {
-        case .running: return CDS.brand
+        case .running: return agent.tint
         case .awaitingPermission: return CDS.warningFill
         case .idle: return origin == .stored ? .clear : CDS.textMuted.opacity(0.6)
         case .exited: return CDS.dangerFill

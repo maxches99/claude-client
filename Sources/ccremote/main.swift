@@ -15,6 +15,7 @@ func usage() -> Never {
       --port N       TCP port to listen on (default 7811)
       --token TOKEN  pairing token (default: generated once, stored in the support dir)
       --claude PATH  path to the claude binary (default: Claude Desktop's bundled CLI, else PATH)
+      --codex PATH   path to the codex binary (default: PATH, else the Codex app's bundled CLI)
       --name NAME    Bonjour service name (default: this Mac's name)
       --rotate-token generate a new pairing token (forgets paired phones)
       --print-pairing print the pairing QR / URL and exit
@@ -94,6 +95,9 @@ if auth?.loggedIn == true {
     print("claude auth: logged in" + (auth?.email.map { " (\($0))" } ?? ""))
 } else {
     print("claude auth: NOT logged in — run:  \(daemon.loginCommand)")
+}
+if let codex = daemon.codex {
+    print("codex \(codex.version() ?? "?") at \(codex.path)" + (CodexCLI.hasCredentials() ? "" : " — not logged in (run `codex login`)"))
 }
 let channels = daemon.notificationChannels
 if !channels.isEmpty {

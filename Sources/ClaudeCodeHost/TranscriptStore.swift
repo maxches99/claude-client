@@ -166,11 +166,17 @@ public final class TranscriptTail: @unchecked Sendable {
     private var partial = Data()
     private let timer: DispatchSourceTimer
     private let onEntry: @Sendable (JSONValue) -> Void
+    private let accepts: @Sendable (JSONValue) -> Bool
 
-    public init(path: String, startOffset: UInt64, interval: TimeInterval = 0.5, queue: DispatchQueue = DispatchQueue(label: "ccremote.tail"), onEntry: @escaping @Sendable (JSONValue) -> Void) {
+    /// `accepts` decides which lines are passed on; the default keeps Claude conversation entries,
+    /// while a Codex rollout takes every line and translates it itself.
+    public init(path: String, startOffset: UInt64, interval: TimeInterval = 0.5, queue: DispatchQueue = DispatchQueue(label: "ccremote.tail"),
+                accepts: (@Sendable (JSONValue) -> Bool)? = nil,
+                onEntry: @escaping @Sendable (JSONValue) -> Void) {
         self.path = path
         self.offset = startOffset
         self.onEntry = onEntry
+        self.accepts = accepts ?? { TranscriptStore.isConversationEntry($0) }
         timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + interval, repeating: interval)
         timer.setEventHandler { [weak self] in self?.poll() }
@@ -192,7 +198,7 @@ public final class TranscriptTail: @unchecked Sendable {
         while let nl = partial.firstIndex(of: 0x0A) {
             let line = partial.subdata(in: partial.startIndex..<nl)
             partial.removeSubrange(partial.startIndex...nl)
-            guard !line.isEmpty, let entry = try? JSONValue.parse(line), TranscriptStore.isConversationEntry(entry) else { continue }
+            guard !line.isEmpty, let entry = try? JSONValue.parse(line), accepts(entry) else { continue }
             onEntry(entry)
         }
     }

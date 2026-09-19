@@ -1,7 +1,42 @@
 import Foundation
 
 /// Wire-protocol version. Bump when messages change incompatibly.
-public let protocolVersion = 1
+public let protocolVersion = 2
+
+/// Which coding agent runs a session. Claude Code is the default everywhere a field is missing,
+/// so messages from an older build still decode.
+public enum AgentKind: String, Codable, CaseIterable, Sendable {
+    case claude
+    case codex
+
+    public var label: String {
+        switch self {
+        case .claude: return "Claude"
+        case .codex: return "Codex"
+        }
+    }
+}
+
+/// What a session is for. A `chat` runs the same agent with no tools and no project context —
+/// a quick question, not work on a codebase.
+public enum SessionKind: String, Codable, Sendable {
+    case agent
+    case chat
+}
+
+/// The Codex CLI on the Mac, when one was found (bundled with the Codex app or on PATH).
+public struct CodexInfo: Codable, Equatable, Sendable {
+    public var path: String
+    public var version: String?
+    /// Best effort: `~/.codex/auth.json` exists, refined by `account/read` once the app-server runs.
+    public var loggedIn: Bool?
+
+    public init(path: String, version: String?, loggedIn: Bool?) {
+        self.path = path
+        self.version = version
+        self.loggedIn = loggedIn
+    }
+}
 
 public struct HostInfo: Codable, Equatable, Sendable {
     public var hostName: String
@@ -10,14 +45,38 @@ public struct HostInfo: Codable, Equatable, Sendable {
     public var cliPath: String
     public var loggedIn: Bool?
     public var protocolVersion: Int
+    /// `nil` when no Codex CLI is installed on the Mac.
+    public var codex: CodexInfo?
 
-    public init(hostName: String, daemonVersion: String, cliVersion: String?, cliPath: String, loggedIn: Bool?, protocolVersion: Int = ClaudeRemoteCore.protocolVersion) {
+    public init(hostName: String, daemonVersion: String, cliVersion: String?, cliPath: String, loggedIn: Bool?,
+                protocolVersion: Int = ClaudeRemoteCore.protocolVersion, codex: CodexInfo? = nil) {
         self.hostName = hostName
         self.daemonVersion = daemonVersion
         self.cliVersion = cliVersion
         self.cliPath = cliPath
         self.loggedIn = loggedIn
         self.protocolVersion = protocolVersion
+        self.codex = codex
+    }
+}
+
+/// A model an agent can run, as advertised by the host (Codex: `model/list`; Claude: a fixed list).
+public struct ModelOption: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var label: String
+    public var description: String?
+    public var isDefault: Bool
+    /// Reasoning efforts the model accepts, in the agent's own vocabulary; empty when not selectable.
+    public var efforts: [String]
+    public var defaultEffort: String?
+
+    public init(id: String, label: String, description: String? = nil, isDefault: Bool = false, efforts: [String] = [], defaultEffort: String? = nil) {
+        self.id = id
+        self.label = label
+        self.description = description
+        self.isDefault = isDefault
+        self.efforts = efforts
+        self.defaultEffort = defaultEffort
     }
 }
 
@@ -48,8 +107,11 @@ public struct SessionSummary: Codable, Equatable, Identifiable, Sendable {
     public var status: SessionStatus
     public var desktopName: String?  // name from ~/.claude/sessions when open elsewhere
     public var entrypoint: String?   // "claude-desktop" | "cli" | "sdk-cli" | … for `.desktop` sessions
+    public var agent: AgentKind
+    public var kind: SessionKind
 
-    public init(id: String, title: String, cwd: String, updatedAt: Date, origin: SessionOrigin, status: SessionStatus, desktopName: String? = nil, entrypoint: String? = nil) {
+    public init(id: String, title: String, cwd: String, updatedAt: Date, origin: SessionOrigin, status: SessionStatus, desktopName: String? = nil,
+                entrypoint: String? = nil, agent: AgentKind = .claude, kind: SessionKind = .agent) {
         self.id = id
         self.title = title
         self.cwd = cwd
@@ -58,6 +120,22 @@ public struct SessionSummary: Codable, Equatable, Identifiable, Sendable {
         self.status = status
         self.desktopName = desktopName
         self.entrypoint = entrypoint
+        self.agent = agent
+        self.kind = kind
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        cwd = try c.decode(String.self, forKey: .cwd)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        origin = try c.decode(SessionOrigin.self, forKey: .origin)
+        status = try c.decode(SessionStatus.self, forKey: .status)
+        desktopName = try c.decodeIfPresent(String.self, forKey: .desktopName)
+        entrypoint = try c.decodeIfPresent(String.self, forKey: .entrypoint)
+        agent = try c.decodeIfPresent(AgentKind.self, forKey: .agent) ?? .claude
+        kind = try c.decodeIfPresent(SessionKind.self, forKey: .kind) ?? .agent
     }
 
     public var projectName: String { (cwd as NSString).lastPathComponent }
@@ -68,6 +146,7 @@ public struct SessionSummary: Codable, Equatable, Identifiable, Sendable {
         case "claude-desktop": return "Desktop"
         case "cli": return "Terminal"
         case "sdk-cli", "sdk-ts", "sdk-py": return "SDK"
+        case "codex-app": return "Codex app"
         default: return "External"
         }
     }
@@ -108,12 +187,20 @@ public struct SessionState: Codable, Equatable, Sendable {
     public var status: SessionStatus
     public var cwd: String
     public var model: String?
+    /// Claude: `--permission-mode`. Codex: the approval policy (`CodexApprovalPolicy`).
     public var permissionMode: String?
     public var pendingPermissions: [PermissionRequest]
     public var lastError: String?
+    public var agent: AgentKind
+    public var kind: SessionKind
+    /// Reasoning effort, in the agent's vocabulary (Codex only for now).
+    public var effort: String?
+    /// Codex sandbox mode (`CodexSandboxMode`).
+    public var sandbox: String?
 
     public init(id: String, origin: SessionOrigin, status: SessionStatus, cwd: String, model: String? = nil, permissionMode: String? = nil,
-                pendingPermissions: [PermissionRequest] = [], lastError: String? = nil) {
+                pendingPermissions: [PermissionRequest] = [], lastError: String? = nil, agent: AgentKind = .claude, kind: SessionKind = .agent,
+                effort: String? = nil, sandbox: String? = nil) {
         self.id = id
         self.origin = origin
         self.status = status
@@ -122,6 +209,26 @@ public struct SessionState: Codable, Equatable, Sendable {
         self.permissionMode = permissionMode
         self.pendingPermissions = pendingPermissions
         self.lastError = lastError
+        self.agent = agent
+        self.kind = kind
+        self.effort = effort
+        self.sandbox = sandbox
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        origin = try c.decode(SessionOrigin.self, forKey: .origin)
+        status = try c.decode(SessionStatus.self, forKey: .status)
+        cwd = try c.decode(String.self, forKey: .cwd)
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+        permissionMode = try c.decodeIfPresent(String.self, forKey: .permissionMode)
+        pendingPermissions = try c.decodeIfPresent([PermissionRequest].self, forKey: .pendingPermissions) ?? []
+        lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
+        agent = try c.decodeIfPresent(AgentKind.self, forKey: .agent) ?? .claude
+        kind = try c.decodeIfPresent(SessionKind.self, forKey: .kind) ?? .agent
+        effort = try c.decodeIfPresent(String.self, forKey: .effort)
+        sandbox = try c.decodeIfPresent(String.self, forKey: .sandbox)
     }
 }
 
@@ -143,14 +250,41 @@ public struct ProjectInfo: Codable, Equatable, Identifiable, Sendable {
 public struct NewSessionOptions: Codable, Equatable, Sendable {
     public var cwd: String
     public var model: String?
+    /// Claude: permission mode. Codex: approval policy.
     public var permissionMode: String?
     public var effort: String?
+    public var agent: AgentKind
+    /// Codex sandbox mode.
+    public var sandbox: String?
+    /// `.chat` ignores `cwd`, `permissionMode` and `sandbox`: the host runs the agent with no tools
+    /// in its own scratch directory.
+    public var kind: SessionKind
 
-    public init(cwd: String, model: String? = nil, permissionMode: String? = nil, effort: String? = nil) {
+    public init(cwd: String, model: String? = nil, permissionMode: String? = nil, effort: String? = nil, agent: AgentKind = .claude,
+                sandbox: String? = nil, kind: SessionKind = .agent) {
         self.cwd = cwd
         self.model = model
         self.permissionMode = permissionMode
         self.effort = effort
+        self.agent = agent
+        self.sandbox = sandbox
+        self.kind = kind
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cwd = try c.decode(String.self, forKey: .cwd)
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+        permissionMode = try c.decodeIfPresent(String.self, forKey: .permissionMode)
+        effort = try c.decodeIfPresent(String.self, forKey: .effort)
+        agent = try c.decodeIfPresent(AgentKind.self, forKey: .agent) ?? .claude
+        sandbox = try c.decodeIfPresent(String.self, forKey: .sandbox)
+        kind = try c.decodeIfPresent(SessionKind.self, forKey: .kind) ?? .agent
+    }
+
+    /// A quick question: no project, no tools.
+    public static func chat(agent: AgentKind, model: String? = nil, effort: String? = nil) -> NewSessionOptions {
+        NewSessionOptions(cwd: "", model: model, effort: effort, agent: agent, kind: .chat)
     }
 }
 
@@ -166,6 +300,44 @@ public enum PermissionMode: String, CaseIterable, Codable, Sendable {
         case .auto: return "Auto"
         case .dontAsk: return "Don't ask"
         case .bypassPermissions: return "Bypass permissions"
+        }
+    }
+}
+
+/// Codex `approvalPolicy`: when the agent stops to ask before acting.
+public enum CodexApprovalPolicy: String, CaseIterable, Codable, Sendable {
+    case onRequest = "on-request"
+    case untrusted
+    case never
+
+    public var label: String {
+        switch self {
+        case .onRequest: return "Ask when needed"
+        case .untrusted: return "Ask for untrusted commands"
+        case .never: return "Never ask"
+        }
+    }
+
+    public var hint: String {
+        switch self {
+        case .onRequest: return "Codex asks when a command needs to escape the sandbox or looks risky."
+        case .untrusted: return "Only known-safe commands run unasked; everything else comes to you."
+        case .never: return "Nothing is asked; blocked actions fail instead."
+        }
+    }
+}
+
+/// Codex `sandbox`: what the agent's commands may touch without asking.
+public enum CodexSandboxMode: String, CaseIterable, Codable, Sendable {
+    case workspaceWrite = "workspace-write"
+    case readOnly = "read-only"
+    case dangerFullAccess = "danger-full-access"
+
+    public var label: String {
+        switch self {
+        case .workspaceWrite: return "Workspace write"
+        case .readOnly: return "Read only"
+        case .dangerFullAccess: return "Full access"
         }
     }
 }

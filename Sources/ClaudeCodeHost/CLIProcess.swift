@@ -19,6 +19,12 @@ public final class CLIProcess: @unchecked Sendable {
         public var model: String?
         public var permissionMode: String?
         public var effort: String?
+        /// `--tools`: nil keeps the built-in set, "" disables every tool (chat sessions).
+        public var tools: String?
+        /// Replaces Claude Code's own system prompt (chat sessions).
+        public var systemPrompt: String?
+        /// `--setting-sources`; "" keeps CLAUDE.md and project settings out of a chat.
+        public var settingSources: String = "user,project,local"
         public var extraArgs: [String] = []
 
         public init(cliPath: String, cwd: String) {
@@ -73,7 +79,9 @@ public final class CLIProcess: @unchecked Sendable {
     public func start() throws {
         var args = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json",
                     "--permission-prompt-tool", "stdio", "--include-partial-messages", "--replay-user-messages",
-                    "--setting-sources=user,project,local", "-p"]
+                    "--setting-sources=\(config.settingSources)", "-p"]
+        if let tools = config.tools { args += ["--tools", tools] }
+        if let prompt = config.systemPrompt { args += ["--system-prompt", prompt] }
         if let sessionId = config.sessionId { args += ["--session-id", sessionId] }
         if let resume = config.resume { args += ["--resume=\(resume)"] }
         if config.forkSession { args.append("--fork-session") }

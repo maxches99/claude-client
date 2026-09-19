@@ -19,6 +19,9 @@ struct ChatView: View {
     private var pending: PermissionRequest? { model.pendingPermission(for: sessionId) }
     private var isRunning: Bool { state?.status == .running || state?.status == .awaitingPermission }
     private var isDesktop: Bool { (state?.origin ?? summary?.origin) == .desktop }
+    private var agent: AgentKind { state?.agent ?? summary?.agent ?? .claude }
+    private var agentName: String { agent.label }
+    private var isChat: Bool { (state?.kind ?? summary?.kind ?? .agent) == .chat }
     private var blocks: [TranscriptBlock] { TranscriptLayout.blocks(for: transcript.items, sessionRunning: isRunning) }
 
     var body: some View {
@@ -39,6 +42,7 @@ struct ChatView: View {
                 pending: pending,
                 isRunning: isRunning,
                 isDesktop: isDesktop,
+                isChat: isChat,
                 onSend: send,
                 onShowPermission: { presentedPermission = $0 }
             )
@@ -54,11 +58,13 @@ struct ChatView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Reload transcript", systemImage: "arrow.clockwise") { model.open(sessionId) }
-                    Button("Continue a copy on the phone", systemImage: "arrow.triangle.branch") { model.fork(sessionId) }
+                    if !isChat {
+                        Button("Continue a copy on the phone", systemImage: "arrow.triangle.branch") { model.fork(sessionId) }
+                    }
                     if state?.origin == .host {
-                        Button("Stop session on Mac", systemImage: "xmark.circle", role: .destructive) {
+                        Button(isChat ? "Close chat on Mac" : "Stop session on Mac", systemImage: "xmark.circle", role: .destructive) {
                             model.close(sessionId)
-                            model.path.removeAll { $0 == sessionId }
+                            model.dismiss(sessionId)
                         }
                     }
                 } label: {
@@ -87,7 +93,7 @@ struct ChatView: View {
                 .foregroundStyle(CDS.textPrimary)
                 .lineLimit(1)
             HStack(spacing: 5) {
-                if let s = state { StatusDot(status: s.status, origin: s.origin) }
+                if let s = state { StatusDot(status: s.status, origin: s.origin, agent: agent) }
                 Text(subtitle).font(.caption2).foregroundStyle(CDS.textMuted).lineLimit(1)
             }
         }
@@ -96,7 +102,12 @@ struct ChatView: View {
 
     private var subtitle: String {
         var parts: [String] = []
-        if let project = summary?.projectName, !project.isEmpty { parts.append(project) }
+        if isChat {
+            parts.append("Chat · \(agentName)")
+        } else if let project = summary?.projectName, !project.isEmpty {
+            parts.append(project)
+        }
+        if !isChat, agent == .codex { parts.append("Codex") }
         if isDesktop { parts.append("on \(summary?.sourceLabel ?? "Mac")") }
         switch state?.status {
         case .running: parts.append("Working")
@@ -135,16 +146,33 @@ struct ChatView: View {
                 if transcript.items.isEmpty { emptyState }
             }
             .onChange(of: scrollSignature) {
-                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                withAnimation(.easeOut(duration: 0.15)) { scrollToEnd(proxy) }
             }
-            .onChange(of: transcript.items.count) { old, new in
-                // A big batch (history load) lays out lazily; scroll again once it has settled.
-                guard new - old > 5 else { return }
+            .onChange(of: blocks.count) { old, new in
+                // A whole history lands at once and the rows above are measured only as they are
+                // drawn, so a single scroll can settle past the end — nudge it until it holds.
+                guard new - old > 3 else { return }
                 Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 250_000_000)
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                    for delay in [0.05, 0.25, 0.6, 1.2] {
+                        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        scrollToEnd(proxy)
+                    }
                 }
             }
+            .task(id: sessionId) {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                scrollToEnd(proxy)
+            }
+        }
+    }
+
+    /// Anchors on the last row rather than a trailing spacer: inside a `LazyVStack` the spacer can
+    /// be placed before the rows above it are measured, which leaves the view scrolled past the end.
+    private func scrollToEnd(_ proxy: ScrollViewProxy) {
+        if let last = blocks.last?.id {
+            proxy.scrollTo(last, anchor: .bottom)
+        } else {
+            proxy.scrollTo("bottom", anchor: .bottom)
         }
     }
 
@@ -176,12 +204,13 @@ struct ChatView: View {
 
     private var emptyState: some View {
         VStack(spacing: 8) {
-            Image(systemName: isDesktop ? "eye" : "asterisk")
+            Image(systemName: isDesktop ? "eye" : (isChat ? "bubble.left.and.bubble.right" : "asterisk"))
                 .font(.system(size: 28, weight: .medium))
-                .foregroundStyle(isDesktop ? CDS.textMuted : CDS.brand)
-            Text(isDesktop ? "Watching" : (summary?.projectName ?? "New session"))
+                .foregroundStyle(isDesktop ? CDS.textMuted : agent.tint)
+            Text(isDesktop ? "Watching" : (isChat ? "Quick chat" : (summary?.projectName ?? "New session")))
                 .font(.title3.weight(.semibold)).foregroundStyle(CDS.textPrimary)
-            Text(isDesktop ? "This session is open on the Mac. New activity shows up here live." : "What should Claude work on?")
+            Text(isDesktop ? "This session is open on the Mac. New activity shows up here live."
+                 : (isChat ? "Ask \(agentName) anything — no project, no tools." : "What should \(agentName) work on?"))
                 .font(CDS.body).foregroundStyle(CDS.textMuted).multilineTextAlignment(.center)
         }
         .padding(32)
@@ -231,10 +260,15 @@ struct ComposerDock: View {
     let pending: PermissionRequest?
     let isRunning: Bool
     let isDesktop: Bool
+    let isChat: Bool
     let onSend: () -> Void
     let onShowPermission: (PermissionRequest) -> Void
 
     @State private var pickerItems: [PhotosPickerItem] = []
+
+    private var agent: AgentKind { state?.agent ?? summary?.agent ?? .claude }
+    private var isCodex: Bool { agent == .codex }
+    /// Claude chats run on Sonnet by default; the model chip still switches it.
 
     // Images ride on phone-hosted sessions (base64 over stdin); desktop sessions are text-only.
     private var canAttach: Bool { !isDesktop && model.isConnected }
@@ -251,12 +285,20 @@ struct ComposerDock: View {
                 notice(error, tint: CDS.danger)
             }
             if isDesktop {
-                notice("Open in \(summary?.sourceLabel ?? "Desktop") on the Mac — messages are delivered there; permission prompts are answered on the Mac.", tint: CDS.textMuted)
+                notice(desktopNotice, tint: CDS.textMuted)
             }
             composer
         }
         .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 8)
         .background(CDS.surface0)
+    }
+
+    /// What "this session lives on the Mac" means for the agent in question.
+    private var desktopNotice: String {
+        if agent == .codex {
+            return "Open in the Codex app on the Mac — this is a live view; what you send is queued there for the session to pick up."
+        }
+        return "Open in \(summary?.sourceLabel ?? "Desktop") on the Mac — messages are delivered there; permission prompts are answered on the Mac."
     }
 
     private func notice(_ text: String, tint: Color) -> some View {
@@ -269,7 +311,7 @@ struct ComposerDock: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !attachments.isEmpty { attachmentStrip }
-            TextField(isDesktop ? "Message this session" : "Message Claude", text: $draft, axis: .vertical)
+            TextField(isDesktop ? "Message this session" : "Message \(agent.label)", text: $draft, axis: .vertical)
                 .lineLimit(1...8)
                 .textFieldStyle(.plain)
                 .font(CDS.prose)
@@ -288,9 +330,20 @@ struct ComposerDock: View {
                     }
                     .accessibilityLabel("Attach image")
                 }
-                if !isDesktop {
+                // A chat has no tools, so there is nothing to approve — only the model matters.
+                // A session owned by the Mac cannot be reconfigured from here at all.
+                if isDesktop {
+                    EmptyView()
+                } else if isCodex {
+                    Menu { codexModelSection } label: { ComposerChipLabel(text: modelLabel) }
+                    if !isChat {
+                        Menu { codexControlSection } label: { ComposerChipLabel(text: codexModeLabel, systemImage: codexModeIcon) }
+                    }
+                } else if !isDesktop {
                     Menu { modelSection } label: { ComposerChipLabel(text: modelLabel) }
-                    Menu { permissionSection } label: { ComposerChipLabel(text: modeLabel, systemImage: modeIcon) }
+                    if !isChat {
+                        Menu { permissionSection } label: { ComposerChipLabel(text: modeLabel, systemImage: modeIcon) }
+                    }
                 }
                 Spacer(minLength: 0)
                 if isRunning, !isDesktop {   // a Desktop session can only be interrupted on the Mac
@@ -309,7 +362,7 @@ struct ComposerDock: View {
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(canSend ? .white : CDS.textMuted)
                         .frame(width: 32, height: 32)
-                        .background(canSend ? CDS.brand : CDS.fillControl, in: Circle())
+                        .background(canSend ? agent.tint : CDS.fillControl, in: Circle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend)
@@ -358,10 +411,58 @@ struct ComposerDock: View {
         }
     }
 
-    private var modelLabel: String {
-        guard let id = modelId else { return "Model" }
-        if let known = NewSessionView.models.first(where: { id.hasPrefix($0.id) }) { return known.label }
-        return id.replacingOccurrences(of: "claude-", with: "").replacingOccurrences(of: "-", with: " ").capitalized
+    private var modelLabel: String { model.modelLabel(modelId, agent: agent) }
+
+    // MARK: Codex chips
+
+    private var codexPolicy: CodexApprovalPolicy? { state?.permissionMode.flatMap(CodexApprovalPolicy.init(rawValue:)) }
+    private var codexSandbox: CodexSandboxMode? { state?.sandbox.flatMap(CodexSandboxMode.init(rawValue:)) }
+    private var codexModeLabel: String { codexPolicy?.shortLabel ?? "Approvals" }
+    private var codexModeIcon: String { codexPolicy?.symbol ?? "shield" }
+
+    private var codexModelSection: some View {
+        Section("Model") {
+            if model.codexModels.isEmpty {
+                Button("Loading models…") { model.requestCodexModels() }
+            }
+            ForEach(model.codexModels) { m in
+                Button { model.setModel(sessionId, model: m.id) } label: {
+                    if modelId == m.id { Label(m.label, systemImage: "checkmark") } else { Text(m.label) }
+                }
+            }
+        }
+    }
+
+    /// Approval policy, plus sandbox and reasoning effort as submenus — all take effect on the next turn.
+    @ViewBuilder
+    private var codexControlSection: some View {
+        Section("Ask before acting") {
+            ForEach(CodexApprovalPolicy.allCases, id: \.self) { policy in
+                Button { model.setPermissionMode(sessionId, mode: policy.rawValue) } label: {
+                    Label(policy.label, systemImage: codexPolicy == policy ? "checkmark" : policy.symbol)
+                }
+            }
+        }
+        Menu {
+            ForEach(CodexSandboxMode.allCases, id: \.self) { mode in
+                Button { model.setSandbox(sessionId, mode: mode.rawValue) } label: {
+                    Label(mode.label, systemImage: codexSandbox == mode ? "checkmark" : mode.symbol)
+                }
+            }
+        } label: {
+            Label("Sandbox: \(codexSandbox?.label ?? "default")", systemImage: codexSandbox?.symbol ?? "folder")
+        }
+        if let efforts = model.codexModels.first(where: { $0.id == modelId })?.efforts, !efforts.isEmpty {
+            Menu {
+                ForEach(efforts, id: \.self) { effort in
+                    Button { model.setEffort(sessionId, effort: effort) } label: {
+                        if state?.effort == effort { Label(effort.capitalized, systemImage: "checkmark") } else { Text(effort.capitalized) }
+                    }
+                }
+            } label: {
+                Label("Reasoning: \(state?.effort?.capitalized ?? "default")", systemImage: "brain")
+            }
+        }
     }
 
     private var currentMode: PermissionMode? {

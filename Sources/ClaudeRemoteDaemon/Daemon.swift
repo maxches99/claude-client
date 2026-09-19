@@ -15,6 +15,14 @@ public struct ClaudeStatus: Equatable, Sendable {
 }
 
 /// A snapshot of the running daemon for a UI or a status printout.
+/// The Codex CLI next to Claude's, when installed.
+public struct CodexStatus: Equatable, Sendable {
+    public var path: String
+    public var version: String?
+    /// `~/.codex/auth.json` present — the desktop app and the CLI share it.
+    public var loggedIn: Bool?
+}
+
 public struct DaemonStatus: Equatable, Sendable {
     public enum Listener: Equatable, Sendable {
         case stopped
@@ -40,6 +48,7 @@ public struct DaemonStatus: Equatable, Sendable {
     public var addresses: [NetworkAddress] = []
     public var pairing: PairingURL
     public var claude: ClaudeStatus
+    public var codex: CodexStatus?
 
     public var isListening: Bool {
         if case .listening = listener { return true }
@@ -79,6 +88,8 @@ public final class Daemon: @unchecked Sendable {
     public let config: DaemonConfig
     public let supportDirectory: String
     public let cli: ClaudeCLI
+    /// `nil` when no Codex CLI was found; sessions are Claude-only then.
+    public let codex: CodexCLI?
     public let serviceName: String
     /// Effective transport: `false` when TLS was requested but the identity could not be set up.
     public let useTLS: Bool
@@ -123,6 +134,12 @@ public final class Daemon: @unchecked Sendable {
             throw DaemonError.claudeNotFound
         }
 
+        if let p = config.codexPath, !p.isEmpty {
+            codex = CodexCLI(path: p)
+        } else {
+            codex = CodexCLI.locate()
+        }
+
         try? FileManager.default.createDirectory(atPath: supportDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         tokenStore = TokenStore(Daemon.loadOrCreateToken(directory: supportDirectory, override: tokenOverride, rotate: rotateToken))
         serviceName = config.serviceName.flatMap { $0.isEmpty ? nil : $0 } ?? (Host.current().localizedName ?? "Mac")
@@ -149,14 +166,14 @@ public final class Daemon: @unchecked Sendable {
         let notifierConfig = config.notifierConfig
         notifier = notifierConfig.isEnabled ? Notifier(config: notifierConfig, log: log) : nil
         registry = DeviceRegistry(directory: supportDirectory)
-        manager = SessionManager(cli: cli, notifier: notifier, log: log)
+        manager = SessionManager(cli: cli, codex: codex.map { CodexBackend(cli: $0, log: log) }, notifier: notifier, log: log)
         SimulatorStreamer.log = log
 
         let addresses = NetworkInfo.lanAddresses()
         _status = DaemonStatus(paired: registry.all, addresses: addresses,
                                pairing: Daemon.makePairing(config: config, token: tokenStore.current, serviceName: serviceName, useTLS: useTLS,
                                                            fingerprint: fingerprint, room: room, addresses: addresses),
-                               claude: ClaudeStatus(path: cli.path))
+                               claude: ClaudeStatus(path: cli.path), codex: codex.map { CodexStatus(path: $0.path) })
     }
 
     // MARK: state
@@ -383,9 +400,11 @@ public final class Daemon: @unchecked Sendable {
             guard let self else { return }
             let version = self.cli.version()
             let auth = self.cli.authStatus()
+            let codexVersion = self.codex?.version()
             Task { await self.manager.refreshAuth() }
             self.update { s in
                 s.claude = ClaudeStatus(path: self.cli.path, version: version, loggedIn: auth?.loggedIn ?? false, email: auth?.email)
+                s.codex = self.codex.map { CodexStatus(path: $0.path, version: codexVersion, loggedIn: CodexCLI.hasCredentials()) }
             }
         }
     }

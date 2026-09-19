@@ -89,6 +89,7 @@ final class PhoneSession: @unchecked Sendable {
                     await self.manager.subscribe(self.id) { [weak self] msg in self?.send(msg) }
                     let info = await self.manager.hostInfo(daemonVersion: self.daemonVersion)
                     self.send(.welcome(host: info))
+                    await self.manager.refreshSources()
                     self.send(.sessions(items: await self.manager.listSessions()))
                     await SimulatorStreamer.shared.attach(self.id) { [weak self] msg in self?.send(msg) }
                 }
@@ -110,6 +111,7 @@ final class PhoneSession: @unchecked Sendable {
             case .ping:
                 send(.pong)
             case .listSessions:
+                await manager.refreshSources()
                 send(.sessions(items: await manager.listSessions()))
             case .listProjects:
                 send(.projects(items: await manager.listProjects()))
@@ -132,6 +134,12 @@ final class PhoneSession: @unchecked Sendable {
                 try await manager.setModel(sessionId: sessionId, model: model)
             case .setPermissionMode(let sessionId, let mode):
                 try await manager.setPermissionMode(sessionId: sessionId, mode: mode)
+            case .setEffort(let sessionId, let effort):
+                try await manager.setEffort(sessionId: sessionId, effort: effort)
+            case .setSandbox(let sessionId, let mode):
+                try await manager.setSandbox(sessionId: sessionId, mode: mode)
+            case .listModels(let agent):
+                send(.models(agent: agent, items: try await manager.listModels(agent: agent)))
             case .close(let sessionId):
                 await manager.close(sessionId: sessionId)
                 send(.sessions(items: await manager.listSessions()))
@@ -161,7 +169,7 @@ extension ClientMessage {
     var sessionId: String? {
         switch self {
         case .open(let id), .fork(let id), .prompt(let id, _, _), .permission(let id, _, _, _), .interrupt(let id),
-             .setModel(let id, _), .setPermissionMode(let id, _), .close(let id):
+             .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id):
             return id
         default:
             return nil

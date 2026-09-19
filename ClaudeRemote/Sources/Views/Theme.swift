@@ -1,4 +1,5 @@
 import SwiftUI
+import ClaudeRemoteCore
 
 /// Claude's design tokens (the `--cds-*` palette Claude Code's desktop UI is built on),
 /// as light/dark dynamic colors plus the radii and spacing the transcript uses.
@@ -37,6 +38,9 @@ enum CDS {
     static let brand = Color(hex: 0xD97757)
     static let brandEmphasized = Color(hex: 0xC6613F)
     static let accent = dynamic(light: 0x184F95, dark: 0x6DA7EC)
+    /// Agent accents: Claude keeps the clay brand colour, Codex is blue.
+    static let agentClaude = Color(hex: 0xD97757)
+    static let agentCodex = dynamic(light: 0x2563C9, dark: 0x6DA7EC)
     static let success = dynamic(light: 0x006300, dark: 0x55BF50)
     static let successFill = dynamic(light: 0x009300, dark: 0x0CA30C)
     static let warning = dynamic(light: 0x734500, dark: 0xDB9300)
@@ -141,7 +145,7 @@ struct CDSBanner: View {
 
 /// Small label chip (CDS `Chip`): origin badges, "Needs approval", languages.
 struct CDSChip: View {
-    enum Style { case neutral, warning, danger, accent }
+    enum Style { case neutral, warning, danger, accent, agent(Color) }
     let text: String
     var style: Style = .neutral
     var systemImage: String?
@@ -163,6 +167,7 @@ struct CDSChip: View {
         case .warning: return CDS.warningBackground
         case .danger: return CDS.dangerBackground
         case .accent: return CDS.brand.opacity(0.15)
+        case .agent(let color): return color.opacity(0.14)
         }
     }
 
@@ -172,6 +177,17 @@ struct CDSChip: View {
         case .warning: return CDS.warning
         case .danger: return CDS.danger
         case .accent: return CDS.brandEmphasized
+        case .agent(let color): return color
+        }
+    }
+}
+
+extension AgentKind {
+    /// Claude is clay, Codex is blue — the one signal that says which agent a row or screen belongs to.
+    var tint: Color {
+        switch self {
+        case .claude: return CDS.agentClaude
+        case .codex: return CDS.agentCodex
         }
     }
 }

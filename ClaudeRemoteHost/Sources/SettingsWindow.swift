@@ -71,6 +71,19 @@ struct SettingsWindow: View {
                         Text(claude.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled).lineLimit(2)
                     }
                 }
+                LabeledContent("codex binary") {
+                    HStack {
+                        TextField("", text: optional($draft.codexPath), prompt: Text("auto — PATH, else the Codex app's bundled CLI"))
+                            .font(.system(.body, design: .monospaced))
+                            .multilineTextAlignment(.trailing)
+                        Button("Choose…") { chooseBinary(named: "codex") { draft.codexPath = $0 } }
+                    }
+                }
+                if let codex = model.status?.codex {
+                    LabeledContent("Using") {
+                        Text(codex.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled).lineLimit(2)
+                    }
+                }
                 LabeledContent("Config file") {
                     Text(DaemonConfig.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                 }
@@ -109,13 +122,17 @@ struct SettingsWindow: View {
     }
 
     private func chooseClaude() {
+        chooseBinary(named: "claude") { draft.claudePath = $0 }
+    }
+
+    private func chooseBinary(named name: String, _ set: (String) -> Void) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.showsHiddenFiles = true
-        panel.message = "Pick the claude executable"
-        if panel.runModal() == .OK, let url = panel.url { draft.claudePath = url.path }
+        panel.message = "Pick the \(name) executable"
+        if panel.runModal() == .OK, let url = panel.url { set(url.path) }
     }
 }
 

@@ -11,6 +11,8 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
     public var serviceName: String?
     /// Path to the `claude` binary. `nil` → Claude Desktop's bundled CLI, else PATH.
     public var claudePath: String?
+    /// Path to the `codex` binary. `nil` → PATH, else the one bundled with the Codex app.
+    public var codexPath: String?
     /// Serve `wss://` with the self-signed identity (default). `false` → plain `ws://`, LAN debugging only.
     public var useTLS: Bool = true
 
@@ -37,6 +39,7 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
         port = try c.decodeIfPresent(UInt16.self, forKey: .port) ?? 7811
         serviceName = try c.decodeIfPresent(String.self, forKey: .serviceName)
         claudePath = try c.decodeIfPresent(String.self, forKey: .claudePath)
+        codexPath = try c.decodeIfPresent(String.self, forKey: .codexPath)
         useTLS = try c.decodeIfPresent(Bool.self, forKey: .useTLS) ?? true
         relayURL = try c.decodeIfPresent(String.self, forKey: .relayURL)
         relaySecret = try c.decodeIfPresent(String.self, forKey: .relaySecret)
@@ -116,6 +119,7 @@ public struct DaemonArguments {
                 result.config.port = p
             case "--token": result.tokenOverride = try value(a)
             case "--claude": result.config.claudePath = try value(a)
+            case "--codex": result.config.codexPath = try value(a)
             case "--name": result.config.serviceName = try value(a)
             case "--quiet": result.quiet = true
             case "--rotate-token": result.rotateToken = true

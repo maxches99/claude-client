@@ -14,14 +14,28 @@ final class AppModel {
     private(set) var activeMacId: String?
     var activeMac: PairingInfo? { macs.first { $0.id == activeMacId } }
 
+    /// What the connected Mac told us in `welcome` (CLI versions, whether Codex is installed).
+    var host: HostInfo? { connection.host }
+    var hasCodex: Bool { host?.codex != nil }
+    /// Chats (and everything else added in protocol 2) need a Mac app new enough to understand them;
+    /// an older daemon would just reject the request with a confusing error.
+    var supportsChats: Bool { (host?.protocolVersion ?? 1) >= 2 }
+    /// The Mac is paired but running an older ClaudeRemote Host than this app expects.
+    var hostNeedsUpdate: Bool { host != nil && !supportsChats }
+    /// Models Codex on the Mac can run, fetched once per connection.
+    var codexModels: [ModelOption] = []
     var sessions: [SessionSummary] = []
     var projects: [ProjectInfo] = []
     var states: [String: SessionState] = [:]
     var transcripts: [String: Transcript] = [:]
     var permissions: [PermissionRequest] = []
     var errorBanner: String?
-    /// Session ids pushed onto the navigation stack.
-    var path: [String] = []
+    /// Sessions and chats are separate tabs, each with its own navigation stack.
+    var tab: AppTab = .sessions
+    var sessionPath: [String] = []
+    var chatPath: [String] = []
+    /// Everything currently on screen, for re-attaching after a reconnect.
+    var openSessionIds: [String] { sessionPath + chatPath }
 
     // MARK: Face ID / biometrics
     /// Require Face ID before approving a tool (each Allow runs code on the Mac). Default on.
@@ -36,6 +50,8 @@ final class AppModel {
     var locked = false
 
     private var awaitingCreatedSession = false
+    /// Which tab the session being created belongs to.
+    private var awaitingKind: SessionKind = .agent
 
     init() {
         let defaults = UserDefaults.standard
@@ -113,13 +129,15 @@ final class AppModel {
 
     /// Clears everything that came from the Mac we're leaving.
     private func resetHostState() {
+        codexModels = []
         sessions = []
         projects = []
         states = [:]
         transcripts = [:]
         permissions = []
         errorBanner = nil
-        path = []
+        sessionPath = []
+        chatPath = []
         awaitingCreatedSession = false
         requestedFiles = []
         imageCache.reset()
@@ -157,12 +175,34 @@ final class AppModel {
 
     func fork(_ sessionId: String) {
         awaitingCreatedSession = true
+        awaitingKind = summary(for: sessionId)?.kind ?? .agent
         connection.send(.fork(sessionId: sessionId))
     }
 
     func create(_ options: NewSessionOptions) {
         awaitingCreatedSession = true
+        awaitingKind = options.kind
         connection.send(.create(options: options))
+    }
+
+    /// Opens a session on its own tab (chats and work sessions never share a stack).
+    func present(_ sessionId: String, kind: SessionKind) {
+        tab = kind == .chat ? .chats : .sessions
+        if kind == .chat {
+            if !chatPath.contains(sessionId) { chatPath.append(sessionId) }
+        } else if !sessionPath.contains(sessionId) {
+            sessionPath.append(sessionId)
+        }
+    }
+
+    func dismiss(_ sessionId: String) {
+        sessionPath.removeAll { $0 == sessionId }
+        chatPath.removeAll { $0 == sessionId }
+    }
+
+    /// A quick question: no project, no tools — the Mac picks the scratch directory and the model.
+    func startChat(_ agent: AgentKind) {
+        create(.chat(agent: agent))
     }
 
     func prompt(_ sessionId: String, text: String, images: [InlineImage] = []) {
@@ -214,6 +254,29 @@ final class AppModel {
         connection.send(.setPermissionMode(sessionId: sessionId, mode: mode))
     }
 
+    func setEffort(_ sessionId: String, effort: String) {
+        connection.send(.setEffort(sessionId: sessionId, effort: effort))
+    }
+
+    func setSandbox(_ sessionId: String, mode: String) {
+        connection.send(.setSandbox(sessionId: sessionId, mode: mode))
+    }
+
+    func requestCodexModels() {
+        guard hasCodex else { return }
+        connection.send(.listModels(agent: .codex))
+    }
+
+    /// Display name for a model id: Codex models come from the Mac, Claude's from the fixed list.
+    func modelLabel(_ id: String?, agent: AgentKind) -> String {
+        guard let id else { return "Model" }
+        if agent == .codex {
+            return codexModels.first { $0.id == id }?.label ?? id.replacingOccurrences(of: "-", with: " ").uppercased()
+        }
+        if let known = NewSessionView.models.first(where: { id.hasPrefix($0.id) }) { return known.label }
+        return id.replacingOccurrences(of: "claude-", with: "").replacingOccurrences(of: "-", with: " ").capitalized
+    }
+
     func close(_ sessionId: String) {
         connection.send(.close(sessionId: sessionId))
     }
@@ -235,8 +298,9 @@ final class AppModel {
             errorBanner = nil
             updateActiveMac { $0.hostName = host.hostName; $0.lastConnectedAt = Date() }
             refresh()
+            if codexModels.isEmpty { requestCodexModels() }
             // Re-attach to everything we were looking at before the reconnect.
-            for id in path { connection.send(.open(sessionId: id)) }
+            for id in openSessionIds { connection.send(.open(sessionId: id)) }
             if let udid = simulatorFeed.watching { sendSimulatorStream(udid, enabled: true) }
         case .error(let text, _):
             errorBanner = text
@@ -250,7 +314,7 @@ final class AppModel {
             transcripts[sessionId] = transcript
             if awaitingCreatedSession {
                 awaitingCreatedSession = false
-                if !path.contains(sessionId) { path.append(sessionId) }
+                present(sessionId, kind: awaitingKind)
             }
         case .event(let sessionId, let payload):
             guard transcripts[sessionId] != nil else { return }
@@ -266,6 +330,8 @@ final class AppModel {
                 sessions[idx].status = state.status
                 sessions[idx].origin = state.origin
             }
+        case .models(let agent, let items):
+            if agent == .codex { codexModels = items }
         case .file(let path, _, let base64, let error):
             if let base64, error == nil {
                 imageCache.store(key: "file:\(path)", base64: base64)

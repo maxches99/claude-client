@@ -1,6 +1,12 @@
 import SwiftUI
 import ClaudeRemoteCore
 
+/// The two halves of the app: work sessions in a project, and tool-less quick chats.
+enum AppTab: Hashable {
+    case sessions
+    case chats
+}
+
 struct RootView: View {
     @Environment(AppModel.self) private var model
 
@@ -10,11 +16,20 @@ struct RootView: View {
             if model.macs.isEmpty {
                 PairingView()
             } else {
-                NavigationStack(path: $model.path) {
-                    SessionListView()
-                        .navigationDestination(for: String.self) { sessionId in
-                            ChatView(sessionId: sessionId)
-                        }
+                TabView(selection: $model.tab) {
+                    NavigationStack(path: $model.sessionPath) {
+                        SessionListView(scope: .sessions)
+                            .navigationDestination(for: String.self) { ChatView(sessionId: $0) }
+                    }
+                    .tabItem { Label("Sessions", systemImage: "chevron.left.forwardslash.chevron.right") }
+                    .tag(AppTab.sessions)
+
+                    NavigationStack(path: $model.chatPath) {
+                        SessionListView(scope: .chats)
+                            .navigationDestination(for: String.self) { ChatView(sessionId: $0) }
+                    }
+                    .tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
+                    .tag(AppTab.chats)
                 }
             }
         }

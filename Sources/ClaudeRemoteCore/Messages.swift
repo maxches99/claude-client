@@ -17,7 +17,14 @@ public enum ClientMessage: Codable, Sendable {
     case permission(sessionId: String, requestId: String, allow: Bool, message: String?)
     case interrupt(sessionId: String)
     case setModel(sessionId: String, model: String)
+    /// Claude: permission mode. Codex: approval policy.
     case setPermissionMode(sessionId: String, mode: String)
+    /// Reasoning effort for the following turns (Codex).
+    case setEffort(sessionId: String, effort: String)
+    /// Codex sandbox mode for the following turns.
+    case setSandbox(sessionId: String, mode: String)
+    /// Models the host can run for an agent; answered with `models`.
+    case listModels(agent: AgentKind)
     /// Stop the daemon's CLI process for this session (transcript stays on disk).
     case close(sessionId: String)
     /// Read an image file from the Mac (e.g. one referenced by a SendUserFile tool call).
@@ -43,6 +50,7 @@ public enum ServerMessage: Codable, Sendable {
     case permissionRequest(request: PermissionRequest)
     case permissionResolved(sessionId: String, requestId: String)
     case state(state: SessionState)
+    case models(agent: AgentKind, items: [ModelOption])
     case file(path: String, mediaType: String?, base64: String?, error: String?)
     case simulators(items: [SimulatorInfo])
     case simulatorFrame(frame: SimulatorFrame)

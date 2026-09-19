@@ -313,6 +313,7 @@ struct ToolPresentation {
         case "Write": verb = "Write"; argument = file("file_path"); monospaced = true; truncateMiddle = true
         case "Edit", "MultiEdit": verb = "Edit"; argument = file("file_path"); monospaced = true; truncateMiddle = true
         case "NotebookEdit": verb = "Edit"; argument = file("notebook_path"); monospaced = true; truncateMiddle = true
+        case "Delete": verb = "Delete"; argument = file("file_path"); monospaced = true; truncateMiddle = true
         case "Glob", "Grep":
             verb = name == "Glob" ? "Search files" : "Grep"
             let pattern = input["pattern"]?.string ?? ""
@@ -386,13 +387,15 @@ struct ToolInputDetail: View {
             case "Bash":
                 mono(input["command"]?.string ?? partialInput)
                 if let d = input["description"]?.string { Text(d).font(CDS.caption).foregroundStyle(CDS.textMuted) }
-            case "Edit", "MultiEdit":
+            case "Edit", "MultiEdit", "Delete":
                 path(input["file_path"]?.string)
                 if let old = input["old_string"]?.string { diff(old, removed: true) }
                 if let new = input["new_string"]?.string { diff(new, removed: false) }
+                if let unified = input["diff"]?.string { unifiedDiff(unified) }   // Codex file changes
             case "Write":
                 path(input["file_path"]?.string)
-                mono(String((input["content"]?.string ?? "").prefix(4000)))
+                if let unified = input["diff"]?.string { unifiedDiff(unified) }
+                else { mono(String((input["content"]?.string ?? "").prefix(4000))) }
             case "Read", "NotebookEdit":
                 path(input["file_path"]?.string ?? input["notebook_path"]?.string)
                 if input["offset"] != nil || input["limit"] != nil { mono(input.prettyPrinted()) }
@@ -430,6 +433,21 @@ struct ToolInputDetail: View {
     private func mono(_ text: String) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Text(text).font(CDS.codeSmall).foregroundStyle(CDS.textSecondary).textSelection(.enabled)
+        }
+    }
+
+    /// A unified diff, coloured per line (`+` added, `-` removed, hunk headers muted).
+    private func unifiedDiff(_ text: String) -> some View {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).prefix(400)
+        return ScrollView(.horizontal, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                    let s = String(line)
+                    let color: Color = s.hasPrefix("+") ? CDS.gitAdded : (s.hasPrefix("-") ? CDS.gitRemoved : (s.hasPrefix("@@") ? CDS.textMuted : CDS.textSecondary))
+                    Text(s.isEmpty ? " " : s).font(CDS.codeSmall).foregroundStyle(color)
+                }
+            }
+            .textSelection(.enabled)
         }
     }
 }
@@ -532,6 +550,7 @@ enum ToolIcon {
         case "Bash": return "terminal"
         case "Read": return "doc.text"
         case "Edit", "MultiEdit", "Write", "NotebookEdit": return "pencil.line"
+        case "Delete": return "trash"
         case "Grep", "Glob": return "magnifyingglass"
         case "WebFetch", "WebSearch": return "globe"
         case "Task", "Agent": return "person.2"

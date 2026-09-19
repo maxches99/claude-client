@@ -1,7 +1,7 @@
 # ClaudeRemote
 
-Drive the Claude Code sessions on your Mac from your iPhone. Sessions keep running on the
-Mac — the phone is a remote: read the transcript live, send prompts, approve or deny tool
+Drive the Claude Code — and Codex — sessions on your Mac from your iPhone. Sessions keep running
+on the Mac — the phone is a remote: read the transcript live, send prompts, approve or deny tool
 permissions, interrupt, switch model / permission mode, and start or resume sessions.
 
 ```
@@ -11,7 +11,9 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
 │  ├─ claude CLI processes             │                                   └────────────────┘
 │  │   (stream-json, the same channel  │
 │  │    Claude Desktop / Agent SDK use)│
-│  └─ ~/.claude transcripts            │
+│  ├─ codex app-server (JSON-RPC, the  │
+│  │    channel the Codex app uses)    │
+│  └─ ~/.claude transcripts, ~/.codex  │
 └──────────────────────────────────────┘
 ```
 
@@ -19,8 +21,8 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
 
 | Path | What |
 |---|---|
-| `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, WebSocket channel (TLS roles) |
-| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `TLSIdentity`, `SessionManager` |
+| `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, `CodexTranslator` / `CodexRollout` (Codex events and session files → the same reducer), WebSocket channel (TLS roles) |
+| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `TLSIdentity`, `SessionManager` |
 | `Sources/ClaudeRemoteDaemon` | The daemon as a library: `Daemon` (config → listener + Bonjour, relay dial-out, notifier, phone tracking, status), `DaemonConfig` (`config.json`), `PhoneSession`, `WebSocketServer`, `RelayClient`, `DeviceRegistry`, pairing URL + QR |
 | `Sources/ccremote` | Thin CLI front-end for the daemon (flags, terminal QR) |
 | `ClaudeRemoteHost/` | **Mac menu-bar app** hosting the daemon: status, paired phones, QR, settings, open-at-login, keep-awake (xcodegen project) |
@@ -104,6 +106,38 @@ from the Bonjour list and enter the token.
   for a Desktop session are still answered on the Mac.
 * **Recent** — transcripts on disk. Opening one resumes it under the daemon.
 
+The app has two tabs: **Sessions** (work in a project) and **Chats**. Claude is clay-coloured
+throughout, Codex blue, so a glance at a row or a chat says which agent it belongs to.
+
+* **Chats** — a quick question that has nothing to do with a codebase: "New chat" starts the agent
+  with **no tools at all** (`--tools ""` for Claude, a read-only sandbox with nothing to approve for
+  Codex), its own system prompt, and none of your CLAUDE.md / project settings. They run in a scratch
+  directory (`~/Library/Application Support/ccremote/chats`) which is what marks them as chats, so they
+  keep their own section in the list, stay out of the project picker, and can be reopened later like
+  any other session. Claude chats default to Sonnet for speed; the model chip still switches it.
+
+### Codex
+
+If the Codex CLI is on the Mac — on `PATH`, or bundled inside the Codex desktop app — the
+session list also shows Codex threads (badge "Codex") and "New session" offers an agent picker.
+The daemon runs one `codex app-server` (the JSON-RPC channel the Codex app and IDE extension
+use) and hosts threads in it: start, resume, fork, prompt with images, interrupt. Codex's
+approval requests (commands, file changes, extra permissions) show up as the same permission
+cards as Claude's; instead of a permission mode you pick an **approval policy** (ask when
+needed / ask for untrusted commands / never), a **sandbox** (workspace write / read only / full
+access) and the **reasoning effort** of the model — all changeable per session from the
+composer chips, applied to the next turn. Login is shared with the Codex app (`~/.codex/auth.json`),
+so nothing to log in.
+
+A session **open in the Codex app right now** shows up as "Codex app" and is mirrored live: the
+daemon reads Codex's own session file (`~/.codex/sessions/…/rollout-*.jsonl`, which carries the
+messages, reasoning and tool calls that `thread/read` leaves out for a thread it does not host) and
+tails it. Codex marks such a thread with a held `flock` on `~/.codex/thread-writer-locks/<id>.lock`,
+which is how "open somewhere else" is told apart from "closed" — and when it is closed there, the
+session turns into an ordinary one the phone can resume. It cannot be driven from the phone, but a
+message you send is handed to `codex queue`, so the session picks it up in the app. Closed threads
+open the normal way (resume), or "Continue a copy on the phone" forks them.
+
 ## Images
 
 Inline images in the transcript (pasted images, screenshots returned by tools) render in the
@@ -147,7 +181,7 @@ Everything lives in `~/Library/Application Support/ccremote/config.json` (edited
 Settings). The CLI reads it too; flags override it for one run:
 
 ```
-ccremote [--port 7811] [--token …] [--claude /path/to/claude] [--name "Bonjour name"]
+ccremote [--port 7811] [--token …] [--claude /path/to/claude] [--codex /path/to/codex] [--name "Bonjour name"]
          [--rotate-token] [--print-pairing] [--quiet] [--no-tls]
          [--relay wss://vps | --no-relay] [--relay-secret S] [--room R] [--relay-fingerprint FP]
          [--ntfy TOPIC] [--telegram-token T --telegram-chat ID] [--no-notify-done]
@@ -156,7 +190,7 @@ ccremote [--port 7811] [--token …] [--claude /path/to/claude] [--name "Bonjour
 Running a second daemon for development next to the Host app? Use another port **and** `--no-relay`
 (or `--room`): two daemons registering the same relay room keep kicking each other out of it.
 
-`CCREMOTE_CLAUDE_PATH` also overrides the binary. Other files in the support dir: `token`,
+`CCREMOTE_CLAUDE_PATH` / `CCREMOTE_CODEX_PATH` also override the binaries. Other files in the support dir: `token`,
 `tls-identity.p12` (+ pem), `relay-room`, `devices.json` (paired phones), `pairing-qr.png`.
 
 ## Security notes
@@ -178,3 +212,8 @@ Running a second daemon for development next to the Host app? Use another port *
 protocol. It is what Claude Desktop and `@anthropic-ai/claude-agent-sdk` use, but it is not
 a public API; when the CLI updates, check `SessionManager.handleControlRequest` and the
 message shapes in `Transcript.swift` against the SDK's `sdk.mjs`.
+
+`CodexBackend` speaks the `codex app-server` v2 JSON-RPC protocol, marked experimental by
+OpenAI. Its schema is generated by the CLI itself — `codex app-server generate-json-schema --out DIR`
+— so when Codex updates, diff that against the methods used in `CodexBackend.swift` and the
+item shapes in `CodexTranslator.swift`.

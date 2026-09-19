@@ -24,6 +24,10 @@ struct MenuPanel: View {
             qrSection
             Divider()
             claudeRow
+            if model.status?.codex != nil {
+                Divider()
+                codexRow
+            }
             Divider()
             toggles
             Divider()
@@ -147,6 +151,32 @@ struct MenuPanel: View {
                 }
             } else {
                 Text("Claude CLI").font(.callout)
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    /// Codex shares its login with the Codex desktop app, so there is nothing to log in here.
+    private var codexRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "terminal")
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            if let codex = model.status?.codex {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Codex CLI \(codex.version ?? "…")").font(.callout)
+                    Group {
+                        if codex.loggedIn == true {
+                            Text("Logged in (shared with the Codex app)")
+                        } else if codex.loggedIn == false {
+                            Text("Not logged in — run `codex login`").foregroundStyle(.orange)
+                        } else {
+                            Text("Checking login…")
+                        }
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
             }
         }
