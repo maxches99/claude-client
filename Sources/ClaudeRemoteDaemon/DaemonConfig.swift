@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) || os(Linux)
 import Foundation
 import ClaudeCodeHost
 
@@ -7,6 +7,9 @@ import ClaudeCodeHost
 /// CLI and the menu-bar app share one setup; CLI flags overlay it for a single run.
 public struct DaemonConfig: Codable, Equatable, Sendable {
     public var port: UInt16 = 7811
+    /// Address the LAN listener binds to. `nil` → every interface. Use `127.0.0.1` on a hub that is
+    /// reached through a relay on the same machine only.
+    public var listenHost: String?
     /// Bonjour service name. `nil` → this Mac's name.
     public var serviceName: String?
     /// Path to the `claude` binary. `nil` → Claude Desktop's bundled CLI, else PATH.
@@ -22,6 +25,9 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
     /// Relay base URL, e.g. `wss://relay.example.com`. Empty / nil → relay off.
     public var relayURL: String?
     public var relaySecret: String?
+    /// The relay URL phones should use when it differs from `relayURL` — a hub on the relay's own
+    /// machine dials `ws://127.0.0.1:8787` but pairs phones with the public `wss://` address.
+    public var relayPublicURL: String?
     /// Room id on the relay. `nil` → a stable per-Mac id kept in the support directory.
     public var relayRoom: String?
     /// Pin the relay's TLS cert (SHA-256 hex) instead of system trust.
@@ -50,12 +56,14 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         port = try c.decodeIfPresent(UInt16.self, forKey: .port) ?? 7811
+        listenHost = try c.decodeIfPresent(String.self, forKey: .listenHost)
         serviceName = try c.decodeIfPresent(String.self, forKey: .serviceName)
         claudePath = try c.decodeIfPresent(String.self, forKey: .claudePath)
         codexPath = try c.decodeIfPresent(String.self, forKey: .codexPath)
         useTLS = try c.decodeIfPresent(Bool.self, forKey: .useTLS) ?? true
         relayURL = try c.decodeIfPresent(String.self, forKey: .relayURL)
         relaySecret = try c.decodeIfPresent(String.self, forKey: .relaySecret)
+        relayPublicURL = try c.decodeIfPresent(String.self, forKey: .relayPublicURL)
         relayRoom = try c.decodeIfPresent(String.self, forKey: .relayRoom)
         relayFingerprint = try c.decodeIfPresent(String.self, forKey: .relayFingerprint)
         ntfy = try c.decodeIfPresent(String.self, forKey: .ntfy)
@@ -72,6 +80,8 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
     // MARK: derived
 
     public var relayEnabled: Bool { !(relayURL?.isEmpty ?? true) }
+    /// The relay address that goes into the pairing URL.
+    public var relayURLForPhones: String? { relayPublicURL.flatMap { $0.isEmpty ? nil : $0 } ?? relayURL }
 
     public var notifierConfig: NotifierConfig {
         NotifierConfig(ntfyURL: ntfy.flatMap { $0.isEmpty ? nil : NotifierConfig.ntfyURL(from: $0) },
@@ -90,7 +100,7 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
 
     // MARK: persistence
 
-    public static let supportDirectory = NSHomeDirectory() + "/Library/Application Support/ccremote"
+    public static let supportDirectory = HostPaths.supportDirectory
     public static var path: String { supportDirectory + "/config.json" }
 
     /// The saved config, or defaults when there is none (or it is unreadable).
@@ -143,6 +153,7 @@ public struct DaemonArguments {
             case "--port":
                 guard let p = UInt16(try value(a)) else { throw ParseError(description: "--port needs a number 1–65535") }
                 result.config.port = p
+            case "--listen": result.config.listenHost = try value(a)
             case "--token": result.tokenOverride = try value(a)
             case "--claude": result.config.claudePath = try value(a)
             case "--codex": result.config.codexPath = try value(a)
@@ -157,6 +168,7 @@ public struct DaemonArguments {
             case "--relay": result.config.relayURL = try value(a)
             case "--no-relay": result.config.relayURL = nil
             case "--relay-secret": result.config.relaySecret = try value(a)
+            case "--relay-public": result.config.relayPublicURL = try value(a)
             case "--room": result.config.relayRoom = try value(a)
             case "--relay-fingerprint": result.config.relayFingerprint = try value(a)
             case "--ntfy": result.config.ntfy = try value(a)

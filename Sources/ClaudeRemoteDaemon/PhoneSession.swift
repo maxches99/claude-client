@@ -1,6 +1,5 @@
-#if os(macOS)
+#if os(macOS) || os(Linux)
 import Foundation
-import Network
 import ClaudeRemoteCore
 import ClaudeCodeHost
 
@@ -65,7 +64,9 @@ final class PhoneSession: @unchecked Sendable {
         let runs = commandRuns
         Task { [manager, id] in
             await manager.unsubscribe(id)
+            #if os(macOS)
             await SimulatorStreamer.shared.detach(id)
+            #endif
             // Nobody is reading the output any more.
             for run in runs { await manager.cancelCommand(runId: run) }
         }
@@ -126,7 +127,9 @@ final class PhoneSession: @unchecked Sendable {
                     self.send(.welcome(host: info))
                     await self.manager.refreshSources()
                     self.send(.sessions(items: await self.manager.listSessions()))
+                    #if os(macOS)
                     await SimulatorStreamer.shared.attach(self.id) { [weak self] msg in self?.send(msg) }
+                    #endif
                 }
             } else {
                 log("client \(id.uuidString.prefix(8)) rejected: bad token")
@@ -273,6 +276,7 @@ final class PhoneSession: @unchecked Sendable {
                 send(.sessionSearchResults(query: query, hits: await manager.searchSessions(query: query), error: nil))
             case .liveActivity(let sessionId, let pushToken, let approvalNeedsApp):
                 await manager.registerLiveActivity(sessionId: sessionId, phone: id, token: pushToken, approvalNeedsApp: approvalNeedsApp)
+            #if os(macOS)
             case .listSimulators:
                 send(.simulators(items: await SimulatorStreamer.shared.list()))
             case .simulatorStream(let udid, let enabled, let maxPixelSize, let fps, let codec):
@@ -309,6 +313,19 @@ final class PhoneSession: @unchecked Sendable {
                     log("simulator: input to \(udid.prefix(8)) failed: \(error.localizedDescription)")
                     send(.simulatorInputFailed(udid: udid, message: error.localizedDescription))
                 }
+            #else
+            // No iOS Simulator on Linux: answer the queries with nothing and ignore the rest.
+            case .listSimulators:
+                send(.simulators(items: []))
+            case .listSimulatorApps(let udid):
+                send(.simulatorApps(udid: udid, items: [], error: "No Simulator on this host"))
+            case .simulatorScreenshot(let udid):
+                send(.simulatorScreenshot(udid: udid, jpegBase64: nil, width: 0, height: 0, error: "No Simulator on this host"))
+            case .simulatorAction(let udid, let action):
+                send(.simulatorActionResult(udid: udid, action: action, error: "No Simulator on this host"))
+            case .simulatorStream, .simulatorInput:
+                break
+            #endif
             }
         } catch {
             send(.error(message: "\(error)", sessionId: message.sessionId))

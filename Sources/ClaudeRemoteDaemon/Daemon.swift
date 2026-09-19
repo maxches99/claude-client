@@ -1,7 +1,8 @@
-#if os(macOS)
+#if os(macOS) || os(Linux)
 import Foundation
+#if canImport(Network)
 import Network
-import Security
+#endif
 import ClaudeRemoteCore
 import ClaudeCodeHost
 
@@ -115,13 +116,19 @@ public final class Daemon: @unchecked Sendable {
 
     private let log: @Sendable (String) -> Void
     private let tokenStore: TokenStore
+    #if os(macOS)
     private let tlsIdentity: TLSIdentity?
+    #endif
     private let notifier: Notifier?
     private let registry: DeviceRegistry
     private var server: WebSocketServer?
     private var relay: RelayClient?
+    #if os(macOS)
     private var hooks: HookServer?
+    #endif
+    #if canImport(Network)
     private var pathMonitor: NWPathMonitor?
+    #endif
     private let monitorQueue = DispatchQueue(label: "ccremote.daemon.path")
     private let lock = NSLock()
     private var _status: DaemonStatus
@@ -153,8 +160,9 @@ public final class Daemon: @unchecked Sendable {
 
         try? FileManager.default.createDirectory(atPath: supportDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         tokenStore = TokenStore(Daemon.loadOrCreateToken(directory: supportDirectory, override: tokenOverride, rotate: rotateToken))
-        serviceName = config.serviceName.flatMap { $0.isEmpty ? nil : $0 } ?? (Host.current().localizedName ?? "Mac")
+        serviceName = config.serviceName.flatMap { $0.isEmpty ? nil : $0 } ?? HostPaths.machineName
 
+        #if os(macOS)
         var tls: TLSIdentity?
         if config.useTLS {
             do {
@@ -166,6 +174,12 @@ public final class Daemon: @unchecked Sendable {
         tlsIdentity = tls
         useTLS = tls != nil
         fingerprint = tls?.fingerprint
+        #else
+        // The Linux build serves plain ws:// — put it behind a relay on the same host or a mesh VPN.
+        if config.useTLS { log("TLS is not available in the Linux build; serving plain ws://.") }
+        useTLS = false
+        fingerprint = nil
+        #endif
 
         if config.relayEnabled {
             guard let s = config.relaySecret, !s.isEmpty else { throw DaemonError.relaySecretMissing }
@@ -190,8 +204,10 @@ public final class Daemon: @unchecked Sendable {
         let codexBackend = codex.map { CodexBackend(cli: $0, listenPort: config.codexPort, log: log) }
         manager = SessionManager(cli: cli, codex: codexBackend, notifier: notifier, livePusher: livePusher,
                                  approvalLog: SessionManager.approvalLogPath(supportDirectory: supportDirectory), log: log)
+        #if os(macOS)
         SimulatorStreamer.log = log
         SimulatorInput.log = log
+        #endif
 
         let addresses = NetworkInfo.lanAddresses()
         _status = DaemonStatus(paired: registry.all, addresses: addresses,
@@ -225,7 +241,7 @@ public final class Daemon: @unchecked Sendable {
     private static func makePairing(config: DaemonConfig, token: String, serviceName: String, useTLS: Bool, fingerprint: String?,
                                     room: String?, addresses: [NetworkAddress]) -> PairingURL {
         PairingURL(host: addresses.first?.address ?? "127.0.0.1", port: config.port, token: token, serviceName: serviceName,
-                   fingerprint: fingerprint, useTLS: useTLS, relayURL: config.relayEnabled ? config.relayURL : nil, room: room)
+                   fingerprint: fingerprint, useTLS: useTLS, relayURL: config.relayEnabled ? config.relayURLForPhones : nil, room: room)
     }
 
     private func refreshPairing() {
@@ -243,8 +259,12 @@ public final class Daemon: @unchecked Sendable {
         guard lock.withLock({ !started }) else { return }
         lock.withLock { started = true }
 
+        #if os(macOS)
         let serverTLS: TLSRole = tlsIdentity.map { .server(identity: $0.identity) } ?? .none
-        let server = WebSocketServer(port: config.port, tokenStore: tokenStore, serviceName: serviceName, manager: manager,
+        #else
+        let serverTLS: TLSRole = .none
+        #endif
+        let server = WebSocketServer(port: config.port, listenHost: config.listenHost, tokenStore: tokenStore, serviceName: serviceName, manager: manager,
                                      daemonVersion: Daemon.version, tls: serverTLS, log: log,
                                      onAuthenticated: { [weak self] link in self?.phoneAuthenticated(link) },
                                      onPhoneClosed: { [weak self] id in self?.phoneClosed(id) })
@@ -270,16 +290,20 @@ public final class Daemon: @unchecked Sendable {
         self.server = server
         try server.start()
 
+        #if os(macOS)
         // Permission prompts of Desktop / terminal sessions arrive here when the hook is installed.
         let hooks = HookServer(path: ClaudeHooks.socketPath(supportDirectory: supportDirectory), manager: manager, log: log)
         hooks.start()
         self.hooks = hooks
+        #endif
 
+        #if canImport(Network)
         // Re-derive the LAN address (and the pairing URL) when the network changes.
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] _ in self?.refreshPairing() }
         monitor.start(queue: monitorQueue)
         pathMonitor = monitor
+        #endif
 
         writePairingImage()
         refreshClaudeStatusInBackground()
@@ -325,8 +349,10 @@ public final class Daemon: @unchecked Sendable {
     /// Stops listening, drops phones, ends hosted CLI sessions (transcripts stay on disk).
     public func stop() async {
         lock.withLock { started = false }   // a late listener callback must not start the relay again
+        #if canImport(Network)
         pathMonitor?.cancel()
         pathMonitor = nil
+        #endif
         stopRelay()
         server?.stop()
         server = nil
@@ -415,8 +441,7 @@ public final class Daemon: @unchecked Sendable {
             return t
         }
         try? fm.createDirectory(atPath: directory, withIntermediateDirectories: true)
-        var bytes = [UInt8](repeating: 0, count: 16)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        let bytes = (0..<16).map { _ in UInt8.random(in: 0...255, using: &SecureRandom.generator) }
         let t = bytes.map { String(format: "%02x", $0) }.joined()
         fm.createFile(atPath: path, contents: Data(t.utf8), attributes: [.posixPermissions: 0o600])
         return t
@@ -430,8 +455,7 @@ public final class Daemon: @unchecked Sendable {
             return r
         }
         try? fm.createDirectory(atPath: directory, withIntermediateDirectories: true)
-        var bytes = [UInt8](repeating: 0, count: 8)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        let bytes = (0..<8).map { _ in UInt8.random(in: 0...255, using: &SecureRandom.generator) }
         let r = bytes.map { String(format: "%02x", $0) }.joined()
         fm.createFile(atPath: path, contents: Data(r.utf8), attributes: [.posixPermissions: 0o600])
         return r

@@ -1,5 +1,8 @@
-#if os(macOS)
+#if os(macOS) || os(Linux)
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Sends phone notifications for session events (permission needed, turn done, error) via
 /// ntfy.sh and/or a Telegram bot — no Apple Developer account or APNs required.

@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) || os(Linux)
 import Foundation
 import UniformTypeIdentifiers
 import ClaudeRemoteCore
@@ -71,7 +71,7 @@ public actor SessionManager {
 
     /// Chats run in their own scratch directory; that is also how a chat is recognised later
     /// (a session whose cwd is this directory), for both agents and across restarts.
-    public static let chatDirectory = NSHomeDirectory() + "/Library/Application Support/ccremote/chats"
+    public static let chatDirectory = HostPaths.supportDirectory + "/chats"
 
     /// Replaces the coding-agent system prompt in a chat session.
     static let chatSystemPrompt = """
@@ -205,7 +205,7 @@ public actor SessionManager {
             if cachedCodexVersion == nil { cachedCodexVersion = codex.cli.version() }
             codexInfo = CodexInfo(path: codex.cli.path, version: cachedCodexVersion, loggedIn: await codex.loggedIn)
         }
-        return HostInfo(hostName: Host.current().localizedName ?? ProcessInfo.processInfo.hostName, daemonVersion: daemonVersion,
+        return HostInfo(hostName: HostPaths.machineName, daemonVersion: daemonVersion,
                         cliVersion: cachedCliVersion, cliPath: cli.path, loggedIn: cachedLoggedIn, codex: codexInfo, livePush: livePusher != nil)
     }
 
@@ -562,11 +562,16 @@ public actor SessionManager {
                 guard let socket = w.live.messagingSocketPath else {
                     throw ManagerError.notDrivable("This session has no messaging inbox; fork it to continue from the phone.")
                 }
+                #if os(macOS)
                 // The inbox channel only carries text; images are supported on phone-hosted sessions.
                 try PeerInbox.send(text: text, socketPath: socket, pid: w.live.pid, sessionsDirectory: registry.directory)
                 w.state.status = .running
                 broadcast(.state(state: w.state))
                 return
+                #else
+                _ = socket
+                throw ManagerError.notDrivable("Writing into sessions of another process is not supported on this platform; fork it to continue from the phone.")
+                #endif
             }
             throw ManagerError.unknownSession(sessionId)
         }

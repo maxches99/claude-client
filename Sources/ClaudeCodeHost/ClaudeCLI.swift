@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) || os(Linux)
 import Foundation
 
 /// Locates and describes the `claude` binary on this Mac.
@@ -17,6 +17,7 @@ public struct ClaudeCLI: Sendable {
             return ClaudeCLI(path: override)
         }
         let home = NSHomeDirectory()
+        #if os(macOS)
         let desktopRoot = home + "/Library/Application Support/Claude/claude-code"
         if let versions = try? fm.contentsOfDirectory(atPath: desktopRoot) {
             let sorted = versions.filter { !$0.hasPrefix(".") }.sorted { $0.compare($1, options: .numeric) == .orderedDescending }
@@ -25,16 +26,26 @@ public struct ClaudeCLI: Sendable {
                 if fm.isExecutableFile(atPath: candidate) { return ClaudeCLI(path: candidate) }
             }
         }
-        for candidate in [home + "/.claude/local/claude", home + "/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"] {
+        #endif
+        let fixed = [home + "/.claude/local/claude", home + "/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude", "/usr/bin/claude"]
+        for candidate in fixed + pathCandidates(named: "claude", environment: environment) {
             if fm.isExecutableFile(atPath: candidate) { return ClaudeCLI(path: candidate) }
         }
         return nil
     }
 
+    /// `<dir>/<name>` for every directory on `$PATH` (a systemd unit's PATH is short, so the
+    /// fixed spots above still come first).
+    static func pathCandidates(named name: String, environment: [String: String]) -> [String] {
+        (environment["PATH"] ?? "").split(separator: ":").map { String($0) + "/" + name }
+    }
+
     /// Environment for child processes: inherit the shell, but drop variables a parent
     /// Claude Code session would leave behind (they make the CLI think it is nested).
     public static func childEnvironment(base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
-        var env = base.filter { key, _ in !key.hasPrefix("CLAUDE") && key != "BAGGAGE" && key != "AI_AGENT" }
+        // Keep the headless-auth variables (a Linux hub logs in with `claude setup-token`).
+        let keep: Set<String> = ["CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"]
+        var env = base.filter { key, _ in keep.contains(key) || (!key.hasPrefix("CLAUDE") && key != "BAGGAGE" && key != "AI_AGENT") }
         if env["HOME"] == nil { env["HOME"] = NSHomeDirectory() }
         return env
     }

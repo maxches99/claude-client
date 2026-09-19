@@ -13,6 +13,7 @@ func usage() -> Never {
     flags override them for this run.
 
       --port N       TCP port to listen on (default 7811)
+      --listen HOST  address to bind the listener to (default: all interfaces; 127.0.0.1 for a relay-only hub)
       --token TOKEN  pairing token (default: generated once, stored in the support dir)
       --claude PATH  path to the claude binary (default: Claude Desktop's bundled CLI, else PATH)
       --codex PATH   path to the codex binary (default: PATH, else the Codex app's bundled CLI)
@@ -25,6 +26,8 @@ func usage() -> Never {
       --relay URL    also reach phones through a relay you run, e.g. wss://vps.example.com
       --no-relay     ignore the relay from config.json (a test daemon must not take over the real Mac's relay room)
       --relay-secret S   shared secret the daemon presents to the relay's /agent endpoint
+      --relay-public URL   relay address for the pairing URL when phones reach the relay differently
+                     (a hub on the relay's machine dials ws://127.0.0.1:8787, phones use wss://host:port)
       --room R       relay room id (default: stable per-Mac id in the support dir)
       --relay-fingerprint FP   pin the relay's TLS cert (SHA-256 hex) instead of system trust
       --ntfy TOPIC   phone notifications via ntfy: a topic (uses ntfy.sh) or a full URL
@@ -104,7 +107,11 @@ do {
 func printPairing() {
     let status = daemon.status
     let pairing = status.pairing
+    #if os(macOS)
     print("Bonjour: \(daemon.serviceName) (_ccremote._tcp) · port \(pairing.port)")
+    #else
+    print("Host: \(daemon.serviceName) · port \(pairing.port)")
+    #endif
     for a in status.addresses { print("  \(a.interface): \(pairing.scheme)://\(a.address):\(pairing.port)") }
     print("Pairing token: \(pairing.token)")
     if let fp = pairing.fingerprint { print("TLS cert fingerprint (SHA-256): \(fp)") }

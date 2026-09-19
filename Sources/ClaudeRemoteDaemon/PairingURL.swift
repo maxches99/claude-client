@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) || os(Linux)
 import Foundation
 
 /// The `ccremote://pair?…` URL the phone scans: a direct route (LAN address + port + cert

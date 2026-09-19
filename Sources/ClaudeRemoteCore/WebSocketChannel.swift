@@ -1,3 +1,4 @@
+#if canImport(Network)
 import Foundation
 import Network
 import Security
@@ -48,6 +49,11 @@ public final class WebSocketChannel: @unchecked Sendable {
     public init(connection: NWConnection, queue: DispatchQueue) {
         self.connection = connection
         self.queue = queue
+    }
+
+    /// An outgoing connection; nothing happens until `start()`.
+    public static func connect(url: URL, tls: TLSRole, queue: DispatchQueue) -> WebSocketChannel {
+        WebSocketChannel(connection: NWConnection(to: .url(url), using: parameters(tls: tls)), queue: queue)
     }
 
     private static let verifyQueue = DispatchQueue(label: "ccremote.tls.verify")
@@ -174,3 +180,4 @@ public final class WebSocketChannel: @unchecked Sendable {
         }
     }
 }
+#endif

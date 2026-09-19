@@ -1,6 +1,5 @@
-#if os(macOS)
+#if os(macOS) || os(Linux)
 import Foundation
-import Network
 import ClaudeRemoteCore
 import ClaudeCodeHost
 
@@ -109,8 +108,7 @@ final class RelayClient: @unchecked Sendable {
         let url = endpoint("agent", query: [.init(name: "room", value: room), .init(name: "secret", value: secret)])
         log("relay: connecting control → \(url.host ?? "?")")
         onState?(.connecting)
-        let connection = NWConnection(to: .url(url), using: WebSocketChannel.parameters(tls: tlsRole))
-        let channel = WebSocketChannel(connection: connection, queue: queue)
+        let channel = WebSocketChannel.connect(url: url, tls: tlsRole, queue: queue)
         control = channel
         channel.onState = { [weak self] state in
             guard let self else { return }
@@ -158,8 +156,7 @@ final class RelayClient: @unchecked Sendable {
 
     private func openBridge(connId: String) {
         let url = endpoint("agent-conn", query: [.init(name: "room", value: room), .init(name: "secret", value: secret), .init(name: "conn", value: connId)])
-        let connection = NWConnection(to: .url(url), using: WebSocketChannel.parameters(tls: tlsRole))
-        let channel = WebSocketChannel(connection: connection, queue: queue)
+        let channel = WebSocketChannel.connect(url: url, tls: tlsRole, queue: queue)
         let session = PhoneSession(channel: channel, route: .relay, remote: nil, manager: manager, tokenStore: tokenStore, daemonVersion: daemonVersion, log: log,
                                    onAuthenticated: onAuthenticated,
                                    onClose: { [weak self] id in

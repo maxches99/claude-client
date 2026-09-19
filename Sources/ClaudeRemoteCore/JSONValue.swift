@@ -40,8 +40,16 @@ public enum JSONValue: Codable, Equatable, Hashable, Sendable {
     public init(any: Any) {
         switch any {
         case is NSNull: self = .null
+        #if canImport(Darwin)
         case let n as NSNumber:
             if CFGetTypeID(n) == CFBooleanGetTypeID() { self = .bool(n.boolValue) } else { self = .number(n.doubleValue) }
+        #else
+        // swift-corelibs JSONSerialization yields native Bool/Int/Double, not toll-free-bridged NSNumbers.
+        case let b as Bool: self = .bool(b)
+        case let i as Int: self = .number(Double(i))
+        case let d as Double: self = .number(d)
+        case let n as NSNumber: self = .number(n.doubleValue)
+        #endif
         case let s as String: self = .string(s)
         case let a as [Any]: self = .array(a.map(JSONValue.init(any:)))
         case let o as [String: Any]: self = .object(o.mapValues(JSONValue.init(any:)))

@@ -1,5 +1,12 @@
-#if os(macOS)
+#if os(macOS) || os(Linux)
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 
 /// Locates and describes the `codex` binary on this Mac.
 public struct CodexCLI: Sendable {
@@ -17,10 +24,13 @@ public struct CodexCLI: Sendable {
             return CodexCLI(path: override)
         }
         let home = NSHomeDirectory()
-        var candidates = [home + "/.local/bin/codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", home + "/.npm-global/bin/codex"]
+        var candidates = [home + "/.local/bin/codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", home + "/.npm-global/bin/codex", "/usr/bin/codex"]
+        #if os(macOS)
         for app in ["/Applications/Codex.app", home + "/Applications/Codex.app", "/Applications/ChatGPT.app", home + "/Applications/ChatGPT.app"] {
             candidates.append(app + "/Contents/Resources/codex")
         }
+        #endif
+        candidates += ClaudeCLI.pathCandidates(named: "codex", environment: environment)
         return candidates.first(where: fm.isExecutableFile(atPath:)).map(CodexCLI.init(path:))
     }
 
@@ -42,18 +52,18 @@ public struct CodexCLI: Sendable {
     public static func threadsOpenElsewhere(codexHome: String = NSHomeDirectory() + "/.codex") -> Set<String> {
         let directory = codexHome + "/thread-writer-locks"
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else { return [] }
-        var open: Set<String> = []
+        var held: Set<String> = []
         for name in names where name.hasSuffix(".lock") {
-            let fd = Darwin.open(directory + "/" + name, O_RDONLY)
+            let fd = open(directory + "/" + name, O_RDONLY)
             guard fd >= 0 else { continue }
             if flock(fd, LOCK_EX | LOCK_NB) == 0 {
                 flock(fd, LOCK_UN)          // nobody holds it: the thread is closed
             } else if errno == EWOULDBLOCK {
-                open.insert(String(name.dropLast(5)))
+                held.insert(String(name.dropLast(5)))
             }
-            Darwin.close(fd)
+            close(fd)
         }
-        return open
+        return held
     }
 
     /// Queues a message for a thread owned by another process (the Codex app picks it up).
