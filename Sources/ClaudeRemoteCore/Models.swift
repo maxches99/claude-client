@@ -169,3 +169,41 @@ public enum PermissionMode: String, CaseIterable, Codable, Sendable {
         }
     }
 }
+
+/// A booted iOS Simulator on the Mac, as listed by `simctl`.
+public struct SimulatorInfo: Codable, Equatable, Identifiable, Sendable {
+    public var udid: String
+    public var name: String
+    /// Human-readable runtime, e.g. "iOS 26.2".
+    public var runtime: String
+    public var state: String
+
+    public var id: String { udid }
+
+    public init(udid: String, name: String, runtime: String, state: String) {
+        self.udid = udid
+        self.name = name
+        self.runtime = runtime
+        self.state = state
+    }
+}
+
+/// One frame of a simulator live view. `jpegBase64 == nil` is a heartbeat: the screen has not
+/// changed since the previous frame, so nothing was re-sent.
+public struct SimulatorFrame: Codable, Equatable, Sendable {
+    public var udid: String
+    public var seq: Int
+    public var width: Int
+    public var height: Int
+    public var jpegBase64: String?
+    public var capturedAt: Date
+
+    public init(udid: String, seq: Int, width: Int, height: Int, jpegBase64: String?, capturedAt: Date) {
+        self.udid = udid
+        self.seq = seq
+        self.width = width
+        self.height = height
+        self.jpegBase64 = jpegBase64
+        self.capturedAt = capturedAt
+    }
+}

@@ -196,6 +196,7 @@ if notifierConfig.isEnabled {
 }
 
 let manager = SessionManager(cli: cli, notifier: notifier, log: { log($0) })
+SimulatorStreamer.log = { log($0) }
 let serverTLS: TLSRole = tlsIdentity.map { .server(identity: $0.identity) } ?? .none
 let server = WebSocketServer(port: port, token: token, serviceName: serviceName, manager: manager, daemonVersion: daemonVersion, tls: serverTLS, log: { log($0) })
 

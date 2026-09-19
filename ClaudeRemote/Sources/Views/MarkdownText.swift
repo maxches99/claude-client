@@ -34,10 +34,13 @@ struct MarkdownBlockView: View {
         case .heading(let level, let text):
             Text(MarkdownInline.attributed(text, codeSize: headingCodeSize(level)))
                 .font(headingFont(level))
+                .foregroundStyle(CDS.textPrimary)
                 .textSelection(.enabled)
                 .padding(.top, level <= 2 ? 4 : 2)
         case .paragraph(let text):
             Text(MarkdownInline.attributed(text))
+                .font(CDS.prose)
+                .foregroundStyle(CDS.textPrimary)
                 .textSelection(.enabled)
         case .code(let code, let language):
             CodeBlockView(code: code, language: language)
@@ -45,13 +48,13 @@ struct MarkdownBlockView: View {
             MarkdownListView(ordered: ordered, start: start, items: items, depth: depth)
         case .quote(let blocks):
             MarkdownBlocksView(blocks: blocks, depth: depth)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(CDS.textSecondary)
                 .padding(.leading, 12)
                 .overlay(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 1.5).fill(Color.secondary.opacity(0.4)).frame(width: 3)
+                    RoundedRectangle(cornerRadius: 1.5).fill(CDS.borderStrong).frame(width: 3)
                 }
         case .rule:
-            Divider().padding(.vertical, 2)
+            Divider().overlay(CDS.border).padding(.vertical, 2)
         case .table(let header, let rows, let alignments):
             MarkdownTableView(header: header, rows: rows, alignments: alignments)
         }
@@ -59,8 +62,8 @@ struct MarkdownBlockView: View {
 
     private func headingFont(_ level: Int) -> Font {
         switch level {
-        case 1: return .title2.bold()
-        case 2: return .title3.bold()
+        case 1: return .title2.weight(.semibold)
+        case 2: return .title3.weight(.semibold)
         case 3: return .headline
         default: return .subheadline.weight(.semibold)
         }
@@ -96,11 +99,11 @@ struct MarkdownListView: View {
     private func marker(index: Int, item: MarkdownListItem) -> some View {
         if let checked = item.checked {
             Image(systemName: checked ? "checkmark.square.fill" : "square")
-                .foregroundStyle(checked ? Color.accentColor : Color.secondary)
+                .foregroundStyle(checked ? CDS.brand : CDS.textMuted)
         } else if ordered {
-            Text("\(start + index).").monospacedDigit().foregroundStyle(.secondary)
+            Text("\(start + index).").monospacedDigit().foregroundStyle(CDS.textSecondary)
         } else {
-            Text(Self.bullets[min(depth, Self.bullets.count - 1)]).foregroundStyle(.secondary)
+            Text(Self.bullets[min(depth, Self.bullets.count - 1)]).foregroundStyle(CDS.textSecondary)
         }
     }
 }
@@ -113,7 +116,7 @@ struct CodeBlockView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(language ?? "").font(.caption2).foregroundStyle(.tertiary)
+                Text(language ?? "").font(.caption2.weight(.medium)).foregroundStyle(CDS.textMuted)
                 Spacer()
                 Button {
                     UIPasteboard.general.string = code
@@ -126,17 +129,19 @@ struct CodeBlockView: View {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.caption2)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(copied ? Color.green : Color.secondary)
+                .foregroundStyle(copied ? CDS.success : CDS.textMuted)
             }
             .padding(.horizontal, 10).padding(.top, 6)
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(code)
-                    .font(.system(.footnote, design: .monospaced))
+                    .font(CDS.code)
+                    .foregroundStyle(CDS.textPrimary)
                     .textSelection(.enabled)
                     .padding(.horizontal, 10).padding(.vertical, 8)
             }
         }
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+        .background(CDS.fillNeutral, in: RoundedRectangle(cornerRadius: CDS.radius))
+        .overlay(RoundedRectangle(cornerRadius: CDS.radius).strokeBorder(CDS.border))
     }
 }
 
@@ -162,8 +167,8 @@ struct MarkdownTableView: View {
                     }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(.separator)))
+            .clipShape(RoundedRectangle(cornerRadius: CDS.radius - 2))
+            .overlay(RoundedRectangle(cornerRadius: CDS.radius - 2).strokeBorder(CDS.border))
         }
     }
 
@@ -175,6 +180,7 @@ struct MarkdownTableView: View {
         }
         return Text(MarkdownInline.attributed(text, codeSize: UIFont.preferredFont(forTextStyle: .subheadline).pointSize - 1))
             .font(.subheadline)
+            .foregroundStyle(CDS.textPrimary)
             .textSelection(.enabled)
             .padding(.horizontal, 10).padding(.vertical, 6)
             .gridColumnAlignment(alignment)
@@ -191,7 +197,7 @@ enum MarkdownInline {
         for run in a.runs {
             guard let intent = run.inlinePresentationIntent, intent.contains(.code) else { continue }
             a[run.range].font = .system(size: codeSize, design: .monospaced)
-            a[run.range].backgroundColor = Color(.tertiarySystemFill)
+            a[run.range].backgroundColor = CDS.alpha2
         }
         return a
     }

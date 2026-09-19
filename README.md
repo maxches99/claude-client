@@ -74,6 +74,16 @@ Inline images in the transcript (pasted images, screenshots returned by tools) r
 chat. Files delivered by a `SendUserFile` tool call are fetched from the Mac on demand and
 shown inline when they are images (≤ 12 MB); other files show their path to open on the Mac.
 
+## Simulator live view
+
+When an iOS Simulator is booted on the Mac (e.g. the agent is driving your app in it), a phone
+icon appears in the toolbar. It opens a live view of the simulator's screen: the daemon captures
+frames with `xcrun simctl io <udid> screenshot`, downscales them (≤ 1000 px, JPEG) and streams
+them over the same WebSocket at up to 3–4 fps — only while the view is open, and only frames
+that changed (a static screen costs nothing but a heartbeat). Several booted simulators can be
+switched from the view's menu. Frames are view-only for now; the agent's own screenshots still
+land in the transcript as before.
+
 ## Remote access (off Wi-Fi)
 
 Bonjour discovery is LAN-only, but the pairing URL/QR carries a direct address **and** an optional

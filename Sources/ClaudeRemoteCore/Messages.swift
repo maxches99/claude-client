@@ -20,6 +20,11 @@ public enum ClientMessage: Codable, Sendable {
     case close(sessionId: String)
     /// Read an image file from the Mac (e.g. one referenced by a SendUserFile tool call).
     case fetchFile(path: String)
+    /// Booted iOS Simulators on the Mac (also pushed as `simulators` whenever the set changes).
+    case listSimulators
+    /// Start / stop receiving live frames of a booted simulator. `maxPixelSize` bounds the frame's
+    /// longer side, `fps` the capture rate (capped by the daemon). Frames stop when the phone disconnects.
+    case simulatorStream(udid: String, enabled: Bool, maxPixelSize: Int?, fps: Double?)
     case ping
 }
 
@@ -37,6 +42,8 @@ public enum ServerMessage: Codable, Sendable {
     case permissionResolved(sessionId: String, requestId: String)
     case state(state: SessionState)
     case file(path: String, mediaType: String?, base64: String?, error: String?)
+    case simulators(items: [SimulatorInfo])
+    case simulatorFrame(frame: SimulatorFrame)
     case pong
 }
 

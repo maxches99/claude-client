@@ -7,6 +7,7 @@ import ClaudeRemoteCore
 final class AppModel {
     let connection = HostConnection()
     let imageCache = ImageCache()
+    let simulatorFeed = SimulatorFeed()
 
     var pairing: PairingInfo?
     var sessions: [SessionSummary] = []
@@ -178,6 +179,7 @@ final class AppModel {
             refresh()
             // Re-attach to everything we were looking at before the reconnect.
             for id in path { connection.send(.open(sessionId: id)) }
+            if let udid = simulatorFeed.watching { sendSimulatorStream(udid, enabled: true) }
         case .error(let text, _):
             errorBanner = text
         case .sessions(let items):
@@ -212,8 +214,31 @@ final class AppModel {
             } else {
                 imageCache.fail(key: "file:\(path)")
             }
+        case .simulators(let items):
+            simulatorFeed.devices = items
+        case .simulatorFrame(let frame):
+            simulatorFeed.receive(frame)
         case .pong:
             break
         }
+    }
+
+    // MARK: simulator live view
+
+    func watchSimulator(_ udid: String) {
+        if let current = simulatorFeed.watching, current != udid { sendSimulatorStream(current, enabled: false) }
+        simulatorFeed.startWatching(udid)
+        sendSimulatorStream(udid, enabled: true)
+    }
+
+    func stopWatchingSimulator() {
+        if let udid = simulatorFeed.watching { sendSimulatorStream(udid, enabled: false) }
+        simulatorFeed.stopWatching()
+    }
+
+    private func sendSimulatorStream(_ udid: String, enabled: Bool) {
+        connection.send(.simulatorStream(udid: udid, enabled: enabled,
+                                         maxPixelSize: enabled ? SimulatorFeed.maxPixelSize : nil,
+                                         fps: enabled ? SimulatorFeed.fps : nil))
     }
 }

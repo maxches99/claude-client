@@ -4,8 +4,11 @@ import ClaudeRemoteCore
 struct NewSessionView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    /// Selected project path, `customTag` for a typed path, or "" until the project list arrives.
     @State private var cwd = ""
     @State private var customPath = ""
+    private static let customTag = "custom"
+    private var isCustom: Bool { cwd == Self.customTag }
     @State private var modelId = "claude-opus-5"
     @State private var mode: PermissionMode = .manual
 
@@ -20,13 +23,13 @@ struct NewSessionView: View {
             Form {
                 Section("Project") {
                     Picker("Recent", selection: $cwd) {
-                        Text("Custom path…").tag("")
+                        Text("Custom path…").tag(Self.customTag)
                         ForEach(model.projects) { p in
                             Text("\(p.name)  (\(ToolSummary.shortPath(p.path)))").tag(p.path)
                         }
                     }
                     .pickerStyle(.navigationLink)
-                    if cwd.isEmpty {
+                    if isCustom {
                         TextField("/Users/you/project", text: $customPath)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                     }
@@ -41,25 +44,32 @@ struct NewSessionView: View {
                     Picker("Mode", selection: $mode) {
                         ForEach(PermissionMode.allCases, id: \.self) { m in Text(m.label).tag(m) }
                     }
-                    Text(modeHint).font(.footnote).foregroundStyle(.secondary)
+                    Text(modeHint).font(.footnote).foregroundStyle(CDS.textSecondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(CDS.surface0)
             .navigationTitle("New session")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(CDS.surface0, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Start") {
-                        let path = cwd.isEmpty ? customPath.trimmingCharacters(in: .whitespaces) : cwd
+                        let path = isCustom ? customPath.trimmingCharacters(in: .whitespaces) : cwd
                         model.create(NewSessionOptions(cwd: path, model: modelId, permissionMode: mode.rawValue))
                         dismiss()
                     }
-                    .disabled(cwd.isEmpty && customPath.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(cwd.isEmpty || (isCustom && customPath.trimmingCharacters(in: .whitespaces).isEmpty))
                 }
             }
             .onAppear {
+                // Default to the most recent project once; "Custom path…" must survive coming back from the picker.
                 if cwd.isEmpty, let first = model.projects.first { cwd = first.path }
                 if model.projects.isEmpty { model.refresh() }
+            }
+            .onChange(of: model.projects) { _, projects in
+                if cwd.isEmpty, let first = projects.first { cwd = first.path }
             }
         }
     }

@@ -46,7 +46,10 @@ final class PhoneSession: @unchecked Sendable {
         closed = true
         log("client \(id.uuidString.prefix(8)) gone (\(reason))")
         onClose(id)
-        Task { [manager, id] in await manager.unsubscribe(id) }
+        Task { [manager, id] in
+            await manager.unsubscribe(id)
+            await SimulatorStreamer.shared.detach(id)
+        }
     }
 
     func send(_ message: ServerMessage) {
@@ -72,6 +75,7 @@ final class PhoneSession: @unchecked Sendable {
                     let info = await self.manager.hostInfo(daemonVersion: self.daemonVersion)
                     self.send(.welcome(host: info))
                     self.send(.sessions(items: await self.manager.listSessions()))
+                    await SimulatorStreamer.shared.attach(self.id) { [weak self] msg in self?.send(msg) }
                 }
             } else {
                 log("client \(id.uuidString.prefix(8)) rejected: bad token")
@@ -122,6 +126,14 @@ final class PhoneSession: @unchecked Sendable {
                     send(.file(path: path, mediaType: file.mediaType, base64: file.data.base64EncodedString(), error: nil))
                 } catch {
                     send(.file(path: path, mediaType: nil, base64: nil, error: "\(error)"))
+                }
+            case .listSimulators:
+                send(.simulators(items: await SimulatorStreamer.shared.list()))
+            case .simulatorStream(let udid, let enabled, let maxPixelSize, let fps):
+                if enabled {
+                    await SimulatorStreamer.shared.watch(udid: udid, id: id, maxPixelSize: maxPixelSize, fps: fps) { [weak self] msg in self?.send(msg) }
+                } else {
+                    await SimulatorStreamer.shared.unwatch(udid: udid, id: id)
                 }
             }
         } catch {
