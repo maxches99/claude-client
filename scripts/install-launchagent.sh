@@ -8,9 +8,17 @@ set -e
 cd "$(dirname "$0")/.."
 swift build -c release --product ccremote
 mkdir -p "$HOME/.local/bin" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-cp .build/release/ccremote "$HOME/.local/bin/ccremote"
 
 PLIST="$HOME/Library/LaunchAgents/dev.maxches.ccremote.plist"
+
+# Stop the running agent BEFORE replacing its binary — overwriting a running executable in
+# place breaks its code signature and macOS then kills it (OS_REASON_CODESIGNING). Install
+# atomically (temp + re-sign + mv) so the on-disk binary is always a valid, complete image.
+launchctl bootout "gui/$(id -u)/dev.maxches.ccremote" 2>/dev/null || true
+launchctl unload "$PLIST" 2>/dev/null || true
+cp .build/release/ccremote "$HOME/.local/bin/ccremote.new"
+codesign --force --sign - "$HOME/.local/bin/ccremote.new" 2>/dev/null || true
+mv -f "$HOME/.local/bin/ccremote.new" "$HOME/.local/bin/ccremote"
 
 # Build the <array> of ProgramArguments: caffeinate -s keeps the system awake
 # (on AC power) only while ccremote runs — no global pmset change needed.

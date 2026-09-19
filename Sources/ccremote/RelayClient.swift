@@ -26,6 +26,7 @@ final class RelayClient: @unchecked Sendable {
     private let lock = NSLock()
     private var retryDelay: TimeInterval = 1
     private var running = true
+    private var keepalive: DispatchSourceTimer?
 
     init(base: URL, room: String, secret: String, fingerprint: String?, manager: SessionManager,
          token: String, daemonVersion: String, log: @escaping @Sendable (String) -> Void) {
@@ -57,11 +58,24 @@ final class RelayClient: @unchecked Sendable {
 
     func stop() {
         running = false
+        keepalive?.cancel(); keepalive = nil
         control?.close()
         lock.withLock {
             for s in sessions.values { _ = s }
             sessions.removeAll()
         }
+    }
+
+    /// Keeps the idle control connection warm so a reverse proxy (Caddy) doesn't drop it.
+    private func startKeepalive() {
+        keepalive?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 45, repeating: 45)
+        timer.setEventHandler { [weak self] in
+            self?.control?.send(text: "{\"t\":\"ping\"}")
+        }
+        timer.resume()
+        keepalive = timer
     }
 
     private func connectControl() {
@@ -77,10 +91,13 @@ final class RelayClient: @unchecked Sendable {
             case .ready:
                 self.retryDelay = 1
                 self.log("relay: control connected (room \(self.room))")
+                self.startKeepalive()
             case .failed(let error):
                 self.log("relay: control failed: \(error)")
+                self.keepalive?.cancel(); self.keepalive = nil
                 self.scheduleReconnect()
             case .cancelled:
+                self.keepalive?.cancel(); self.keepalive = nil
                 self.scheduleReconnect()
             case .waiting(let error):
                 self.log("relay: waiting (\(error))")

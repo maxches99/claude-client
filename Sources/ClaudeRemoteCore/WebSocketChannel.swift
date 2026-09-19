@@ -70,6 +70,17 @@ public final class WebSocketChannel: @unchecked Sendable {
         case .clientDefault:
             params = NWParameters(tls: NWProtocolTLS.Options())   // default CA + hostname validation
         }
+        // TCP keepalive so a dead or half-open connection (idle proxy drop, NAT timeout, sleep)
+        // is detected by the OS and surfaced as `.failed`, letting the owner reconnect. Also caps
+        // connect time so a racing route to an unreachable address fails fast.
+        if let tcp = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
+            tcp.enableKeepalive = true
+            tcp.keepaliveIdle = 15       // start probing after 15s idle
+            tcp.keepaliveInterval = 5    // probe every 5s
+            tcp.keepaliveCount = 3       // dead after ~3 missed probes (~30s)
+            tcp.connectionTimeout = 10   // give up connecting after 10s
+            tcp.noDelay = true
+        }
         let ws = NWProtocolWebSocket.Options()
         ws.autoReplyPing = true
         ws.maximumMessageSize = 64 * 1024 * 1024
@@ -117,8 +128,10 @@ public final class WebSocketChannel: @unchecked Sendable {
     private func receiveLoop() {
         connection.receiveMessage { [weak self] content, context, _, error in
             guard let self else { return }
-            if let error {
-                _ = error
+            if error != nil {
+                // A read error means the peer/proxy dropped us (e.g. an idle timeout). Cancel so the
+                // state handler fires `.cancelled` and the owner can reconnect — don't just stop reading.
+                self.connection.cancel()
                 return
             }
             if let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata {
