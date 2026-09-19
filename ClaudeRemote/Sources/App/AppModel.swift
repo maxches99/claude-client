@@ -132,7 +132,10 @@ final class AppModel {
     // MARK: app lock
 
     func lockOnBackground() {
-        if lockAppWithBiometrics { locked = true }
+        if lockAppWithBiometrics {
+            locked = true
+            Biometrics.resetReuse()   // require a fresh check after the app was away
+        }
     }
 
     func unlock() {
