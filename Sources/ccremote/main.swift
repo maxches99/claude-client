@@ -158,6 +158,11 @@ func printPairing() {
     if let fingerprint { print("TLS cert fingerprint (SHA-256): \(fingerprint)") }
     if let relayURLString, let room { print("Relay: \(relayURLString) room \(room)") }
     print("Pair URL: \(pairURL)")
+    let pngPath = supportDir + "/pairing-qr.png"
+    if QRImage.write(pairURL, to: pngPath) {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pngPath)
+        print("QR image: \(pngPath)  (open it and scan — reliable even for long URLs)")
+    }
     if !quiet, let lines = QRCode.terminalLines(for: pairURL) {
         print("")
         for l in lines { print(l) }
