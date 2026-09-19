@@ -18,9 +18,25 @@ final class AppModel {
     /// Session ids pushed onto the navigation stack.
     var path: [String] = []
 
+    // MARK: Face ID / biometrics
+    /// Require Face ID before approving a tool (each Allow runs code on the Mac). Default on.
+    var requireBiometricsForApproval: Bool {
+        didSet { UserDefaults.standard.set(requireBiometricsForApproval, forKey: "ccremote.faceid.approval") }
+    }
+    /// Require Face ID to open the app (after it goes to the background). Default off.
+    var lockAppWithBiometrics: Bool {
+        didSet { UserDefaults.standard.set(lockAppWithBiometrics, forKey: "ccremote.faceid.applock") }
+    }
+    /// The app is currently covered by the lock screen.
+    var locked = false
+
     private var awaitingCreatedSession = false
 
     init() {
+        let defaults = UserDefaults.standard
+        requireBiometricsForApproval = defaults.object(forKey: "ccremote.faceid.approval") as? Bool ?? true
+        lockAppWithBiometrics = defaults.bool(forKey: "ccremote.faceid.applock")
+        locked = lockAppWithBiometrics
         connection.onMessage = { [weak self] message in self?.handle(message) }
         connection.onLearnedFingerprint = { [weak self] fp in
             guard let self, var p = self.pairing, p.fingerprint == nil else { return }
@@ -91,13 +107,38 @@ final class AppModel {
         connection.send(.create(options: options))
     }
 
-    func prompt(_ sessionId: String, text: String) {
-        connection.send(.prompt(sessionId: sessionId, text: text))
+    func prompt(_ sessionId: String, text: String, images: [InlineImage] = []) {
+        connection.send(.prompt(sessionId: sessionId, text: text, images: images))
     }
 
     func decide(_ request: PermissionRequest, allow: Bool, reason: String? = nil) {
+        // Approving runs a tool on the Mac — gate Allow behind Face ID when enabled. Deny is never gated.
+        if allow && requireBiometricsForApproval {
+            Task { @MainActor in
+                let ok = await Biometrics.authenticate(reason: "Approve \(request.toolName)")
+                guard ok else { return }   // failed/cancelled → leave the request pending to retry
+                self.sendDecision(request, allow: true, reason: reason)
+            }
+            return
+        }
+        sendDecision(request, allow: allow, reason: reason)
+    }
+
+    private func sendDecision(_ request: PermissionRequest, allow: Bool, reason: String?) {
         connection.send(.permission(sessionId: request.sessionId, requestId: request.id, allow: allow, message: reason))
         permissions.removeAll { $0.id == request.id }
+    }
+
+    // MARK: app lock
+
+    func lockOnBackground() {
+        if lockAppWithBiometrics { locked = true }
+    }
+
+    func unlock() {
+        Task { @MainActor in
+            if await Biometrics.authenticate(reason: "Unlock ClaudeRemote") { locked = false }
+        }
     }
 
     func interrupt(_ sessionId: String) {

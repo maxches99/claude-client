@@ -50,6 +50,7 @@ public actor SessionManager {
     private let cli: ClaudeCLI
     private let store: TranscriptStore
     private let registry: LiveSessionRegistry
+    private let notifier: Notifier?
     private let log: @Sendable (String) -> Void
     private var subscribers: [UUID: Sender] = [:]
     private var hosted: [String: Hosted] = [:]
@@ -58,10 +59,11 @@ public actor SessionManager {
     private var cachedLoggedIn: Bool?
 
     public init(cli: ClaudeCLI, store: TranscriptStore = TranscriptStore(), registry: LiveSessionRegistry = LiveSessionRegistry(),
-                log: @escaping @Sendable (String) -> Void = { _ in }) {
+                notifier: Notifier? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.cli = cli
         self.store = store
         self.registry = registry
+        self.notifier = notifier
         self.log = log
     }
 
@@ -251,12 +253,13 @@ public actor SessionManager {
 
     // MARK: driving
 
-    public func prompt(sessionId: String, text: String) throws {
+    public func prompt(sessionId: String, text: String, images: [InlineImage] = []) throws {
         guard let h = hosted[sessionId] else {
             if let w = watched[sessionId] {
                 guard let socket = w.live.messagingSocketPath else {
                     throw ManagerError.notDrivable("This session has no messaging inbox; fork it to continue from the phone.")
                 }
+                // The inbox channel only carries text; images are supported on phone-hosted sessions.
                 try PeerInbox.send(text: text, socketPath: socket, pid: w.live.pid, sessionsDirectory: registry.directory)
                 w.state.status = .running
                 broadcast(.state(state: w.state))
@@ -264,7 +267,7 @@ public actor SessionManager {
             }
             throw ManagerError.unknownSession(sessionId)
         }
-        try h.process.sendUserText(text)
+        try h.process.sendUser(text, images: images)
         if h.title == nil {
             h.title = String(text.split(separator: "\n").first ?? "").trimmingCharacters(in: .whitespaces)
             broadcast(.sessions(items: listSessions()))
@@ -404,9 +407,18 @@ public actor SessionManager {
                 broadcast(.state(state: h.state))
             }
         case "result":
-            if message["is_error"]?.bool == true { h.state.lastError = message["result"]?.string }
+            let isError = message["is_error"]?.bool == true
+            if isError { h.state.lastError = message["result"]?.string }
             update(h, status: .idle)
             broadcast(.sessions(items: listSessions()))
+            if let notifier {
+                let name = notifyName(h)
+                if isError {
+                    notifier.notify(.error, body: "\(name) · \(message["result"]?.string ?? "Turn failed")")
+                } else {
+                    notifier.notify(.done, body: "\(name) · \(h.title ?? "turn complete")")
+                }
+            }
         default:
             break
         }
@@ -427,6 +439,7 @@ public actor SessionManager {
                 decisionReason: request["decision_reason"]?.string,
                 toolUseId: request["tool_use_id"]?.string,
                 suggestions: request["permission_suggestions"])
+            schedulePermissionNotification(sessionId: sessionId, requestId: requestId, permission: permission)
             let response: JSONValue? = await withCheckedContinuation { continuation in
                 h.pending[requestId] = (permission, continuation)
                 h.state.pendingPermissions.append(permission)
@@ -462,6 +475,7 @@ public actor SessionManager {
             h.state.lastError = "claude exited with status \(status)" + (tail.isEmpty ? "" : ": \(tail.suffix(400))")
         }
         log("[\(sessionId.prefix(8))] exited (\(status))")
+        if status != 0, let notifier { notifier.notify(.error, body: "\(notifyName(h)) · \(h.state.lastError ?? "session exited")") }
         broadcast(.state(state: h.state))
         broadcast(.sessions(items: listSessions()))
     }
@@ -469,6 +483,30 @@ public actor SessionManager {
     private func update(_ h: Hosted, status: SessionStatus) {
         h.state.status = status
         broadcast(.state(state: h.state))
+    }
+
+    // MARK: notifications
+
+    private func notifyName(_ h: Hosted) -> String {
+        (h.state.cwd as NSString).lastPathComponent
+    }
+
+    /// Notify about a permission only if it's still unanswered after a short grace period —
+    /// so approving from the app immediately doesn't also fire a push.
+    private func schedulePermissionNotification(sessionId: String, requestId: String, permission: PermissionRequest) {
+        guard let notifier else { return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard let self else { return }
+            await self.firePermissionNotificationIfPending(sessionId: sessionId, requestId: requestId, permission: permission, notifier: notifier)
+        }
+    }
+
+    private func firePermissionNotificationIfPending(sessionId: String, requestId: String, permission: PermissionRequest, notifier: Notifier) {
+        guard let h = hosted[sessionId], h.pending[requestId] != nil else { return }
+        let summary = ToolSummary.line(name: permission.toolName, input: permission.input)
+        let body = "\(notifyName(h)) · \(permission.toolName)" + (summary.isEmpty ? "" : ": \(summary)")
+        notifier.notify(.permission, body: body)
     }
 }
 #endif

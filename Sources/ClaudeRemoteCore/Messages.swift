@@ -11,7 +11,7 @@ public enum ClientMessage: Codable, Sendable {
     case create(options: NewSessionOptions)
     /// Copy a session (including one open in Claude Desktop) into a new daemon-hosted session and continue there.
     case fork(sessionId: String)
-    case prompt(sessionId: String, text: String)
+    case prompt(sessionId: String, text: String, images: [InlineImage] = [])
     case permission(sessionId: String, requestId: String, allow: Bool, message: String?)
     case interrupt(sessionId: String)
     case setModel(sessionId: String, model: String)

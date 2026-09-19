@@ -39,6 +39,8 @@
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Scans the pairing QR code shown by ccremote.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Unlocks the app and confirms approvals before they run on your Mac.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Finds and connects to ccremote running on your Mac.</string>
 	<key>UIApplicationSceneManifest</key>

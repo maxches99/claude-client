@@ -1,7 +1,7 @@
 import Foundation
 
 /// A base64 image block from a user turn or a tool result (screenshots, pasted images).
-public struct InlineImage: Equatable, Hashable, Sendable {
+public struct InlineImage: Codable, Equatable, Hashable, Sendable {
     public var mediaType: String
     public var base64: String
 

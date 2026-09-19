@@ -149,11 +149,24 @@ public final class CLIProcess: @unchecked Sendable {
     }
 
     public func sendUserText(_ text: String) throws {
+        try sendUser(text, images: [])
+    }
+
+    /// Sends a user turn with optional base64 images (screenshots/photos from the phone).
+    public func sendUser(_ text: String, images: [InlineImage]) throws {
+        var content: [JSONValue] = []
+        if !text.isEmpty { content.append(.object(["type": "text", "text": .string(text)])) }
+        for image in images {
+            content.append(.object(["type": "image", "source": .object([
+                "type": "base64", "media_type": .string(image.mediaType), "data": .string(image.base64),
+            ])]))
+        }
+        if content.isEmpty { content.append(.object(["type": "text", "text": .string("")])) }
         try send(.object([
             "type": "user",
             "session_id": "",
             "parent_tool_use_id": .null,
-            "message": .object(["role": "user", "content": .array([.object(["type": "text", "text": .string(text)])])]),
+            "message": .object(["role": "user", "content": .array(content)]),
         ]))
     }
 

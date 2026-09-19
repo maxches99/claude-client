@@ -21,6 +21,9 @@ func usage() -> Never {
       --relay-secret S   shared secret the daemon presents to the relay's /agent endpoint
       --room R       relay room id (default: stable per-Mac id in the support dir)
       --relay-fingerprint FP   pin the relay's TLS cert (SHA-256 hex) instead of system trust
+      --ntfy TOPIC   phone notifications via ntfy: a topic (uses ntfy.sh) or a full URL
+      --telegram-token T / --telegram-chat ID   phone notifications via a Telegram bot
+      --no-notify-done   only notify on permission-needed and errors, not on completed turns
       --quiet        do not print the QR code
     """)
     exit(2)
@@ -38,6 +41,10 @@ var relayURLString: String?
 var relaySecret: String?
 var roomOverride: String?
 var relayFingerprint: String?
+var ntfyValue: String?
+var telegramToken: String?
+var telegramChat: String?
+var notifyDone = true
 
 var args = Array(CommandLine.arguments.dropFirst())
 while !args.isEmpty {
@@ -55,6 +62,10 @@ while !args.isEmpty {
     case "--relay-secret": guard let v = args.first else { usage() }; args.removeFirst(); relaySecret = v
     case "--room": guard let v = args.first else { usage() }; args.removeFirst(); roomOverride = v
     case "--relay-fingerprint": guard let v = args.first else { usage() }; args.removeFirst(); relayFingerprint = v
+    case "--ntfy": guard let v = args.first else { usage() }; args.removeFirst(); ntfyValue = v
+    case "--telegram-token": guard let v = args.first else { usage() }; args.removeFirst(); telegramToken = v
+    case "--telegram-chat": guard let v = args.first else { usage() }; args.removeFirst(); telegramChat = v
+    case "--no-notify-done": notifyDone = false
     case "-h", "--help": usage()
     default: print("unknown option \(a)"); usage()
     }
@@ -177,7 +188,14 @@ if printPairingOnly {
     exit(0)
 }
 
-let manager = SessionManager(cli: cli, log: { log($0) })
+var notifier: Notifier?
+let notifierConfig = NotifierConfig(ntfyURL: ntfyValue.flatMap { NotifierConfig.ntfyURL(from: $0) },
+                                    telegramToken: telegramToken, telegramChatID: telegramChat, notifyDone: notifyDone)
+if notifierConfig.isEnabled {
+    notifier = Notifier(config: notifierConfig, log: { log($0) })
+}
+
+let manager = SessionManager(cli: cli, notifier: notifier, log: { log($0) })
 let serverTLS: TLSRole = tlsIdentity.map { .server(identity: $0.identity) } ?? .none
 let server = WebSocketServer(port: port, token: token, serviceName: serviceName, manager: manager, daemonVersion: daemonVersion, tls: serverTLS, log: { log($0) })
 
@@ -207,6 +225,12 @@ if auth?.loggedIn == true {
     print("claude auth: logged in" + (auth?.email.map { " (\($0))" } ?? ""))
 } else {
     print("claude auth: NOT logged in — run:  \"\(cli.path)\" auth login")
+}
+if notifier != nil {
+    var channels: [String] = []
+    if notifierConfig.ntfyURL != nil { channels.append("ntfy") }
+    if notifierConfig.telegramToken != nil { channels.append("telegram") }
+    print("Notifications: \(channels.joined(separator: ", ")) (permission, error\(notifyDone ? ", done" : ""))")
 }
 printPairing()
 

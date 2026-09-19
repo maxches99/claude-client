@@ -103,8 +103,8 @@ final class PhoneSession: @unchecked Sendable {
             case .fork(let sessionId):
                 let state = try await manager.fork(sessionId: sessionId)
                 try await manager.open(sessionId: state.id) { [weak self] msg in self?.send(msg) }
-            case .prompt(let sessionId, let text):
-                try await manager.prompt(sessionId: sessionId, text: text)
+            case .prompt(let sessionId, let text, let images):
+                try await manager.prompt(sessionId: sessionId, text: text, images: images)
             case .permission(let sessionId, let requestId, let allow, let reason):
                 await manager.resolvePermission(sessionId: sessionId, requestId: requestId, allow: allow, message: reason)
             case .interrupt(let sessionId):
@@ -133,7 +133,7 @@ final class PhoneSession: @unchecked Sendable {
 extension ClientMessage {
     var sessionId: String? {
         switch self {
-        case .open(let id), .fork(let id), .prompt(let id, _), .permission(let id, _, _, _), .interrupt(let id),
+        case .open(let id), .fork(let id), .prompt(let id, _, _), .permission(let id, _, _, _), .interrupt(let id),
              .setModel(let id, _), .setPermissionMode(let id, _), .close(let id):
             return id
         default:
