@@ -60,7 +60,9 @@ fi
 echo "Uploading to $HOST…"
 scp -q "$BIN" "$HOST:/tmp/ccremote.new"
 
-ssh "$HOST" "bash -s" -- "$SVCUSER" "$DIR" "$PORT" "$NAME" "$RELAY_PUBLIC" "$CODEX" <<'REMOTE'
+# ssh joins its arguments into one command line, so quote them for the remote shell.
+REMOTE_ARGS="$(printf '%q ' "$SVCUSER" "$DIR" "$PORT" "$NAME" "$RELAY_PUBLIC" "$CODEX")"
+ssh "$HOST" "bash -s -- $REMOTE_ARGS" <<'REMOTE'
 set -euo pipefail
 SVCUSER="$1"; DIR="$2"; PORT="$3"; NAME="$4"; RELAY_PUBLIC="$5"; CODEX="$6"
 [ -f /etc/ccremote-relay.env ] || { echo "/etc/ccremote-relay.env not found — deploy the relay first (relay/deploy.sh)" >&2; exit 1; }

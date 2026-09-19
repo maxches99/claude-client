@@ -352,15 +352,46 @@ Then pick a route to reach it:
 * **Not recommended:** forwarding port 7811 on the router — CGNAT often breaks it and it exposes the
   daemon directly.
 
+## Always-on hub on a Linux server
+
+The daemon also builds for Linux, so a VPS (or any x86_64/arm64 box) can host **quick chats** and
+phone-hosted sessions around the clock — no Mac awake needed. It runs next to the relay on the same
+server: the hub dials the relay over loopback, phones reach it through the relay's public `wss://`
+address, and the hub's own listener stays on `127.0.0.1`. Mac-only features (desktop sessions,
+Simulator view, Bonjour, the self-signed TLS identity) are simply absent there; the Linux build
+speaks plain `ws://`, which is why it belongs behind the relay or a mesh VPN.
+
+From the Mac, with the relay already deployed (`relay/deploy.sh`):
+
+```
+scripts/deploy-linux-hub.sh --host root@vps --relay-public wss://relay.example.com:8445 --name "VPS hub" [--with-codex]
+```
+
+It cross-compiles a static binary (needs the swift.org toolchain matching Xcode's Swift, installed
+per-user, plus the Static Linux SDK of the same version — `swift sdk install …`), uploads it, creates
+the `cchub` user, installs the claude CLI for it (and Codex from npm with `--with-codex`), and starts the
+`ccremote-hub` systemd unit (`MemoryMax=1500M`, restarts on failure, secret from
+`/etc/ccremote-relay.env`). Then log the hub in and pair:
+
+```
+ssh root@vps sudo -u cchub -H /home/cchub/.local/bin/claude auth login   # prints a URL; paste the code back
+ssh root@vps /opt/ccremote/hub/print-pairing                              # URL + QR (also ~cchub/.config/ccremote/pairing-qr.png)
+```
+
+The hub shows up in the app as one more Mac; pick it and tap **New chat**. Codex needs
+`~cchub/.codex/auth.json` (copy it from a logged-in machine or run `codex login` there).
+On Linux the config and files live in `$XDG_CONFIG_HOME/ccremote` (default `~/.config/ccremote`);
+the QR needs `qrencode` (installed by the script on Debian/Ubuntu).
+
 ## Options
 
 Everything lives in `~/Library/Application Support/ccremote/config.json` (edited by the Host app's
 Settings). The CLI reads it too; flags override it for one run:
 
 ```
-ccremote [--port 7811] [--token …] [--claude /path/to/claude] [--codex /path/to/codex] [--name "Bonjour name"]
+ccremote [--port 7811] [--listen 127.0.0.1] [--token …] [--claude /path/to/claude] [--codex /path/to/codex] [--name "Bonjour name"]
          [--rotate-token] [--print-pairing] [--quiet] [--no-tls]
-         [--relay wss://vps | --no-relay] [--relay-secret S] [--room R] [--relay-fingerprint FP]
+         [--relay wss://vps | --no-relay] [--relay-secret S] [--relay-public wss://public] [--room R] [--relay-fingerprint FP]
          [--ntfy TOPIC] [--telegram-token T --telegram-chat ID] [--no-notify-done]
          [--apns-key PATH --apns-key-id ID --apns-team TEAM] [--apns-bundle ID] [--apns-production]
          [--install-hook | --uninstall-hook] [--codex-port N]
