@@ -9,6 +9,7 @@ struct ChatView: View {
     @State private var draft = ""
     @State private var attachments: [InlineImage] = []
     @State private var files: [Attachment] = []
+    @State private var macFiles: [String] = []
     @State private var expandedGroups: Set<String> = []
     @State private var expandedSteps: Set<String> = []
     @State private var presentedPermission: PermissionRequest?
@@ -37,6 +38,7 @@ struct ChatView: View {
                 draft: $draft,
                 attachments: $attachments,
                 files: $files,
+                macFiles: $macFiles,
                 focused: $composerFocused,
                 sessionId: sessionId,
                 state: state,
@@ -241,11 +243,18 @@ struct ChatView: View {
 
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !attachments.isEmpty || !files.isEmpty else { return }
-        model.prompt(sessionId, text: text, images: attachments, attachments: files.isEmpty ? nil : files)
+        guard !text.isEmpty || !attachments.isEmpty || !files.isEmpty || !macFiles.isEmpty else { return }
+        // Files already on the Mac travel as path references (the agent reads them in place), not bytes.
+        var fullText = text
+        if !macFiles.isEmpty {
+            let refs = macFiles.map { "- \($0)" }.joined(separator: "\n")
+            fullText += (fullText.isEmpty ? "" : "\n\n") + "Attached files on the Mac:\n\(refs)"
+        }
+        model.prompt(sessionId, text: fullText, images: attachments, attachments: files.isEmpty ? nil : files)
         draft = ""
         attachments = []
         files = []
+        macFiles = []
     }
 }
 
@@ -257,6 +266,7 @@ struct ComposerDock: View {
     @Binding var draft: String
     @Binding var attachments: [InlineImage]
     @Binding var files: [Attachment]
+    @Binding var macFiles: [String]
     var focused: FocusState<Bool>.Binding
     let sessionId: String
     let state: SessionState?
@@ -272,6 +282,7 @@ struct ComposerDock: View {
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var showPhotoPicker = false
     @State private var showFileImporter = false
+    @State private var showMacPicker = false
     @State private var recorder = VoiceRecorder()
     @State private var attachError: String?
     @State private var fileSearchTask: Task<Void, Never>?
@@ -283,7 +294,7 @@ struct ComposerDock: View {
     // Attachments work on every session: hosted sessions get inline images, while desktop / watched
     // sessions receive all files (images included) staged to disk on the Mac and referenced by path.
     private var canAttach: Bool { model.isConnected }
-    private var hasAttachments: Bool { !attachments.isEmpty || !files.isEmpty }
+    private var hasAttachments: Bool { !attachments.isEmpty || !files.isEmpty || !macFiles.isEmpty }
     private var canSend: Bool {
         (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasAttachments) && model.isConnected
     }
@@ -390,6 +401,11 @@ struct ComposerDock: View {
                       matching: .any(of: [.images, .videos]))
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item],
                       allowsMultipleSelection: true) { result in loadFiles(result) }
+        .sheet(isPresented: $showMacPicker) {
+            MacFilePicker(sessionId: sessionId) { path in
+                if !macFiles.contains(path) { macFiles.append(path) }
+            }
+        }
         .alert("Can't attach", isPresented: Binding(get: { attachError != nil }, set: { if !$0 { attachError = nil } })) {
             Button("OK", role: .cancel) { attachError = nil }
         } message: { Text(attachError ?? "") }
@@ -401,6 +417,7 @@ struct ComposerDock: View {
         Menu {
             Button("Photo or Video", systemImage: "photo.on.rectangle") { showPhotoPicker = true }
             Button("File", systemImage: "doc") { showFileImporter = true }
+            Button("File on Mac", systemImage: "externaldrive") { showMacPicker = true }
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 16, weight: .medium))
@@ -569,8 +586,28 @@ struct ComposerDock: View {
                 ForEach(Array(files.enumerated()), id: \.offset) { index, file in
                     fileChip(file) { files.remove(at: index) }
                 }
+                ForEach(Array(macFiles.enumerated()), id: \.offset) { index, path in
+                    macFileChip(path) { macFiles.remove(at: index) }
+                }
             }
             .padding(.horizontal, 6)
+        }
+    }
+
+    private func macFileChip(_ path: String, remove: @escaping () -> Void) -> some View {
+        ZStack(alignment: .topTrailing) {
+            HStack(spacing: 8) {
+                Image(systemName: "externaldrive")
+                    .font(.system(size: 16)).foregroundStyle(CDS.textSecondary).frame(width: 26, height: 26)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text((path as NSString).lastPathComponent).font(.caption).foregroundStyle(CDS.textPrimary).lineLimit(1)
+                    Text("on Mac").font(.caption2).foregroundStyle(CDS.textMuted)
+                }
+            }
+            .padding(.leading, 8).padding(.trailing, 16).padding(.vertical, 8)
+            .frame(maxWidth: 190, alignment: .leading)
+            .background(CDS.fillControl, in: RoundedRectangle(cornerRadius: 8))
+            removeBadge(remove)
         }
     }
 
@@ -833,6 +870,52 @@ extension PermissionMode {
         case .auto: return "bolt"
         case .dontAsk: return "bell.slash"
         case .bypassPermissions: return "shield.slash"
+        }
+    }
+}
+
+/// Fuzzy-search the Mac's project files and attach the picked one — the same `listFiles` backend the
+/// composer's "@" mentions use, presented as a sheet for attaching files that live on the Mac.
+struct MacFilePicker: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let sessionId: String
+    let onPick: (String) -> Void
+    @State private var query = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if model.fileMatches.isEmpty {
+                    Text(query.isEmpty ? "Type to search files on the Mac" : "No matching files")
+                        .font(CDS.body).foregroundStyle(CDS.textMuted)
+                        .listRowBackground(CDS.surface0)
+                } else {
+                    ForEach(model.fileMatches, id: \.self) { path in
+                        Button { onPick(path); dismiss() } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "doc").font(.system(size: 14)).foregroundStyle(CDS.textMuted).frame(width: 20)
+                                Text(path).font(CDS.body).foregroundStyle(CDS.textPrimary)
+                                    .lineLimit(1).truncationMode(.middle)
+                                Spacer(minLength: 0)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(CDS.surface0)
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(CDS.surface0)
+            .searchable(text: $query, prompt: "Search files on the Mac")
+            .onChange(of: query) { _, q in model.requestFiles(sessionId, query: q) }
+            .onAppear { model.requestFiles(sessionId, query: "") }
+            .navigationTitle("Attach from Mac")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
     }
 }
