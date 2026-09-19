@@ -204,6 +204,9 @@ public final class Daemon: @unchecked Sendable {
         let codexBackend = codex.map { CodexBackend(cli: $0, listenPort: config.codexPort, log: log) }
         manager = SessionManager(cli: cli, codex: codexBackend, notifier: notifier, livePusher: livePusher,
                                  approvalLog: SessionManager.approvalLogPath(supportDirectory: supportDirectory), log: log)
+        if let minutes = config.idleTimeoutMinutes, minutes > 0 {
+            Task { [manager] in await manager.setIdleTimeout(TimeInterval(minutes * 60)) }
+        }
         #if os(macOS)
         SimulatorStreamer.log = log
         SimulatorInput.log = log

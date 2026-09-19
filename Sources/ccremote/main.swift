@@ -38,6 +38,7 @@ func usage() -> Never {
       --apns-production  use the production APNs gateway (default: sandbox, for Xcode builds)
       --install-hook / --uninstall-hook   add / remove the PermissionRequest hook in ~/.claude/settings.json, so
                      Desktop and terminal sessions ask the phone before prompting on the Mac (then exit)
+      --idle-timeout MIN close chats idle for MIN minutes (frees their claude/codex process; reopening resumes)
       --quiet        do not print the QR code
     """)
     exit(2)

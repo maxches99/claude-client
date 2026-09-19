@@ -31,6 +31,8 @@ public actor SessionManager {
         /// Claude's `can_use_tool` waits on stdin for the answer; Codex approvals are answered through the backend.
         var waiters: [String: CheckedContinuation<JSONValue?, Never>] = [:]
         var startedAt = Date()
+        /// Last prompt, event or phone open — what the idle reaper measures from.
+        var lastActivity = Date()
         var title: String?
         var forkedFromPath: String?
         // What the Live Activity push shows: the tool running right now, whether the model is thinking,
@@ -127,6 +129,11 @@ public actor SessionManager {
     }
     private var hookWaiters: [String: HookWaiter] = [:]
 
+    /// Close hosted chats idle this long (their process stays resident otherwise — 250 MB each on a
+    /// hub). `nil` = keep them until closed. Reopening resumes from the transcript.
+    private var idleTimeout: TimeInterval?
+    private var idleReaper: DispatchSourceTimer?
+
     public init(cli: ClaudeCLI, codex: CodexBackend? = nil, store: TranscriptStore = TranscriptStore(), registry: LiveSessionRegistry = LiveSessionRegistry(),
                 notifier: Notifier? = nil, livePusher: LiveActivityPusher? = nil, approvalLog: String? = nil,
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
@@ -145,6 +152,35 @@ public actor SessionManager {
                     Task { await self.handleCodexEvent(event) }
                 }
             }
+        }
+    }
+
+    // MARK: idle chats
+
+    public func setIdleTimeout(_ timeout: TimeInterval?) {
+        idleTimeout = timeout
+        idleReaper?.cancel()
+        idleReaper = nil
+        guard let timeout, timeout > 0 else { return }
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + 30, repeating: 30)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            Task { await self.reapIdleChats() }
+        }
+        timer.resume()
+        idleReaper = timer
+    }
+
+    private func reapIdleChats() async {
+        guard let idleTimeout else { return }
+        let now = Date()
+        let stale = hosted.filter { _, h in
+            h.state.kind == .chat && h.state.status == .idle && now.timeIntervalSince(h.lastActivity) > idleTimeout
+        }
+        for (id, h) in stale {
+            log("[\(id.prefix(8))] chat idle for \(Int(now.timeIntervalSince(h.lastActivity) / 60)) min — closing (reopen resumes it)")
+            await close(sessionId: id)
         }
     }
 
@@ -315,6 +351,7 @@ public actor SessionManager {
             return
         }
         if let h = hosted[sessionId] {
+            h.lastActivity = Date()
             sendHistory(sessionId: sessionId, to: reply)
             reply(.state(state: h.state))
             return
@@ -537,7 +574,7 @@ public actor SessionManager {
 
     // MARK: driving
 
-    public func prompt(sessionId: String, text: String, images: [InlineImage] = [], attachments: [Attachment]? = nil) async throws {
+    public func prompt(sessionId: String, text: String, images: [InlineImage] = [], attachments: [Attachment]? = nil, resumed: Bool = false) async throws {
         var text = text
         var images = images
         if let attachments, !attachments.isEmpty {
@@ -549,6 +586,18 @@ public actor SessionManager {
             if !staged.text.isEmpty { text += (text.isEmpty ? "" : "\n\n") + staged.text }
         }
         guard let h = hosted[sessionId] else {
+            if !resumed, watched[sessionId] == nil, watchedCodex[sessionId] == nil,
+               store.session(id: sessionId) != nil || isCodexThread(sessionId) {
+                // Not attached any more — the idle reaper closed this chat (or the phone kept a
+                // stored session on screen). Bring it back the way `open` does and continue;
+                // phones still hold the history, so only the fresh state goes out.
+                let senders = Array(subscribers.values)
+                try await open(sessionId: sessionId) { message in
+                    if case .state = message { for send in senders { send(message) } }
+                }
+                try await prompt(sessionId: sessionId, text: text, images: images, resumed: true)
+                return
+            }
             if watchedCodex[sessionId] != nil {
                 guard let codexCLI = codex?.cli else { throw ManagerError.unknownSession(sessionId) }
                 guard images.isEmpty else {
@@ -575,6 +624,7 @@ public actor SessionManager {
             }
             throw ManagerError.unknownSession(sessionId)
         }
+        h.lastActivity = Date()
         if h.state.status == .running || h.state.status == .awaitingPermission {
             // Mid-turn: park it. Sending now would either interleave with the running turn (Claude)
             // or be refused (Codex); the queue goes out in order as turns end.
@@ -1769,6 +1819,7 @@ public actor SessionManager {
     }
 
     private func update(_ h: Hosted, status: SessionStatus) {
+        h.lastActivity = Date()
         h.state.status = status
         broadcast(.state(state: h.state))
         pushActivity(h.state.id, h, throttled: false)

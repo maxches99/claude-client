@@ -4,7 +4,8 @@
 # reached through the ccremote relay running on the SAME server (relay/deploy.sh).
 #
 #   scripts/deploy-linux-hub.sh --host vpn-us --relay-public wss://relay.example.com:8445 [--name "VPS hub"]
-#                               [--user cchub] [--dir /opt/ccremote/hub] [--port 7811] [--no-build] [--with-codex]
+#                               [--user cchub] [--dir /opt/ccremote/hub] [--port 7811] [--idle-timeout 15]
+#                               [--no-build] [--with-codex]
 #
 # Requirements on the Mac: the swift.org toolchain matching Xcode's Swift version
 # (installed per-user in ~/Library/Developer/Toolchains) and the Static Linux SDK of the same
@@ -16,7 +17,7 @@
 #   ssh root@HOST /opt/ccremote/hub/print-pairing
 set -euo pipefail
 
-HOST=""; RELAY_PUBLIC=""; NAME="VPS hub"; SVCUSER="cchub"; DIR="/opt/ccremote/hub"; PORT="7811"; BUILD=1; CODEX=0
+HOST=""; RELAY_PUBLIC=""; NAME="VPS hub"; SVCUSER="cchub"; DIR="/opt/ccremote/hub"; PORT="7811"; IDLE="15"; BUILD=1; CODEX=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --host) HOST="$2"; shift 2;;
@@ -25,6 +26,7 @@ while [ $# -gt 0 ]; do
     --user) SVCUSER="$2"; shift 2;;
     --dir) DIR="$2"; shift 2;;
     --port) PORT="$2"; shift 2;;
+    --idle-timeout) IDLE="$2"; shift 2;;
     --no-build) BUILD=0; shift;;
     --with-codex) CODEX=1; shift;;
     *) echo "unknown arg: $1" >&2; exit 2;;
@@ -61,10 +63,10 @@ echo "Uploading to $HOST…"
 scp -q "$BIN" "$HOST:/tmp/ccremote.new"
 
 # ssh joins its arguments into one command line, so quote them for the remote shell.
-REMOTE_ARGS="$(printf '%q ' "$SVCUSER" "$DIR" "$PORT" "$NAME" "$RELAY_PUBLIC" "$CODEX")"
+REMOTE_ARGS="$(printf '%q ' "$SVCUSER" "$DIR" "$PORT" "$NAME" "$RELAY_PUBLIC" "$CODEX" "$IDLE")"
 ssh "$HOST" "bash -s -- $REMOTE_ARGS" <<'REMOTE'
 set -euo pipefail
-SVCUSER="$1"; DIR="$2"; PORT="$3"; NAME="$4"; RELAY_PUBLIC="$5"; CODEX="$6"
+SVCUSER="$1"; DIR="$2"; PORT="$3"; NAME="$4"; RELAY_PUBLIC="$5"; CODEX="$6"; IDLE="$7"
 [ -f /etc/ccremote-relay.env ] || { echo "/etc/ccremote-relay.env not found — deploy the relay first (relay/deploy.sh)" >&2; exit 1; }
 # shellcheck disable=SC1091
 . /etc/ccremote-relay.env
@@ -91,8 +93,8 @@ if [ "$CODEX" = 1 ] && [ ! -x "$HOME_DIR/.npm-global/bin/codex" ]; then
 fi
 
 # Common flags: plain ws on loopback only (phones come through the relay on this box), relay
-# dialed locally, public relay address in the pairing URL.
-FLAGS="--no-tls --listen 127.0.0.1 --port $PORT --name \"$NAME\" --relay ws://127.0.0.1:$RELAY_PORT --relay-public $RELAY_PUBLIC"
+# dialed locally, public relay address in the pairing URL, idle chats closed to free their process.
+FLAGS="--no-tls --listen 127.0.0.1 --port $PORT --name \"$NAME\" --relay ws://127.0.0.1:$RELAY_PORT --relay-public $RELAY_PUBLIC --idle-timeout $IDLE"
 
 install -m 0755 /dev/stdin "$DIR/print-pairing" <<EOF
 #!/usr/bin/env bash

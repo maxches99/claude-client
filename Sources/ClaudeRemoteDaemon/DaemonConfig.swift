@@ -39,6 +39,9 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
     public var telegramChat: String?
     /// Also notify when a turn completes (permission-needed and errors always notify).
     public var notifyDone: Bool = true
+    /// Close hosted chats after this many idle minutes (their `claude`/`codex` process is resident
+    /// until then). `nil`/0 = never; an always-on hub wants 15 or so.
+    public var idleTimeoutMinutes: Int?
 
     /// APNs auth key (`AuthKey_XXXX.p8`) for pushing Live Activity updates to the phone. All three
     /// must be set for pushes to happen; the phone still updates its own activity while it runs.
@@ -75,6 +78,7 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
         apnsTeamId = try c.decodeIfPresent(String.self, forKey: .apnsTeamId)
         apnsBundleId = try c.decodeIfPresent(String.self, forKey: .apnsBundleId)
         apnsSandbox = try c.decodeIfPresent(Bool.self, forKey: .apnsSandbox) ?? true
+        idleTimeoutMinutes = try c.decodeIfPresent(Int.self, forKey: .idleTimeoutMinutes)
     }
 
     // MARK: derived
@@ -180,6 +184,9 @@ public struct DaemonArguments {
             case "--apns-team": result.config.apnsTeamId = try value(a)
             case "--apns-bundle": result.config.apnsBundleId = try value(a)
             case "--apns-production": result.config.apnsSandbox = false
+            case "--idle-timeout":
+                guard let m = Int(try value(a)), m >= 0 else { throw ParseError(description: "--idle-timeout needs a number of minutes") }
+                result.config.idleTimeoutMinutes = m
             case "-h", "--help": result.help = true
             default: throw ParseError(description: "unknown option \(a)")
             }

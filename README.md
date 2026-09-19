@@ -371,7 +371,9 @@ It cross-compiles a static binary (needs the swift.org toolchain matching Xcode'
 per-user, plus the Static Linux SDK of the same version — `swift sdk install …`), uploads it, creates
 the `cchub` user, installs the claude CLI for it (and Codex from npm with `--with-codex`), and starts the
 `ccremote-hub` systemd unit (`MemoryMax=1500M`, restarts on failure, secret from
-`/etc/ccremote-relay.env`). Then log the hub in and pair:
+`/etc/ccremote-relay.env`). Every open chat keeps a `claude`/`codex` process resident (~250 MB), so
+the hub runs with `--idle-timeout 15`: a chat idle for 15 minutes is closed and reopened from its
+transcript on the next tap. Then log the hub in and pair:
 
 ```
 ssh root@vps sudo -u cchub -H /home/cchub/.local/bin/claude auth login   # prints a URL; paste the code back
@@ -392,7 +394,7 @@ Settings). The CLI reads it too; flags override it for one run:
 ccremote [--port 7811] [--listen 127.0.0.1] [--token …] [--claude /path/to/claude] [--codex /path/to/codex] [--name "Bonjour name"]
          [--rotate-token] [--print-pairing] [--quiet] [--no-tls]
          [--relay wss://vps | --no-relay] [--relay-secret S] [--relay-public wss://public] [--room R] [--relay-fingerprint FP]
-         [--ntfy TOPIC] [--telegram-token T --telegram-chat ID] [--no-notify-done]
+         [--ntfy TOPIC] [--telegram-token T --telegram-chat ID] [--no-notify-done] [--idle-timeout MIN]
          [--apns-key PATH --apns-key-id ID --apns-team TEAM] [--apns-bundle ID] [--apns-production]
          [--install-hook | --uninstall-hook] [--codex-port N]
 ```
