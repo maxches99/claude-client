@@ -1,9 +1,20 @@
+#if os(macOS)
 import Foundation
 
-enum NetworkInfo {
+/// One reachable IPv4 address of this Mac.
+public struct NetworkAddress: Equatable, Hashable, Sendable {
+    public let interface: String
+    public let address: String
+    public init(interface: String, address: String) {
+        self.interface = interface
+        self.address = address
+    }
+}
+
+public enum NetworkInfo {
     /// IPv4 addresses of non-loopback interfaces, Wi-Fi/Ethernet first, then VPN/Tailscale (utun).
-    static func lanAddresses() -> [(interface: String, address: String)] {
-        var result: [(String, String)] = []
+    public static func lanAddresses() -> [NetworkAddress] {
+        var result: [NetworkAddress] = []
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return [] }
         defer { freeifaddrs(ifaddr) }
@@ -18,11 +29,12 @@ enum NetworkInfo {
             let name = String(cString: p.pointee.ifa_name)
             let ip = String(cString: host)
             if ip.hasPrefix("169.254.") { continue }
-            result.append((name, ip))
+            result.append(NetworkAddress(interface: name, address: ip))
         }
         return result.sorted { a, b in
             func rank(_ n: String) -> Int { n.hasPrefix("en") ? 0 : n.hasPrefix("utun") ? 1 : 2 }
-            return rank(a.0) < rank(b.0)
+            return rank(a.interface) < rank(b.interface)
         }
     }
 }
+#endif

@@ -2,8 +2,10 @@ import Foundation
 
 /// Phone → Mac.
 public enum ClientMessage: Codable, Sendable {
-    /// Must be the first frame. `token` is the pairing secret shown by the daemon.
-    case hello(token: String, client: String)
+    /// Must be the first frame. `token` is the pairing secret shown by the daemon. `device` is a
+    /// human-readable device name and `deviceId` a stable per-device id — both optional, shown on
+    /// the Mac as "paired with …".
+    case hello(token: String, client: String, device: String? = nil, deviceId: String? = nil)
     case listSessions
     case listProjects
     /// Attach to a session: resumes it under the daemon if needed, or tails it when it is open in desktop.

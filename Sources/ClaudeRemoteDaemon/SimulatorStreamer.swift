@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -182,7 +183,8 @@ actor SimulatorStreamer {
             return
         }
         lastRaw[udid] = raw
-        guard let scaled = await Task.detached(priority: .userInitiated) { Self.downscale(raw, maxPixelSize: maxPixelSize) }.value else { return }
+        let scaledTask = Task.detached(priority: .userInitiated) { Self.downscale(raw, maxPixelSize: maxPixelSize) }
+        guard let scaled = await scaledTask.value else { return }
         let next = seq[udid, default: 0] + 1
         seq[udid] = next
         lastSentAt[udid] = Date()
@@ -241,3 +243,4 @@ actor SimulatorStreamer {
         return data
     }
 }
+#endif

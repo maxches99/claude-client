@@ -8,3 +8,6 @@ DerivedData/
 
 # relay
 relay/node_modules/
+
+# Mac app build output
+dist/

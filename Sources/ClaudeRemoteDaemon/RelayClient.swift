@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Network
 import ClaudeRemoteCore
@@ -11,14 +12,24 @@ import ClaudeCodeHost
 /// runs a normal PhoneSession over it. The pairing token still authenticates the phone to the
 /// daemon end-to-end; the relay only forwards frames (it can read them, so run your own).
 final class RelayClient: @unchecked Sendable {
+    enum State: Equatable, Sendable {
+        case connecting
+        case connected
+        case waiting(String)
+        case failed(String)
+        case stopped
+    }
+
     private let base: URL
     private let room: String
     private let secret: String
     private let fingerprint: String?
     private let manager: SessionManager
-    private let token: String
+    private let tokenStore: TokenStore
     private let daemonVersion: String
     private let log: @Sendable (String) -> Void
+    private let onAuthenticated: @Sendable (PhoneLink) -> Void
+    private let onPhoneClosed: @Sendable (UUID) -> Void
     private let queue = DispatchQueue(label: "ccremote.relay")
 
     private var control: WebSocketChannel?
@@ -28,16 +39,23 @@ final class RelayClient: @unchecked Sendable {
     private var running = true
     private var keepalive: DispatchSourceTimer?
 
+    /// Control-link state changes, on the relay queue.
+    var onState: (@Sendable (State) -> Void)?
+
     init(base: URL, room: String, secret: String, fingerprint: String?, manager: SessionManager,
-         token: String, daemonVersion: String, log: @escaping @Sendable (String) -> Void) {
+         tokenStore: TokenStore, daemonVersion: String, log: @escaping @Sendable (String) -> Void,
+         onAuthenticated: @escaping @Sendable (PhoneLink) -> Void = { _ in },
+         onPhoneClosed: @escaping @Sendable (UUID) -> Void = { _ in }) {
         self.base = base
         self.room = room
         self.secret = secret
         self.fingerprint = fingerprint
         self.manager = manager
-        self.token = token
+        self.tokenStore = tokenStore
         self.daemonVersion = daemonVersion
         self.log = log
+        self.onAuthenticated = onAuthenticated
+        self.onPhoneClosed = onPhoneClosed
     }
 
     private var tlsRole: TLSRole {
@@ -60,10 +78,14 @@ final class RelayClient: @unchecked Sendable {
         running = false
         keepalive?.cancel(); keepalive = nil
         control?.close()
-        lock.withLock {
-            for s in sessions.values { _ = s }
-            sessions.removeAll()
-        }
+        closeAll()
+        onState?(.stopped)
+    }
+
+    /// Drops every bridged phone (they must re-authenticate — used on token rotation).
+    func closeAll() {
+        let open = lock.withLock { Array(sessions.values) }
+        for s in open { s.close() }
     }
 
     /// Keeps the idle control connection warm so a reverse proxy (Caddy) doesn't drop it.
@@ -82,6 +104,7 @@ final class RelayClient: @unchecked Sendable {
         guard running else { return }
         let url = endpoint("agent", query: [.init(name: "room", value: room), .init(name: "secret", value: secret)])
         log("relay: connecting control → \(url.host ?? "?")")
+        onState?(.connecting)
         let connection = NWConnection(to: .url(url), using: WebSocketChannel.parameters(tls: tlsRole))
         let channel = WebSocketChannel(connection: connection, queue: queue)
         control = channel
@@ -91,16 +114,20 @@ final class RelayClient: @unchecked Sendable {
             case .ready:
                 self.retryDelay = 1
                 self.log("relay: control connected (room \(self.room))")
+                self.onState?(.connected)
                 self.startKeepalive()
             case .failed(let error):
                 self.log("relay: control failed: \(error)")
                 self.keepalive?.cancel(); self.keepalive = nil
+                if self.running { self.onState?(.failed("\(error)")) }
                 self.scheduleReconnect()
             case .cancelled:
                 self.keepalive?.cancel(); self.keepalive = nil
+                if self.running { self.onState?(.connecting) }
                 self.scheduleReconnect()
             case .waiting(let error):
                 self.log("relay: waiting (\(error))")
+                self.onState?(.waiting("\(error)"))
             default:
                 break
             }
@@ -129,10 +156,15 @@ final class RelayClient: @unchecked Sendable {
         let url = endpoint("agent-conn", query: [.init(name: "room", value: room), .init(name: "secret", value: secret), .init(name: "conn", value: connId)])
         let connection = NWConnection(to: .url(url), using: WebSocketChannel.parameters(tls: tlsRole))
         let channel = WebSocketChannel(connection: connection, queue: queue)
-        let session = PhoneSession(channel: channel, manager: manager, token: token, daemonVersion: daemonVersion, log: log,
-                                   onClose: { [weak self] id in self?.lock.withLock { self?.sessions[id] = nil } })
+        let session = PhoneSession(channel: channel, route: .relay, remote: nil, manager: manager, tokenStore: tokenStore, daemonVersion: daemonVersion, log: log,
+                                   onAuthenticated: onAuthenticated,
+                                   onClose: { [weak self] id in
+                                       self?.lock.withLock { self?.sessions[id] = nil }
+                                       self?.onPhoneClosed(id)
+                                   })
         lock.withLock { sessions[session.id] = session }
         log("relay: bridging phone \(connId.prefix(8))")
         session.start()
     }
 }
+#endif

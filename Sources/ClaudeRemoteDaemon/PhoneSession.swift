@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Network
 import ClaudeRemoteCore
@@ -8,22 +9,30 @@ import ClaudeCodeHost
 /// then routes messages to the SessionManager and streams events back.
 final class PhoneSession: @unchecked Sendable {
     let id = UUID()
+    let route: PhoneRoute
+    let remote: String?
     private let channel: WebSocketChannel
     private let manager: SessionManager
-    private let token: String
+    private let tokenStore: TokenStore
     private let daemonVersion: String
     private let log: @Sendable (String) -> Void
+    private let onAuthenticated: @Sendable (PhoneLink) -> Void
     private let onClose: @Sendable (UUID) -> Void
     private var authenticated = false
     private var closed = false
 
-    init(channel: WebSocketChannel, manager: SessionManager, token: String, daemonVersion: String,
-         log: @escaping @Sendable (String) -> Void, onClose: @escaping @Sendable (UUID) -> Void) {
+    init(channel: WebSocketChannel, route: PhoneRoute, remote: String?, manager: SessionManager, tokenStore: TokenStore, daemonVersion: String,
+         log: @escaping @Sendable (String) -> Void,
+         onAuthenticated: @escaping @Sendable (PhoneLink) -> Void = { _ in },
+         onClose: @escaping @Sendable (UUID) -> Void) {
         self.channel = channel
+        self.route = route
+        self.remote = remote
         self.manager = manager
-        self.token = token
+        self.tokenStore = tokenStore
         self.daemonVersion = daemonVersion
         self.log = log
+        self.onAuthenticated = onAuthenticated
         self.onClose = onClose
     }
 
@@ -39,6 +48,11 @@ final class PhoneSession: @unchecked Sendable {
         }
         channel.onText = { [weak self] text in self?.handle(text) }
         channel.start()
+    }
+
+    /// Closes the connection from our side (daemon shutdown, token rotation).
+    func close() {
+        channel.close()
     }
 
     private func teardown(reason: String) {
@@ -66,9 +80,10 @@ final class PhoneSession: @unchecked Sendable {
             return
         }
         guard authenticated else {
-            if case .hello(let token, let client) = message, token == self.token {
+            if case .hello(let token, let client, let device, let deviceId) = message, token == tokenStore.current {
                 authenticated = true
-                log("client \(id.uuidString.prefix(8)) authenticated (\(client))")
+                log("client \(id.uuidString.prefix(8)) authenticated (\(device ?? client), \(route.rawValue))")
+                onAuthenticated(PhoneLink(id: id, client: client, device: device, deviceId: deviceId, route: route, remote: remote))
                 Task { [weak self] in
                     guard let self else { return }
                     await self.manager.subscribe(self.id) { [weak self] msg in self?.send(msg) }
@@ -153,3 +168,4 @@ extension ClientMessage {
         }
     }
 }
+#endif

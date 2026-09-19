@@ -1,9 +1,10 @@
+#if os(macOS)
 import Foundation
 import CoreImage
 
 /// Renders a QR code into the terminal using ANSI colours (2 modules per character row).
-enum QRCode {
-    static func terminalLines(for text: String) -> [String]? {
+public enum QRCode {
+    public static func terminalLines(for text: String) -> [String]? {
         guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
         filter.setValue(Data(text.utf8), forKey: "inputMessage")
         filter.setValue("M", forKey: "inputCorrectionLevel")
@@ -35,3 +36,4 @@ enum QRCode {
         return lines
     }
 }
+#endif

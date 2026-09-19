@@ -1,6 +1,8 @@
 #!/bin/sh
-# Builds ccremote (release) and installs it as a LaunchAgent that starts at login
-# and keeps the Mac awake while it runs (so it stays reachable from your phone).
+# Headless alternative to the ClaudeRemote Host app (scripts/build-mac-app.sh): builds the
+# ccremote CLI (release) and installs it as a LaunchAgent that starts at login and keeps the
+# Mac awake while it runs (so it stays reachable from your phone). Don't run both — they share
+# the port; the app detects this agent and offers to take over.
 #
 # Any extra arguments are passed straight to ccremote, e.g.:
 #   scripts/install-launchagent.sh --relay wss://vps.example.com --relay-secret s3cret

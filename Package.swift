@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "ClaudeRemoteCore", targets: ["ClaudeRemoteCore"]),
         .library(name: "ClaudeCodeHost", targets: ["ClaudeCodeHost"]),
+        .library(name: "ClaudeRemoteDaemon", targets: ["ClaudeRemoteDaemon"]),
         .executable(name: "ccremote", targets: ["ccremote"]),
     ],
     targets: [
@@ -14,8 +15,11 @@ let package = Package(
         .target(name: "ClaudeRemoteCore"),
         // Mac-only: drives `claude` CLI processes over stream-json, indexes ~/.claude.
         .target(name: "ClaudeCodeHost", dependencies: ["ClaudeRemoteCore"]),
-        // The daemon executable: WebSocket server + Bonjour + pairing.
-        .executableTarget(name: "ccremote", dependencies: ["ClaudeCodeHost", "ClaudeRemoteCore"]),
+        // Mac-only: the daemon itself — WebSocket server + Bonjour, relay dial-out, pairing,
+        // phone tracking. Hosted by the `ccremote` CLI and by the ClaudeRemote Host menu-bar app.
+        .target(name: "ClaudeRemoteDaemon", dependencies: ["ClaudeCodeHost", "ClaudeRemoteCore"]),
+        // The CLI front-end: parses flags, runs a Daemon, prints the pairing QR.
+        .executableTarget(name: "ccremote", dependencies: ["ClaudeRemoteDaemon", "ClaudeCodeHost", "ClaudeRemoteCore"]),
         .testTarget(name: "ClaudeRemoteCoreTests", dependencies: ["ClaudeRemoteCore"]),
     ]
 )

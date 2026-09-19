@@ -67,7 +67,13 @@ public struct TLSIdentity {
     // MARK: import
 
     private static func importPKCS12(_ data: Data) throws -> (SecIdentity, SecCertificate) {
-        let options = [kSecImportExportPassphrase as String: p12Passphrase]
+        var options: [String: Any] = [kSecImportExportPassphrase as String: p12Passphrase]
+        // Keep the identity in process memory. Importing into the login keychain binds the
+        // private key's ACL to the importing binary's code signature — every rebuild of the
+        // daemon/app then fails the TLS handshake silently (or prompts for keychain access).
+        if #available(macOS 15, *) {
+            options[kSecImportToMemoryOnly as String] = true
+        }
         var items: CFArray?
         let status = SecPKCS12Import(data as CFData, options as CFDictionary, &items)
         guard status == errSecSuccess, let array = items as? [[String: Any]], let first = array.first else {

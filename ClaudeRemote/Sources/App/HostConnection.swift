@@ -157,7 +157,9 @@ final class HostConnection {
                     switch state {
                     case .ready:
                         // Send hello; the winner is decided when `welcome` comes back.
-                        channel.send(text: (try? ProtocolCoding.encode(ClientMessage.hello(token: token, client: "ios"))) ?? "")
+                        channel.send(text: (try? ProtocolCoding.encode(ClientMessage.hello(token: token, client: "ios",
+                                                                                             device: DeviceIdentity.name,
+                                                                                             deviceId: DeviceIdentity.id))) ?? "")
                     case .failed, .cancelled, .waiting:
                         if self.channel === channel {
                             // The winning connection dropped — restart the race with backoff.
