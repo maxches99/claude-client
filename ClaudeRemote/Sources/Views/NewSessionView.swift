@@ -2,6 +2,8 @@ import SwiftUI
 import ClaudeRemoteCore
 
 struct NewSessionView: View {
+    /// When set (e.g. the "+" on a project group), preselects that project's path.
+    var initialCwd: String? = nil
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     /// Selected project path, `customTag` for a typed path, or "" until the project list arrives.
@@ -70,6 +72,7 @@ struct NewSessionView: View {
             }
             .onAppear {
                 // Default to the most recent project once; "Custom path…" must survive coming back from the picker.
+                if cwd.isEmpty, let initialCwd, !initialCwd.isEmpty { cwd = initialCwd }
                 if cwd.isEmpty, let first = model.projects.first { cwd = first.path }
                 if model.projects.isEmpty { model.refresh() }
                 if model.hasCodex, model.codexModels.isEmpty { model.requestCodexModels() }

@@ -274,6 +274,7 @@ struct ComposerDock: View {
     @State private var showFileImporter = false
     @State private var recorder = VoiceRecorder()
     @State private var attachError: String?
+    @State private var fileSearchTask: Task<Void, Never>?
 
     private var agent: AgentKind { state?.agent ?? summary?.agent ?? .claude }
     private var isCodex: Bool { agent == .codex }
@@ -298,10 +299,12 @@ struct ComposerDock: View {
             if isDesktop {
                 notice(desktopNotice, tint: CDS.textMuted)
             }
+            suggestionsPanel
             composer
         }
         .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 8)
         .background(CDS.surface0)
+        .onChange(of: draft) { _, _ in handleDraftChange() }
     }
 
     /// What "this session lives on the Mac" means for the agent in question.
@@ -451,6 +454,109 @@ struct ComposerDock: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Stop recording")
+        }
+    }
+
+    // MARK: slash commands & @-file mentions
+
+    private struct SuggestionRow: Identifiable {
+        let id: String
+        let icon: String
+        let title: String
+        let mono: Bool
+        let pick: () -> Void
+    }
+
+    /// The "/" command query when the draft is a single leading-slash token (no space yet).
+    private var slashQuery: String? {
+        guard draft.first == "/" else { return nil }
+        let rest = draft.dropFirst()
+        guard !rest.contains(where: { $0.isWhitespace }) else { return nil }
+        return String(rest)
+    }
+
+    /// The "@" mention query being typed at the end of the draft (preceded by start/space), if any.
+    private var mentionQuery: String? {
+        guard let at = draft.lastIndex(of: "@") else { return nil }
+        if at > draft.startIndex, !draft[draft.index(before: at)].isWhitespace { return nil }
+        let after = draft[draft.index(after: at)...]
+        guard !after.contains(where: { $0.isWhitespace }) else { return nil }
+        return String(after)
+    }
+
+    private var slashCommands: [String] {
+        (state?.slashCommands ?? []).map { $0.hasPrefix("/") ? String($0.dropFirst()) : $0 }
+    }
+
+    private var slashMatches: [String] {
+        guard let q = slashQuery, !slashCommands.isEmpty else { return [] }
+        let hits = q.isEmpty ? slashCommands : slashCommands.filter { $0.lowercased().contains(q.lowercased()) }
+        return Array(hits.prefix(30))
+    }
+
+    private var mentionMatches: [String] {
+        guard let q = mentionQuery else { return [] }
+        let all = model.fileMatches
+        let hits = q.isEmpty ? all : all.filter { $0.lowercased().contains(q.lowercased()) }
+        return Array(hits.prefix(30))
+    }
+
+    private var suggestionRows: [SuggestionRow] {
+        if !slashMatches.isEmpty {
+            return slashMatches.map { cmd in
+                SuggestionRow(id: "/\(cmd)", icon: "terminal", title: "/\(cmd)", mono: true) { draft = "/\(cmd) " }
+            }
+        }
+        if mentionQuery != nil {
+            return mentionMatches.map { path in
+                SuggestionRow(id: path, icon: "doc", title: path, mono: false) { insertMention(path) }
+            }
+        }
+        return []
+    }
+
+    @ViewBuilder private var suggestionsPanel: some View {
+        let rows = suggestionRows
+        if !rows.isEmpty {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(rows) { row in
+                        Button(action: row.pick) {
+                            HStack(spacing: 8) {
+                                Image(systemName: row.icon)
+                                    .font(.system(size: 13)).foregroundStyle(CDS.textMuted).frame(width: 18)
+                                Text(row.title)
+                                    .font(row.mono ? CDS.code : CDS.body).foregroundStyle(CDS.textPrimary)
+                                    .lineLimit(1).truncationMode(.middle)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 10).padding(.vertical, 9)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if row.id != rows.last?.id { Divider().overlay(CDS.border).padding(.leading, 36) }
+                    }
+                }
+            }
+            .frame(maxHeight: 220)
+            .background(CDS.surface2, in: RoundedRectangle(cornerRadius: CDS.radius))
+            .overlay(RoundedRectangle(cornerRadius: CDS.radius).strokeBorder(CDS.border))
+        }
+    }
+
+    private func insertMention(_ path: String) {
+        guard let at = draft.lastIndex(of: "@") else { return }
+        draft = String(draft[..<at]) + "@" + path + " "
+    }
+
+    /// Debounced file search for the "@" picker; cancels when the mention token goes away.
+    private func handleDraftChange() {
+        guard let q = mentionQuery else { fileSearchTask?.cancel(); return }
+        fileSearchTask?.cancel()
+        fileSearchTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            if Task.isCancelled { return }
+            model.requestFiles(sessionId, query: q)
         }
     }
 

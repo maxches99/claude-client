@@ -35,6 +35,9 @@ public enum ClientMessage: Codable, Sendable {
     case fetchFile(path: String)
     /// Ask for the session repo's uncommitted changes (git status + diff) to review before approving.
     case gitDiff(sessionId: String)
+    /// Fuzzy-search files under the session's cwd for the composer's "@" mention picker. Empty query
+    /// returns a first page of files.
+    case listFiles(sessionId: String, query: String)
     /// Booted iOS Simulators on the Mac (also pushed as `simulators` whenever the set changes).
     case listSimulators
     /// Start / stop receiving live frames of a booted simulator. `maxPixelSize` bounds the frame's
@@ -59,6 +62,8 @@ public enum ServerMessage: Codable, Sendable {
     case models(agent: AgentKind, items: [ModelOption])
     case file(path: String, mediaType: String?, base64: String?, error: String?)
     case gitDiff(sessionId: String, diff: String, error: String?)
+    /// Files matching a `listFiles` query, as paths relative to the session's cwd.
+    case fileList(sessionId: String, paths: [String])
     case simulators(items: [SimulatorInfo])
     case simulatorFrame(frame: SimulatorFrame)
     case pong

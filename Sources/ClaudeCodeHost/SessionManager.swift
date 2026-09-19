@@ -780,6 +780,50 @@ public actor SessionManager {
         let f = DateFormatter(); f.dateFormat = "yyyyMMdd-HHmmss"; return f.string(from: Date())
     }
 
+    /// Fuzzy-search files under the session's cwd for the composer's "@" mention picker. Runs the walk
+    /// off the actor so a large tree does not stall other messages. Empty query returns a shallow page.
+    public func listFiles(sessionId: String, query: String) async -> [String] {
+        guard let cwd = cwdFor(sessionId) else { return [] }
+        return await Task.detached(priority: .utility) { SessionManager.walkFiles(cwd: cwd, query: query) }.value
+    }
+
+    private static let fileWalkSkipDirs: Set<String> = [
+        ".git", ".build", "node_modules", "DerivedData", "DerivedDataWatch", ".swiftpm",
+        "Pods", ".next", "dist", "build", ".venv", "venv", "__pycache__", ".gradle", "target",
+    ]
+
+    /// Returns up to 40 file paths (relative to `cwd`) matching `query` (case-insensitive substring on
+    /// the relative path). Filename matches and shallower paths rank first. Bounded so it never hangs.
+    private static func walkFiles(cwd: String, query: String) -> [String] {
+        let root = URL(fileURLWithPath: cwd, isDirectory: true)
+        let fm = FileManager.default
+        guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey],
+                                     options: [.skipsHiddenFiles], errorHandler: nil) else { return [] }
+        let q = query.lowercased()
+        var matches: [(path: String, score: Int)] = []
+        var scanned = 0
+        for case let url as URL in en {
+            scanned += 1
+            if scanned > 20_000 { break }
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            let name = url.lastPathComponent
+            if isDir {
+                if fileWalkSkipDirs.contains(name) { en.skipDescendants() }
+                continue
+            }
+            var rel = url.path
+            if rel.hasPrefix(cwd) { rel.removeFirst(cwd.count) }
+            if rel.hasPrefix("/") { rel.removeFirst() }
+            if rel.isEmpty { continue }
+            if !q.isEmpty && !rel.lowercased().contains(q) { continue }
+            let nameMiss = (q.isEmpty || name.lowercased().contains(q)) ? 0 : 500
+            matches.append((rel, nameMiss + rel.count))
+            if matches.count >= 400 { break }
+        }
+        matches.sort { $0.score != $1.score ? $0.score < $1.score : $0.path < $1.path }
+        return Array(matches.prefix(40)).map(\.path)
+    }
+
     /// The session repo's uncommitted changes (status + diff), for reviewing before approving.
     public func gitDiff(sessionId: String) throws -> String {
         guard let cwd = cwdFor(sessionId) else { throw ManagerError.unknownSession(sessionId) }
@@ -842,6 +886,7 @@ public actor SessionManager {
             if message["subtype"]?.string == "init" {
                 if let m = message["model"]?.string { h.state.model = m }
                 if let p = message["permissionMode"]?.string { h.state.permissionMode = p }
+                if let cmds = message["slash_commands"]?.array?.compactMap(\.string), !cmds.isEmpty { h.state.slashCommands = cmds }
                 broadcast(.state(state: h.state))
             }
         case "result":

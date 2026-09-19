@@ -157,6 +157,8 @@ final class PhoneSession: @unchecked Sendable {
                 } catch {
                     send(.gitDiff(sessionId: sessionId, diff: "", error: "\(error)"))
                 }
+            case .listFiles(let sessionId, let query):
+                send(.fileList(sessionId: sessionId, paths: await manager.listFiles(sessionId: sessionId, query: query)))
             case .listSimulators:
                 send(.simulators(items: await SimulatorStreamer.shared.list()))
             case .simulatorStream(let udid, let enabled, let maxPixelSize, let fps):
@@ -176,6 +178,7 @@ extension ClientMessage {
     var sessionId: String? {
         switch self {
         case .open(let id), .fork(let id), .prompt(let id, _, _, _), .permission(let id, _, _, _, _), .interrupt(let id), .gitDiff(let id),
+             .listFiles(let id, _),
              .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id):
             return id
         default:

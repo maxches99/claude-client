@@ -297,6 +297,13 @@ final class AppModel {
         connection.send(.gitDiff(sessionId: sessionId))
     }
 
+    /// Latest file-search results for the composer's "@" mention picker.
+    var fileMatches: [String] = []
+
+    func requestFiles(_ sessionId: String, query: String) {
+        connection.send(.listFiles(sessionId: sessionId, query: query))
+    }
+
     // MARK: inbound
 
     private func handle(_ message: ServerMessage) {
@@ -347,6 +354,8 @@ final class AppModel {
             }
         case .gitDiff(let sessionId, let diff, let error):
             gitDiffs[sessionId] = error.map { "⚠️ \($0)" } ?? diff
+        case .fileList(_, let paths):
+            fileMatches = paths
         case .simulators(let items):
             simulatorFeed.devices = items
         case .simulatorFrame(let frame):

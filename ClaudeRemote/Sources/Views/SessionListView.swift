@@ -13,8 +13,29 @@ struct SessionListView: View {
     @State private var showAddMac = false
     @State private var confirmForget = false
     @State private var search = ""
+    @State private var collapsedProjects: Set<String> = []
+    @State private var newSessionCwd: String?
 
     private var isChats: Bool { scope == .chats }
+
+    /// Sessions grouped by their project folder, newest project first, for the Sessions tab.
+    private struct ProjectGroup: Identifiable {
+        let id: String
+        let name: String
+        let cwd: String
+        let sessions: [SessionSummary]
+        let latest: Date
+    }
+
+    private var projectGroups: [ProjectGroup] {
+        Dictionary(grouping: filtered) { $0.cwd }
+            .map { cwd, sessions in
+                let sorted = sessions.sorted { $0.updatedAt > $1.updatedAt }
+                return ProjectGroup(id: cwd, name: sorted.first?.projectName ?? cwd,
+                                    cwd: cwd, sessions: sorted, latest: sorted.first?.updatedAt ?? .distantPast)
+            }
+            .sorted { $0.latest > $1.latest }
+    }
 
     private var filtered: [SessionSummary] {
         let wanted: SessionKind = isChats ? .chat : .agent
@@ -37,32 +58,37 @@ struct SessionListView: View {
                 CDSBanner(kind: .warning, text: "claude on the Mac is not logged in — run `claude auth login` there.", systemImage: "person.crop.circle.badge.exclamationmark")
             }
             List {
-                let active = filtered.filter { $0.origin != .stored }
-                let stored = filtered.filter { $0.origin == .stored }
-                Section {
-                    if isChats {
+                if isChats {
+                    let active = filtered.filter { $0.origin != .stored }
+                    let stored = filtered.filter { $0.origin == .stored }
+                    Section {
                         if model.supportsChats { newChatRow }
-                    } else {
-                        Button { showNewSession = true } label: {
+                    }
+                    if !active.isEmpty {
+                        Section {
+                            ForEach(active) { session in row(session) }
+                        } header: { sectionHeader("Open") }
+                    }
+                    if !stored.isEmpty {
+                        Section {
+                            ForEach(stored) { session in row(session) }
+                        } header: { sectionHeader("Recent") }
+                    }
+                } else {
+                    Section {
+                        Button { newSessionCwd = nil; showNewSession = true } label: {
                             newRowLabel("New session", systemImage: "plus")
                         }
                         .disabled(!model.isConnected)
                         .listRowBackground(CDS.surface0)
                         .listRowSeparator(.hidden)
                     }
-                }
-                if !active.isEmpty {
-                    Section {
-                        ForEach(active) { session in row(session) }
-                    } header: {
-                        sectionHeader(isChats ? "Open" : "Active on Mac")
-                    }
-                }
-                if !stored.isEmpty {
-                    Section {
-                        ForEach(stored) { session in row(session) }
-                    } header: {
-                        sectionHeader("Recent")
+                    ForEach(projectGroups) { group in
+                        Section {
+                            if !isCollapsed(group) {
+                                ForEach(group.sessions) { session in row(session) }
+                            }
+                        } header: { projectHeader(group) }
                     }
                 }
             }
@@ -114,7 +140,7 @@ struct SessionListView: View {
             Text("You'll need to scan its pairing QR code again to reconnect.")
         }
         .sheet(isPresented: $showNewSession) {
-            NewSessionView()
+            NewSessionView(initialCwd: newSessionCwd)
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
@@ -167,6 +193,45 @@ struct SessionListView: View {
             .textCase(.uppercase)
             .padding(.top, 6)
             .listRowInsets(EdgeInsets(top: 0, leading: CDS.gutter, bottom: 4, trailing: CDS.gutter))
+    }
+
+    /// A search always reveals matches, so collapse only applies when not searching.
+    private func isCollapsed(_ group: ProjectGroup) -> Bool {
+        search.trimmingCharacters(in: .whitespaces).isEmpty && collapsedProjects.contains(group.id)
+    }
+
+    /// Collapsible project header with a "+" to start a session in that project — the Claude Code sidebar look.
+    private func projectHeader(_ group: ProjectGroup) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if collapsedProjects.contains(group.id) { collapsedProjects.remove(group.id) }
+                    else { collapsedProjects.insert(group.id) }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .rotationEffect(.degrees(isCollapsed(group) ? 0 : 90))
+                    Text(group.name)
+                        .font(.caption2.weight(.semibold)).textCase(.uppercase)
+                    Text("\(group.sessions.count)")
+                        .font(.caption2).foregroundStyle(CDS.textMuted.opacity(0.6))
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Button { newSessionCwd = group.cwd; showNewSession = true } label: {
+                Image(systemName: "plus").font(.system(size: 13, weight: .semibold))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!model.isConnected)
+        }
+        .foregroundStyle(CDS.textMuted)
+        .padding(.top, 6)
+        .listRowInsets(EdgeInsets(top: 0, leading: CDS.gutter, bottom: 4, trailing: CDS.gutter))
     }
 
     private func row(_ session: SessionSummary) -> some View {

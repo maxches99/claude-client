@@ -202,10 +202,12 @@ public struct SessionState: Codable, Equatable, Sendable {
     public var effort: String?
     /// Codex sandbox mode (`CodexSandboxMode`).
     public var sandbox: String?
+    /// Slash commands the CLI advertised in its init message, for the composer's "/" menu.
+    public var slashCommands: [String]
 
     public init(id: String, origin: SessionOrigin, status: SessionStatus, cwd: String, model: String? = nil, permissionMode: String? = nil,
                 pendingPermissions: [PermissionRequest] = [], lastError: String? = nil, agent: AgentKind = .claude, kind: SessionKind = .agent,
-                effort: String? = nil, sandbox: String? = nil) {
+                effort: String? = nil, sandbox: String? = nil, slashCommands: [String] = []) {
         self.id = id
         self.origin = origin
         self.status = status
@@ -218,6 +220,7 @@ public struct SessionState: Codable, Equatable, Sendable {
         self.kind = kind
         self.effort = effort
         self.sandbox = sandbox
+        self.slashCommands = slashCommands
     }
 
     public init(from decoder: Decoder) throws {
@@ -234,6 +237,7 @@ public struct SessionState: Codable, Equatable, Sendable {
         kind = try c.decodeIfPresent(SessionKind.self, forKey: .kind) ?? .agent
         effort = try c.decodeIfPresent(String.self, forKey: .effort)
         sandbox = try c.decodeIfPresent(String.self, forKey: .sandbox)
+        slashCommands = try c.decodeIfPresent([String].self, forKey: .slashCommands) ?? []
     }
 }
 
