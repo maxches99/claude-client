@@ -442,7 +442,17 @@ public actor SessionManager {
 
     // MARK: driving
 
-    public func prompt(sessionId: String, text: String, images: [InlineImage] = []) async throws {
+    public func prompt(sessionId: String, text: String, images: [InlineImage] = [], attachments: [Attachment]? = nil) async throws {
+        var text = text
+        var images = images
+        if let attachments, !attachments.isEmpty {
+            // Only a session with a live CLI process here can take inline image blocks. Watched desktop /
+            // Codex sessions are driven over a text-only channel, so their images are staged to disk too.
+            let inlineCapable = hosted[sessionId] != nil
+            let staged = try stageAttachments(attachments, sessionId: sessionId, stageImages: !inlineCapable)
+            images += staged.images
+            if !staged.text.isEmpty { text += (text.isEmpty ? "" : "\n\n") + staged.text }
+        }
         guard let h = hosted[sessionId] else {
             if watchedCodex[sessionId] != nil {
                 guard let codexCLI = codex?.cli else { throw ManagerError.unknownSession(sessionId) }
@@ -484,12 +494,17 @@ public actor SessionManager {
         CodexBackend.TurnOptions(model: h.state.model, effort: h.state.effort, approvalPolicy: h.state.permissionMode, sandbox: h.state.sandbox)
     }
 
-    public func resolvePermission(sessionId: String, requestId: String, allow: Bool, message: String?) async {
+    public func resolvePermission(sessionId: String, requestId: String, allow: Bool, message: String?, remember: Bool = false) async {
         guard let h = hosted[sessionId], let request = h.pending.removeValue(forKey: requestId) else { return }
         if let waiter = h.waiters.removeValue(forKey: requestId) {
             let response: JSONValue
             if allow {
-                response = .object(["behavior": "allow", "updatedInput": request.input])
+                var fields: [String: JSONValue] = ["behavior": "allow", "updatedInput": request.input]
+                // "Allow & remember": echo the CLI's suggested rule so matching calls are auto-approved later.
+                if remember, let suggestions = request.suggestions, suggestions.array?.isEmpty == false {
+                    fields["updatedPermissions"] = suggestions
+                }
+                response = .object(fields)
             } else {
                 response = .object(["behavior": "deny", "message": .string(message ?? "Denied from phone")])
             }
@@ -708,6 +723,96 @@ public actor SessionManager {
             case .tooLarge: return "File is larger than 12 MB"
             }
         }
+    }
+
+    /// Resolves a session's working directory across hosted/watched/stored sessions.
+    private func cwdFor(_ sessionId: String) -> String? {
+        if let h = hosted[sessionId] { return h.state.cwd }
+        if let w = watched[sessionId] { return w.state.cwd }
+        if let w = watchedCodex[sessionId] { return w.state.cwd }
+        return store.session(id: sessionId)?.cwd
+    }
+
+    /// Splits attachments: image files become inline images (direct vision); every other file is written
+    /// under `<cwd>/.ccremote-attachments/` and returned as a prompt-appended path reference so the agent
+    /// can open it with its tools. A `.gitignore` in that folder keeps staged files out of the repo.
+    private func stageAttachments(_ attachments: [Attachment], sessionId: String, stageImages: Bool) throws -> (text: String, images: [InlineImage]) {
+        var inlineImages: [InlineImage] = []
+        var savedPaths: [String] = []
+        var stageDir: String?
+        for att in attachments {
+            if att.isImage && !stageImages {
+                inlineImages.append(InlineImage(mediaType: att.mediaType, base64: att.base64))
+                continue
+            }
+            guard let data = Data(base64Encoded: att.base64) else { continue }
+            guard let cwd = cwdFor(sessionId) else { throw ManagerError.unknownSession(sessionId) }
+            let dir = stageDir ?? (cwd as NSString).appendingPathComponent(".ccremote-attachments")
+            if stageDir == nil {
+                try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                try? "*\n".write(toFile: (dir as NSString).appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+                stageDir = dir
+            }
+            let safe = SessionManager.safeFilename(att.filename)
+            let stamp = SessionManager.stageStamp()
+            var dest = (dir as NSString).appendingPathComponent("\(stamp)-\(safe)")
+            var n = 1
+            while FileManager.default.fileExists(atPath: dest) {
+                dest = (dir as NSString).appendingPathComponent("\(stamp)-\(n)-\(safe)"); n += 1
+            }
+            try data.write(to: URL(fileURLWithPath: dest))
+            savedPaths.append(".ccremote-attachments/" + (dest as NSString).lastPathComponent)
+        }
+        var refText = ""
+        if !savedPaths.isEmpty {
+            refText = "[Attached \(savedPaths.count == 1 ? "file" : "files"):\n" + savedPaths.map { "- \($0)" }.joined(separator: "\n") + "]"
+        }
+        return (refText, inlineImages)
+    }
+
+    private static func safeFilename(_ name: String) -> String {
+        let base = (name as NSString).lastPathComponent.replacingOccurrences(of: "/", with: "_")
+        let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "file" : trimmed
+    }
+
+    private static func stageStamp() -> String {
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd-HHmmss"; return f.string(from: Date())
+    }
+
+    /// The session repo's uncommitted changes (status + diff), for reviewing before approving.
+    public func gitDiff(sessionId: String) throws -> String {
+        guard let cwd = cwdFor(sessionId) else { throw ManagerError.unknownSession(sessionId) }
+        guard FileManager.default.fileExists(atPath: cwd) else { throw ManagerError.cwdMissing(cwd) }
+        let status = runGit(["-C", cwd, "status", "--short", "--branch"])
+        if status.code != 0 {
+            return status.err.contains("not a git repository") ? "Not a git repository." : "git failed: \(status.err.trimmingCharacters(in: .whitespacesAndNewlines))"
+        }
+        let stat = runGit(["-C", cwd, "diff", "--stat"]).out
+        let diff = runGit(["-C", cwd, "diff"]).out
+        var out = "# Status\n" + (status.out.isEmpty ? "clean" : status.out)
+        if !stat.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { out += "\n# Changes\n" + stat }
+        if !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { out += "\n# Diff\n" + diff }
+        return String(out.prefix(120_000))
+    }
+
+    private func runGit(_ args: [String], timeout: TimeInterval = 15) -> (code: Int32, out: String, err: String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        p.arguments = ["-c", "core.pager=cat"] + args
+        p.environment = ClaudeCLI.childEnvironment()
+        p.standardInput = FileHandle.nullDevice
+        let outPipe = Pipe(), errPipe = Pipe()
+        p.standardOutput = outPipe; p.standardError = errPipe
+        do { try p.run() } catch { return (-1, "", "cannot run git: \(error.localizedDescription)") }
+        var outData = Data(), errData = Data()
+        let group = DispatchGroup()
+        let q = DispatchQueue(label: "ccremote.git", attributes: .concurrent)
+        group.enter(); q.async { outData = outPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+        group.enter(); q.async { errData = errPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+        if group.wait(timeout: .now() + timeout) == .timedOut { p.terminate() }
+        p.waitUntilExit()
+        return (p.terminationStatus, String(decoding: outData, as: UTF8.self), String(decoding: errData, as: UTF8.self))
     }
 
     /// Images only, capped in size — used for files a SendUserFile tool call points at.

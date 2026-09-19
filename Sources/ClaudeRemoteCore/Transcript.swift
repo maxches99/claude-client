@@ -17,6 +17,26 @@ public struct InlineImage: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+/// A file sent from the phone with a prompt (document, video, voice memo, or any non-image file).
+/// Images travel as `InlineImage` for direct vision; everything else the host stages to disk and
+/// references by path in the prompt, so the agent opens it with its own tools.
+public struct Attachment: Codable, Equatable, Hashable, Sendable {
+    public var filename: String
+    public var mediaType: String   // MIME, e.g. application/pdf, video/quicktime, audio/m4a
+    public var base64: String
+
+    public init(filename: String, mediaType: String, base64: String) {
+        self.filename = filename
+        self.mediaType = mediaType
+        self.base64 = base64
+    }
+
+    public var isImage: Bool { mediaType.hasPrefix("image/") }
+
+    /// Approximate decoded size in bytes (base64 expands ~4:3), for display in the composer.
+    public var approxBytes: Int { base64.count / 4 * 3 }
+}
+
 /// One row in the chat view.
 public struct TranscriptItem: Identifiable, Equatable, Sendable {
     public enum Kind: Equatable, Sendable {

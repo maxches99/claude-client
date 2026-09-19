@@ -12,6 +12,9 @@ public struct ToolStep: Equatable, Sendable {
     public var isError: Bool
     public var resultImages: [InlineImage]
     public var startedAt: Date?
+
+    /// The call was emitted but no result has arrived yet — i.e. it is executing right now.
+    public var awaitingResult: Bool { resultText == nil }
 }
 
 /// One row inside an activity group.
@@ -41,14 +44,37 @@ public struct ActivityGroup: Identifiable, Equatable, Sendable {
     public var toolCount: Int { steps.filter { if case .tool = $0 { return true } else { return false } }.count }
     public var hasThinking: Bool { steps.contains { if case .thinking = $0 { return true } else { return false } } }
 
-    /// What the assistant is doing right now, for the live status line.
-    public var liveStatus: String {
+    /// The tool executing right now (call sent, result not back). Nil when nothing is running.
+    public var runningTool: ToolStep? {
         for step in steps.reversed() {
-            switch step {
-            case .tool(let t) where t.running: return "Running \(ToolSummary.displayName(t.name))…"
-            case .thinking(_, _, true, _): return "Thinking…"
-            default: continue
-            }
+            if case .tool(let t) = step, t.awaitingResult { return t }
+        }
+        return nil
+    }
+
+    /// How many tools are executing at once (Claude can fan out parallel calls).
+    public var runningToolCount: Int {
+        steps.reduce(0) { count, step in
+            if case .tool(let t) = step, t.awaitingResult { return count + 1 }
+            return count
+        }
+    }
+
+    /// What the assistant is doing right now, for the live status line — names the running command,
+    /// e.g. "Bash: swift build" or "Read: ~/app/Main.swift".
+    public var liveStatus: String {
+        if let t = runningTool {
+            let name = ToolSummary.displayName(t.name)
+            let raw = ToolSummary.line(name: t.name, input: t.input)
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+            let extra = runningToolCount > 1 ? " (+\(runningToolCount - 1) more)" : ""
+            if raw.isEmpty { return "Running \(name)…\(extra)" }
+            let detail = raw.count > 100 ? String(raw.prefix(100)) + "…" : raw
+            return "\(name): \(detail)\(extra)"
+        }
+        for step in steps.reversed() {
+            if case .thinking(_, _, true, _) = step { return "Thinking…" }
         }
         return "Working…"
     }

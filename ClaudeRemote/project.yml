@@ -31,6 +31,8 @@ targets:
         NSBonjourServices: ["_ccremote._tcp"]
         NSCameraUsageDescription: Scans the pairing QR code shown by ccremote.
         NSFaceIDUsageDescription: Unlocks the app and confirms approvals before they run on your Mac.
+        NSMicrophoneUsageDescription: Records voice memos to send into a session.
+        NSSpeechRecognitionUsageDescription: Transcribes your voice memos into text for the session.
         ITSAppUsesNonExemptEncryption: false
         CFBundleURLTypes:
           - CFBundleURLName: dev.maxches.ccremote.pair

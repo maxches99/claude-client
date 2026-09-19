@@ -13,8 +13,12 @@ public enum ClientMessage: Codable, Sendable {
     case create(options: NewSessionOptions)
     /// Copy a session (including one open in Claude Desktop) into a new daemon-hosted session and continue there.
     case fork(sessionId: String)
-    case prompt(sessionId: String, text: String, images: [InlineImage] = [])
-    case permission(sessionId: String, requestId: String, allow: Bool, message: String?)
+    /// `attachments` are non-image files (documents, video, voice memos); the host stages them to disk
+    /// and references them by path in the prompt. Images should travel in `images` for direct vision.
+    case prompt(sessionId: String, text: String, images: [InlineImage] = [], attachments: [Attachment]? = nil)
+    /// `remember: true` also persists the CLI's suggested permission rule (from `permission_suggestions`),
+    /// so matching tool calls are auto-approved later ("Allow & remember"). Nil/false = one-off allow.
+    case permission(sessionId: String, requestId: String, allow: Bool, message: String?, remember: Bool? = nil)
     case interrupt(sessionId: String)
     case setModel(sessionId: String, model: String)
     /// Claude: permission mode. Codex: approval policy.
@@ -29,6 +33,8 @@ public enum ClientMessage: Codable, Sendable {
     case close(sessionId: String)
     /// Read an image file from the Mac (e.g. one referenced by a SendUserFile tool call).
     case fetchFile(path: String)
+    /// Ask for the session repo's uncommitted changes (git status + diff) to review before approving.
+    case gitDiff(sessionId: String)
     /// Booted iOS Simulators on the Mac (also pushed as `simulators` whenever the set changes).
     case listSimulators
     /// Start / stop receiving live frames of a booted simulator. `maxPixelSize` bounds the frame's
@@ -52,6 +58,7 @@ public enum ServerMessage: Codable, Sendable {
     case state(state: SessionState)
     case models(agent: AgentKind, items: [ModelOption])
     case file(path: String, mediaType: String?, base64: String?, error: String?)
+    case gitDiff(sessionId: String, diff: String, error: String?)
     case simulators(items: [SimulatorInfo])
     case simulatorFrame(frame: SimulatorFrame)
     case pong

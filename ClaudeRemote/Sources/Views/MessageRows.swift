@@ -102,7 +102,7 @@ struct ActivityGroupView: View {
         case .thinking(let id, let text, let streaming, let duration):
             ThinkingStepRow(text: text, streaming: streaming, duration: duration, expanded: binding(for: id))
         case .tool(let tool):
-            ToolStepRow(step: tool, expanded: binding(for: tool.id))
+            ToolStepRow(step: tool, live: group.isLive, expanded: binding(for: tool.id))
         case .orphanResult(let id, let text, let isError, let images):
             ToolResultView(text: text, isError: isError, images: images, keyPrefix: id)
                 .padding(.leading, 26).padding(.vertical, 4)
@@ -224,9 +224,12 @@ struct Chevron: View {
 /// One tool call: `icon · Verb · argument ›`, with the input and result folded underneath.
 struct ToolStepRow: View {
     let step: ToolStep
+    var live: Bool = false
     @Binding var expanded: Bool
 
     private var presentation: ToolPresentation { ToolPresentation(name: step.name, input: step.input, partialInput: step.partialInput) }
+    /// Executing right now: still streaming its call, or awaiting a result inside a live group.
+    private var isActive: Bool { step.running || (live && step.awaitingResult) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -250,7 +253,7 @@ struct ToolStepRow: View {
                             .truncationMode(presentation.truncateMiddle ? .middle : .tail)
                     }
                     Spacer(minLength: 4)
-                    if step.running {
+                    if isActive {
                         ProgressView().controlSize(.mini).tint(CDS.textMuted)
                     } else {
                         Chevron(expanded: expanded)
@@ -272,7 +275,7 @@ struct ToolStepRow: View {
                     ToolInputDetail(name: step.name, input: step.input, partialInput: step.partialInput)
                     if let result = step.resultText, !result.isEmpty {
                         ToolResultView(text: result, isError: step.isError, keyPrefix: "result:\(step.toolUseId)")
-                    } else if step.running {
+                    } else if isActive {
                         Text("Running…").font(CDS.codeSmall).foregroundStyle(CDS.textMuted)
                     }
                 }

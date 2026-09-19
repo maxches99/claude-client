@@ -124,10 +124,10 @@ final class PhoneSession: @unchecked Sendable {
             case .fork(let sessionId):
                 let state = try await manager.fork(sessionId: sessionId)
                 try await manager.open(sessionId: state.id) { [weak self] msg in self?.send(msg) }
-            case .prompt(let sessionId, let text, let images):
-                try await manager.prompt(sessionId: sessionId, text: text, images: images)
-            case .permission(let sessionId, let requestId, let allow, let reason):
-                await manager.resolvePermission(sessionId: sessionId, requestId: requestId, allow: allow, message: reason)
+            case .prompt(let sessionId, let text, let images, let attachments):
+                try await manager.prompt(sessionId: sessionId, text: text, images: images, attachments: attachments)
+            case .permission(let sessionId, let requestId, let allow, let reason, let remember):
+                await manager.resolvePermission(sessionId: sessionId, requestId: requestId, allow: allow, message: reason, remember: remember ?? false)
             case .interrupt(let sessionId):
                 try await manager.interrupt(sessionId: sessionId)
             case .setModel(let sessionId, let model):
@@ -150,6 +150,13 @@ final class PhoneSession: @unchecked Sendable {
                 } catch {
                     send(.file(path: path, mediaType: nil, base64: nil, error: "\(error)"))
                 }
+            case .gitDiff(let sessionId):
+                do {
+                    let diff = try await manager.gitDiff(sessionId: sessionId)
+                    send(.gitDiff(sessionId: sessionId, diff: diff, error: nil))
+                } catch {
+                    send(.gitDiff(sessionId: sessionId, diff: "", error: "\(error)"))
+                }
             case .listSimulators:
                 send(.simulators(items: await SimulatorStreamer.shared.list()))
             case .simulatorStream(let udid, let enabled, let maxPixelSize, let fps):
@@ -168,7 +175,7 @@ final class PhoneSession: @unchecked Sendable {
 extension ClientMessage {
     var sessionId: String? {
         switch self {
-        case .open(let id), .fork(let id), .prompt(let id, _, _), .permission(let id, _, _, _), .interrupt(let id),
+        case .open(let id), .fork(let id), .prompt(let id, _, _, _), .permission(let id, _, _, _, _), .interrupt(let id), .gitDiff(let id),
              .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id):
             return id
         default:

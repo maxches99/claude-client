@@ -205,25 +205,25 @@ final class AppModel {
         create(.chat(agent: agent))
     }
 
-    func prompt(_ sessionId: String, text: String, images: [InlineImage] = []) {
-        connection.send(.prompt(sessionId: sessionId, text: text, images: images))
+    func prompt(_ sessionId: String, text: String, images: [InlineImage] = [], attachments: [Attachment]? = nil) {
+        connection.send(.prompt(sessionId: sessionId, text: text, images: images, attachments: attachments))
     }
 
-    func decide(_ request: PermissionRequest, allow: Bool, reason: String? = nil) {
+    func decide(_ request: PermissionRequest, allow: Bool, reason: String? = nil, remember: Bool = false) {
         // Approving runs a tool on the Mac — gate Allow behind Face ID when enabled. Deny is never gated.
         if allow && requireBiometricsForApproval {
             Task { @MainActor in
                 let ok = await Biometrics.authenticate(reason: "Approve \(request.toolName)")
                 guard ok else { return }   // failed/cancelled → leave the request pending to retry
-                self.sendDecision(request, allow: true, reason: reason)
+                self.sendDecision(request, allow: true, reason: reason, remember: remember)
             }
             return
         }
-        sendDecision(request, allow: allow, reason: reason)
+        sendDecision(request, allow: allow, reason: reason, remember: remember)
     }
 
-    private func sendDecision(_ request: PermissionRequest, allow: Bool, reason: String?) {
-        connection.send(.permission(sessionId: request.sessionId, requestId: request.id, allow: allow, message: reason))
+    private func sendDecision(_ request: PermissionRequest, allow: Bool, reason: String?, remember: Bool = false) {
+        connection.send(.permission(sessionId: request.sessionId, requestId: request.id, allow: allow, message: reason, remember: remember ? true : nil))
         permissions.removeAll { $0.id == request.id }
     }
 
@@ -290,6 +290,13 @@ final class AppModel {
         connection.send(.fetchFile(path: path))
     }
 
+    /// Latest `git status`+`diff` per session, for reviewing changes before approving.
+    var gitDiffs: [String: String] = [:]
+
+    func requestGitDiff(_ sessionId: String) {
+        connection.send(.gitDiff(sessionId: sessionId))
+    }
+
     // MARK: inbound
 
     private func handle(_ message: ServerMessage) {
@@ -338,6 +345,8 @@ final class AppModel {
             } else {
                 imageCache.fail(key: "file:\(path)")
             }
+        case .gitDiff(let sessionId, let diff, let error):
+            gitDiffs[sessionId] = error.map { "⚠️ \($0)" } ?? diff
         case .simulators(let items):
             simulatorFeed.devices = items
         case .simulatorFrame(let frame):

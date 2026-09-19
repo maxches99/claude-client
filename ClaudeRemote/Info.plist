@@ -43,6 +43,10 @@
 	<string>Unlocks the app and confirms approvals before they run on your Mac.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Finds and connects to ccremote running on your Mac.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Records voice memos to send into a session.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Transcribes your voice memos into text for the session.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

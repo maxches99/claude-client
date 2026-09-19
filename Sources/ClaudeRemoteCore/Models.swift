@@ -181,6 +181,11 @@ public struct PermissionRequest: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public extension PermissionRequest {
+    /// True when the CLI offered a permission rule we can persist ("Allow & remember").
+    var canRemember: Bool { suggestions?.array?.isEmpty == false }
+}
+
 public struct SessionState: Codable, Equatable, Sendable {
     public var id: String
     public var origin: SessionOrigin
