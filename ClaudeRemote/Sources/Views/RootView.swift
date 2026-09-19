@@ -7,7 +7,7 @@ struct RootView: View {
     var body: some View {
         @Bindable var model = model
         Group {
-            if model.pairing == nil {
+            if model.macs.isEmpty {
                 PairingView()
             } else {
                 NavigationStack(path: $model.path) {
@@ -20,7 +20,8 @@ struct RootView: View {
         }
         .tint(CDS.brand)
         .onOpenURL { url in
-            // ccremote://pair?host=…&port=…&token=…&name=… (the daemon's QR code / pair URL)
+            // ccremote://pair?host=…&port=…&token=…&name=… (the daemon's QR code / pair URL):
+            // adds the Mac (or refreshes it if already paired) and switches to it.
             if let info = PairingInfo.parse(pairURL: url.absoluteString) { model.pair(info) }
         }
     }
@@ -32,7 +33,13 @@ struct ConnectionBanner: View {
     var body: some View {
         let status = model.connection.status
         if status != .connected {
-            CDSBanner(kind: .warning, text: status.label, systemImage: "wifi.exclamationmark", showsProgress: status == .connecting)
+            CDSBanner(kind: .warning, text: text(for: status), systemImage: "wifi.exclamationmark", showsProgress: status == .connecting)
         }
+    }
+
+    /// Name the Mac while connecting — with several paired, "Connecting…" alone doesn't say which.
+    private func text(for status: HostConnection.Status) -> String {
+        if status == .connecting, let mac = model.activeMac { return "Connecting to \(mac.displayName)…" }
+        return status.label
     }
 }

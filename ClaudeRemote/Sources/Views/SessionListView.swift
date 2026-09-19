@@ -7,6 +7,8 @@ struct SessionListView: View {
     @State private var showNewSession = false
     @State private var showSettings = false
     @State private var showSimulator = false
+    @State private var showAddMac = false
+    @State private var confirmForget = false
     @State private var search = ""
 
     private var filtered: [SessionSummary] {
@@ -72,8 +74,12 @@ struct SessionListView: View {
         }
         .background(CDS.surface0)
         .toolbarBackground(CDS.surface0, for: .navigationBar)
-        .navigationTitle(model.connection.host?.hostName ?? "Sessions")
+        .navigationTitle(model.activeMac?.displayName ?? "Sessions")
         .navigationBarTitleDisplayMode(.inline)
+        // Tapping the title switches between paired Macs (the title shows a chevron when a menu is attached).
+        .toolbarTitleMenu {
+            MacSwitcherMenu(showAddMac: $showAddMac)
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 SimulatorToolbarButton(isPresented: $showSimulator)
@@ -82,11 +88,23 @@ struct SessionListView: View {
                 Menu {
                     Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
                     Button("Settings", systemImage: "gearshape") { showSettings = true }
-                    Button("Unpair", systemImage: "link.badge.plus", role: .destructive) { model.unpair() }
+                    Divider()
+                    Button("Add Mac…", systemImage: "plus") { showAddMac = true }
+                    Button("Forget this Mac", systemImage: "minus.circle", role: .destructive) { confirmForget = true }
                 } label: {
                     Image(systemName: "ellipsis.circle").foregroundStyle(CDS.textSecondary)
                 }
             }
+        }
+        .confirmationDialog(
+            "Forget \(model.activeMac?.displayName ?? "this Mac")?",
+            isPresented: $confirmForget, titleVisibility: .visible
+        ) {
+            Button("Forget", role: .destructive) {
+                if let id = model.activeMacId { model.forget(id) }
+            }
+        } message: {
+            Text("You'll need to scan its pairing QR code again to reconnect.")
         }
         .sheet(isPresented: $showNewSession) {
             NewSessionView()
@@ -94,6 +112,7 @@ struct SessionListView: View {
         .sheet(isPresented: $showSettings) {
             SettingsView()
         }
+        .sheet(isPresented: $showAddMac) { PairingView() }
         .sheet(isPresented: $showSimulator) { SimulatorView() }
         .onAppear { if model.isConnected { model.refresh() } }
     }
@@ -138,6 +157,23 @@ struct SessionListView: View {
         }
         .listRowBackground(CDS.surface0)
         .listRowSeparator(.hidden)
+    }
+}
+
+/// The paired Macs with a checkmark on the current one, plus "Add Mac…". Lives in the title menu of
+/// the session list; picking a Mac reconnects the whole app to it.
+struct MacSwitcherMenu: View {
+    @Environment(AppModel.self) private var model
+    @Binding var showAddMac: Bool
+
+    var body: some View {
+        Picker("Mac", selection: Binding(get: { model.activeMacId ?? "" }, set: { model.switchTo($0) })) {
+            ForEach(model.macs) { mac in
+                Label(mac.displayName, systemImage: "desktopcomputer").tag(mac.id)
+            }
+        }
+        .pickerStyle(.inline)
+        Button("Add Mac…", systemImage: "plus") { showAddMac = true }
     }
 }
 

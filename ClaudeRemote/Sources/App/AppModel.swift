@@ -9,7 +9,11 @@ final class AppModel {
     let imageCache = ImageCache()
     let simulatorFeed = SimulatorFeed()
 
-    var pairing: PairingInfo?
+    /// Every Mac this phone has paired with; `activeMacId` is the one the app is connected to.
+    private(set) var macs: [PairingInfo] = []
+    private(set) var activeMacId: String?
+    var activeMac: PairingInfo? { macs.first { $0.id == activeMacId } }
+
     var sessions: [SessionSummary] = []
     var projects: [ProjectInfo] = []
     var states: [String: SessionState] = [:]
@@ -40,34 +44,87 @@ final class AppModel {
         locked = lockAppWithBiometrics
         connection.onMessage = { [weak self] message in self?.handle(message) }
         connection.onLearnedFingerprint = { [weak self] fp in
-            guard let self, var p = self.pairing, p.fingerprint == nil else { return }
-            p.fingerprint = fp
-            p.save()
-            self.pairing = p
+            self?.updateActiveMac { if $0.fingerprint == nil { $0.fingerprint = fp } }
         }
-        if let saved = PairingInfo.load() {
-            pairing = saved
-            connection.connect(saved)
-        }
+        let saved = PairedMacs.load()
+        macs = saved.macs
+        activeMacId = saved.activeId ?? saved.macs.first?.id
+        if let mac = activeMac { connection.connect(mac) }
     }
 
-    // MARK: pairing
+    // MARK: paired Macs
 
+    /// Adds a Mac and switches to it. Scanning the QR of an already-paired Mac (new token, IP or
+    /// cert) refreshes that entry instead of adding a second one.
     func pair(_ info: PairingInfo) {
-        info.save()
-        pairing = info
-        connection.connect(info)
+        var info = info
+        if let idx = macs.firstIndex(where: { $0.isSameMac(as: info) }) {
+            let existing = macs[idx]
+            info.id = existing.id
+            info.hostName = existing.hostName
+            info.lastConnectedAt = existing.lastConnectedAt
+            // A QR printed without --relay carries no relay route; keep the one we already know.
+            if !info.hasRelay {
+                info.relayURL = existing.relayURL
+                info.room = existing.room
+            }
+            macs[idx] = info
+        } else {
+            macs.append(info)
+        }
+        activate(info.id)
     }
 
-    func unpair() {
+    /// Shows another paired Mac. Everything on screen belongs to one Mac, so switching drops the
+    /// current connection and the sessions, transcripts and approvals loaded from it.
+    func switchTo(_ id: String) {
+        guard id != activeMacId else { return }
+        activate(id)
+    }
+
+    /// Removes a paired Mac. Forgetting the active one moves to the next, or back to pairing when none is left.
+    func forget(_ id: String) {
+        macs.removeAll { $0.id == id }
+        guard id == activeMacId else { persistMacs(); return }
         connection.disconnect()
-        PairingInfo.clear()
-        pairing = nil
+        resetHostState()
+        activeMacId = nil
+        if let next = macs.first { activate(next.id) } else { persistMacs() }
+    }
+
+    private func activate(_ id: String) {
+        guard let mac = macs.first(where: { $0.id == id }) else { return }
+        connection.disconnect()
+        resetHostState()
+        activeMacId = id
+        persistMacs()
+        connection.connect(mac)
+    }
+
+    private func persistMacs() {
+        PairedMacs(macs: macs, activeId: activeMacId).save()
+    }
+
+    private func updateActiveMac(_ change: (inout PairingInfo) -> Void) {
+        guard let idx = macs.firstIndex(where: { $0.id == activeMacId }) else { return }
+        change(&macs[idx])
+        persistMacs()
+    }
+
+    /// Clears everything that came from the Mac we're leaving.
+    private func resetHostState() {
         sessions = []
+        projects = []
         states = [:]
         transcripts = [:]
         permissions = []
+        errorBanner = nil
         path = []
+        awaitingCreatedSession = false
+        requestedFiles = []
+        imageCache.reset()
+        simulatorFeed.stopWatching()
+        simulatorFeed.devices = []
     }
 
     // MARK: queries
@@ -174,8 +231,9 @@ final class AppModel {
 
     private func handle(_ message: ServerMessage) {
         switch message {
-        case .welcome:
+        case .welcome(let host):
             errorBanner = nil
+            updateActiveMac { $0.hostName = host.hostName; $0.lastConnectedAt = Date() }
             refresh()
             // Re-attach to everything we were looking at before the reconnect.
             for id in path { connection.send(.open(sessionId: id)) }

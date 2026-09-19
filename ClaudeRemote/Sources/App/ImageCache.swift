@@ -35,6 +35,13 @@ final class ImageCache {
         inflight.remove(key)
     }
 
+    /// Drops everything — used when switching Macs, where the same path can name a different file.
+    func reset() {
+        images = [:]
+        failures = []
+        inflight = []
+    }
+
     private static func decode(base64: String) async -> UIImage? {
         guard let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters), let image = UIImage(data: data) else { return nil }
         let maxSide: CGFloat = 1400

@@ -2,9 +2,11 @@ import SwiftUI
 import Network
 import ClaudeRemoteCore
 
-/// First-run screen: pick the Mac (Bonjour), scan the QR, or type host + token.
+/// Pair with a Mac: pick it on the LAN (Bonjour), scan the QR, or type host + token. The root
+/// screen until the first Mac is paired; after that a sheet ("Add Mac…") for the next ones.
 struct PairingView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
     @State private var browser = BonjourBrowser()
     @State private var selectedService: String?
     @State private var manualHost = ""
@@ -32,6 +34,7 @@ struct PairingView: View {
                             HStack {
                                 Image(systemName: "desktopcomputer")
                                 Text(name)
+                                if isPaired(name) { CDSChip(text: "Paired") }
                                 Spacer()
                                 if selectedService == name { Image(systemName: "checkmark").foregroundStyle(.tint) }
                             }
@@ -61,20 +64,34 @@ struct PairingView: View {
                         .frame(maxWidth: .infinity)
                 }
             }
-            .navigationTitle("Pair with your Mac")
+            .navigationTitle(isAddingAnother ? "Add a Mac" : "Pair with your Mac")
+            .toolbar {
+                if isAddingAnother {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                }
+            }
             .sheet(isPresented: $showScanner) {
                 QRScannerView { payload in
                     showScanner = false
                     if let info = PairingInfo.parse(pairURL: payload) {
-                        model.pair(info)
+                        pair(info)
                     } else {
                         scanError = "That QR code is not a ccremote pairing code."
                     }
                 }
             }
+            // A pairing that arrived some other way (the ccremote:// URL from Camera) also ends this sheet.
+            .onChange(of: model.activeMacId) { _, _ in dismiss() }
             .onAppear { browser.start() }
             .onDisappear { browser.stop() }
         }
+    }
+
+    /// Presented over the session list rather than as the first-run screen.
+    private var isAddingAnother: Bool { !model.macs.isEmpty }
+
+    private func isPaired(_ service: String) -> Bool {
+        model.macs.contains { $0.serviceName == service || $0.hostName == service }
     }
 
     private var canConnect: Bool {
@@ -84,11 +101,16 @@ struct PairingView: View {
     private func connect() {
         let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if let service = selectedService {
-            model.pair(PairingInfo(name: service, host: nil, port: 7811, serviceName: service, token: t))
+            pair(PairingInfo(name: service, host: nil, port: 7811, serviceName: service, token: t))
         } else {
             let port = UInt16(manualPort) ?? 7811
-            model.pair(PairingInfo(name: manualHost, host: manualHost.trimmingCharacters(in: .whitespaces), port: port, serviceName: nil, token: t))
+            pair(PairingInfo(name: manualHost, host: manualHost.trimmingCharacters(in: .whitespaces), port: port, serviceName: nil, token: t))
         }
+    }
+
+    private func pair(_ info: PairingInfo) {
+        model.pair(info)
+        dismiss()
     }
 }
 
