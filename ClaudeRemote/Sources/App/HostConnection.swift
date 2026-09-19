@@ -26,13 +26,22 @@ final class HostConnection {
     private(set) var status: Status = .disconnected
     private(set) var host: HostInfo?
     var onMessage: ((ServerMessage) -> Void)?
+    /// Fired once when a cert fingerprint is learned via trust-on-first-use, so it can be persisted.
+    var onLearnedFingerprint: ((String) -> Void)?
 
     private var pairing: PairingInfo?
     private var channel: WebSocketChannel?
     private var generation = 0
+    private var attemptToken = 0
     private var wantConnected = false
     private var retryDelay: TimeInterval = 1
     private let queue = DispatchQueue(label: "ccremote.client")
+
+    /// One connection route to try, in order.
+    private enum Target {
+        case direct        // host:port (or Bonjour), self-signed cert pinned/TOFU
+        case relay         // <relay>/client?room=…, real cert
+    }
 
     func connect(_ pairing: PairingInfo) {
         self.pairing = pairing
@@ -61,24 +70,52 @@ final class HostConnection {
         return false
     }
 
+    private func learnedFingerprint(_ fp: String) {
+        guard pairing?.fingerprint == nil else { return }
+        pairing?.fingerprint = fp
+        onLearnedFingerprint?(fp)
+    }
+
     private func openConnection() {
         guard let pairing, wantConnected else { return }
         generation += 1
-        let gen = generation
         status = .connecting
+        // Try direct (fast, on the LAN / VPN) first, then the relay (works anywhere).
+        var targets: [Target] = []
+        if pairing.hasDirect { targets.append(.direct) }
+        if pairing.hasRelay { targets.append(.relay) }
+        if targets.isEmpty { status = .failed("No route configured"); return }
+        tryTargets(targets, index: 0, gen: generation)
+    }
+
+    private func tryTargets(_ targets: [Target], index: Int, gen: Int) {
+        guard gen == generation, wantConnected, let pairing else { return }
+        guard index < targets.count else { scheduleRetry(); return }   // all failed → back off, start over
+        let target = targets[index]
+        attemptToken += 1
+        let token = attemptToken
+        let next: @MainActor () -> Void = { [weak self] in self?.tryTargets(targets, index: index + 1, gen: gen) }
+
         Task { @MainActor [weak self] in
             guard let self else { return }
-            // NWConnection's WebSocket client needs a URL endpoint (it builds the HTTP upgrade from it),
-            // so Bonjour pairings are resolved to an address first.
-            var url = pairing.directURL
-            if url == nil { url = await self.resolve(pairing) }
-            guard gen == self.generation, self.wantConnected else { return }
-            guard let url else {
-                self.status = .failed("Could not find \(pairing.name) on the network")
-                self.scheduleRetry()
-                return
+            let url: URL?
+            let tls: TLSRole
+            switch target {
+            case .direct:
+                // NWConnection's WebSocket client needs a URL endpoint, so resolve Bonjour to an address first.
+                if let direct = pairing.directURL { url = direct } else { url = await self.resolve(pairing) }
+                let expected = pairing.fingerprint
+                tls = pairing.useTLS ? .clientPinned(expected: expected, learned: { [weak self] fp in
+                    guard expected == nil else { return }
+                    Task { @MainActor [weak self] in self?.learnedFingerprint(fp) }
+                }) : .none
+            case .relay:
+                url = pairing.relayClientURL
+                tls = (pairing.relayClientURL?.scheme == "wss") ? .clientDefault : .none
             }
-            self.openWebSocket(url: url, pairing: pairing, gen: gen)
+            guard gen == self.generation, token == self.attemptToken, self.wantConnected else { return }
+            guard let url else { next(); return }
+            self.openWebSocket(url: url, token: pairing.token, tls: tls, gen: gen, attempt: token, onFailure: next)
         }
     }
 
@@ -93,7 +130,7 @@ final class HostConnection {
                     guard done.take() else { return }
                     var url: URL?
                     if case .hostPort(let host, let port)? = probe.currentPath?.remoteEndpoint {
-                        url = PairingInfo.webSocketURL(host: "\(host)", port: port.rawValue)
+                        url = pairing.webSocketURL(host: "\(host)", port: port.rawValue)
                     }
                     continuation.resume(returning: url)
                     probe.cancel()
@@ -113,25 +150,28 @@ final class HostConnection {
         }
     }
 
-    private func openWebSocket(url: URL, pairing: PairingInfo, gen: Int) {
-        let connection = NWConnection(to: .url(url), using: WebSocketChannel.parameters())
+    private func openWebSocket(url: URL, token: String, tls: TLSRole, gen: Int, attempt: Int, onFailure: @escaping @MainActor () -> Void) {
+        var settled = false   // this attempt has reached ready or been abandoned
+        let connection = NWConnection(to: .url(url), using: WebSocketChannel.parameters(tls: tls))
         let channel = WebSocketChannel(connection: connection, queue: queue)
         self.channel = channel
         channel.onState = { [weak self] state in
             Task { @MainActor [weak self] in
-                guard let self, gen == self.generation else { return }
+                guard let self, gen == self.generation, attempt == self.attemptToken else { return }
                 switch state {
                 case .ready:
+                    settled = true
                     self.retryDelay = 1
-                    self.channel?.send(text: (try? ProtocolCoding.encode(ClientMessage.hello(token: pairing.token, client: "ios"))) ?? "")
-                case .failed(let error):
-                    self.status = .failed(error.localizedDescription)
-                    self.scheduleRetry()
-                case .cancelled:
-                    if self.status != .disconnected { self.status = .disconnected }
-                    self.scheduleRetry()
-                case .waiting(let error):
-                    self.status = .failed(error.localizedDescription)
+                    self.channel?.send(text: (try? ProtocolCoding.encode(ClientMessage.hello(token: token, client: "ios"))) ?? "")
+                case .failed, .cancelled, .waiting:
+                    guard !settled else {
+                        // A live connection dropped — restart the whole search with backoff.
+                        if self.status != .disconnected { self.status = .disconnected }
+                        self.scheduleRetry()
+                        return
+                    }
+                    settled = true
+                    onFailure()   // this route didn't come up; try the next one
                 default:
                     break
                 }
@@ -149,6 +189,15 @@ final class HostConnection {
             }
         }
         channel.start()
+        // Watchdog: if this route hasn't come up in time, move on to the next.
+        queue.asyncAfter(deadline: .now() + 7) { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, gen == self.generation, attempt == self.attemptToken, !settled else { return }
+                settled = true
+                channel.close()
+                onFailure()
+            }
+        }
     }
 
     /// One-shot flag shared between Network callbacks.

@@ -22,6 +22,12 @@ final class AppModel {
 
     init() {
         connection.onMessage = { [weak self] message in self?.handle(message) }
+        connection.onLearnedFingerprint = { [weak self] fp in
+            guard let self, var p = self.pairing, p.fingerprint == nil else { return }
+            p.fingerprint = fp
+            p.save()
+            self.pairing = p
+        }
         if let saved = PairingInfo.load() {
             pairing = saved
             connection.connect(saved)

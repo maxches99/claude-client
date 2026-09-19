@@ -1,5 +1,21 @@
 import Foundation
 import Network
+import Security
+import CryptoKit
+
+/// TLS role for a WebSocket channel.
+public enum TLSRole {
+    /// Plain `ws://` — no transport security (LAN / behind a VPN or a TLS-terminating relay).
+    case none
+    /// `wss://` server presenting `identity` (a self-signed `SecIdentity`, see TLSIdentity).
+    case server(identity: sec_identity_t)
+    /// `wss://` client that pins the server's cert by SHA-256 fingerprint.
+    /// `expected == nil` means trust-on-first-use: accept whatever is presented and report it
+    /// through `learned` so the caller can persist and pin it next time.
+    case clientPinned(expected: String?, learned: (@Sendable (String) -> Void)?)
+    /// `wss://` client with standard system trust (CA + hostname) — for a relay with a real cert.
+    case clientDefault
+}
 
 /// Thin wrapper over an `NWConnection` that speaks WebSocket text frames.
 /// Used by the daemon for accepted connections and by the app for outgoing ones.
@@ -25,14 +41,53 @@ public final class WebSocketChannel: @unchecked Sendable {
         self.queue = queue
     }
 
-    /// TCP + WebSocket parameters shared by client and server.
-    public static func parameters() -> NWParameters {
-        let params = NWParameters.tcp
+    private static let verifyQueue = DispatchQueue(label: "ccremote.tls.verify")
+
+    /// TCP(+TLS) + WebSocket parameters shared by client and server.
+    public static func parameters(tls: TLSRole = .none) -> NWParameters {
+        let params: NWParameters
+        switch tls {
+        case .none:
+            params = NWParameters.tcp
+        case .server(let identity):
+            let options = NWProtocolTLS.Options()
+            sec_protocol_options_set_local_identity(options.securityProtocolOptions, identity)
+            params = NWParameters(tls: options)
+        case .clientPinned(let expected, let learned):
+            let options = NWProtocolTLS.Options()
+            sec_protocol_options_set_verify_block(options.securityProtocolOptions, { _, trust, complete in
+                let secTrust = sec_trust_copy_ref(trust).takeRetainedValue()
+                guard let cert = WebSocketChannel.leafCertificate(secTrust) else { complete(false); return }
+                let fingerprint = WebSocketChannel.fingerprint(of: cert)
+                learned?(fingerprint)
+                if let expected {
+                    complete(fingerprint.caseInsensitiveCompare(expected) == .orderedSame)
+                } else {
+                    complete(true)   // trust-on-first-use
+                }
+            }, verifyQueue)
+            params = NWParameters(tls: options)
+        case .clientDefault:
+            params = NWParameters(tls: NWProtocolTLS.Options())   // default CA + hostname validation
+        }
         let ws = NWProtocolWebSocket.Options()
         ws.autoReplyPing = true
         ws.maximumMessageSize = 64 * 1024 * 1024
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
         return params
+    }
+
+    private static func leafCertificate(_ trust: SecTrust) -> SecCertificate? {
+        if #available(macOS 12.0, iOS 15.0, *) {
+            return (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first
+        } else {
+            return SecTrustGetCertificateAtIndex(trust, 0)
+        }
+    }
+
+    public static func fingerprint(of certificate: SecCertificate) -> String {
+        let der = SecCertificateCopyData(certificate) as Data
+        return SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
     }
 
     public func start() {

@@ -1,0 +1,10 @@
+{
+  "name": "ccremote-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Relay that lets phones reach a Mac's ccremote daemon from outside its network",
+  "bin": { "ccremote-relay": "relay.mjs" },
+  "scripts": { "start": "node relay.mjs" },
+  "dependencies": { "ws": "^8.18.0" }
+}

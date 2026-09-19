@@ -19,9 +19,10 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
 
 | Path | What |
 |---|---|
-| `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, WebSocket channel |
-| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), transcript index, live-session registry, `SessionManager` |
-| `Sources/ccremote` | The daemon: WebSocket server, Bonjour, pairing token + QR |
+| `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, WebSocket channel (TLS roles) |
+| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `TLSIdentity`, `SessionManager` |
+| `Sources/ccremote` | The daemon: `PhoneSession` (one phone connection), `WebSocketServer` (LAN listener + Bonjour), `RelayClient` (dial-out to a relay), pairing token + QR |
+| `relay/` | Node relay for reaching the Mac off-network (`relay/README.md`) |
 | `ClaudeRemote/` | iOS app (xcodegen project) |
 | `Tests/` | Reducer / protocol tests (`swift test`) |
 
@@ -43,9 +44,11 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
    swift run ccremote
    ```
 
-   It prints the Bonjour name, LAN addresses, the pairing token and a QR code. To start it
-   at login instead: `scripts/install-launchagent.sh` (then `ccremote --print-pairing`
-   shows the QR again).
+   It serves `wss://` (self-signed cert, generated once) and prints the Bonjour name, LAN
+   addresses, the pairing token, the cert fingerprint and a QR code. To start it at login
+   **and keep the Mac awake while it runs** (so it stays reachable): `scripts/install-launchagent.sh`
+   — it wraps the daemon in `caffeinate -s` and prints the pairing again (`ccremote --print-pairing`
+   reprints it any time).
 
 3. **Build the app**: `cd ClaudeRemote && xcodegen generate && open ClaudeRemote.xcodeproj`,
    set your team, run on the phone. On first launch pick the Mac from the Bonjour list and
@@ -73,35 +76,46 @@ shown inline when they are images (≤ 12 MB); other files show their path to op
 
 ## Remote access (off Wi-Fi)
 
-Bonjour discovery is LAN-only, but the connection is a plain WebSocket to a host:port, and the
-pairing screen accepts any hostname — so anything that gives the phone a route to the Mac works:
+Bonjour discovery is LAN-only, but the pairing URL/QR carries a direct address **and** an optional
+relay route; the app tries direct first, then the relay — so one pairing works at home and away.
+First make sure the Mac stays reachable: it must not sleep. `scripts/install-launchagent.sh` runs
+the daemon under `caffeinate -s` (no-sleep on AC while it runs); or set `sudo pmset -c sleep 0`.
 
-* **Same Wi-Fi / LAN** — pick the Mac from the list, or use its `ws://<ip>:7811`.
-* **Anywhere (recommended): Tailscale / WireGuard** — install it on both, then pair by the
-  Mac's tailnet name, e.g. host `mac.tail-net.ts.net`, port `7811`, and the token. The mesh
-  VPN carries the traffic; nothing is exposed to the internet. Generate a QR for it with
-  `ccremote --name mac.tail-net.ts.net --print-pairing` after setting the host, or just type
-  the host on the pairing screen.
-* **Not recommended:** forwarding port 7811 on your router — the transport is plain `ws://`,
-  so only do this behind TLS/a tunnel. TLS is a planned follow-up.
+Then pick a route to reach it:
+
+* **Same Wi-Fi / LAN** — pick the Mac from the list, or use `wss://<ip>:7811`.
+* **Mesh VPN — Tailscale / WireGuard (simplest, no relay, no extra code):** put both on the same
+  VPN and pair by the Mac's VPN name, e.g. `wss://mac.tail-net.ts.net:7811`. The tunnel carries the
+  traffic; nothing is exposed to the internet. Type the host on the pairing screen, or
+  `ccremote --name mac.tail-net.ts.net --print-pairing` for a QR.
+* **Relay you run (no VPN client on the phone):** run a small relay on a VPS and start the daemon
+  with `--relay wss://vps --relay-secret …`. The Mac dials out (NAT-friendly); the phone reaches
+  the relay. See [`relay/README.md`](relay/README.md).
+* **Not recommended:** forwarding port 7811 on the router — CGNAT often breaks it and it exposes the
+  daemon directly.
 
 ## Options
 
 ```
 ccremote [--port 7811] [--token …] [--claude /path/to/claude] [--name "Bonjour name"]
-         [--rotate-token] [--print-pairing] [--quiet]
+         [--rotate-token] [--print-pairing] [--quiet] [--no-tls]
+         [--relay wss://vps] [--relay-secret S] [--room R] [--relay-fingerprint FP]
 ```
 
 `CCREMOTE_CLAUDE_PATH` also overrides the binary.
 
 ## Security notes
 
-* The token is the only authentication; keep the pair URL private. `--rotate-token`
-  invalidates old pairings.
-* Traffic is plain `ws://`. Use it on a trusted LAN or over Tailscale / WireGuard (the app
-  accepts any host name, e.g. `mac.tail-net.ts.net`). TLS pinning is a planned follow-up.
-* Anything the phone approves runs on the Mac with your user's permissions — same as
-  approving it in Claude Desktop.
+* **Transport is `wss://` by default.** The daemon mints a self-signed cert (once, in the support
+  dir) and publishes its SHA-256 fingerprint in the pairing URL/QR; the app **pins** it. Pairing
+  without a fingerprint (manual host + token) trusts the cert on first use and pins it thereafter.
+  `--no-tls` falls back to plain `ws://` for LAN debugging only.
+* The pairing **token** authenticates the phone to the daemon end-to-end — including through a relay,
+  which only forwards frames. Keep the pair URL private; `--rotate-token` invalidates old pairings.
+* A **relay can read the traffic it forwards** (the token gates the daemon, but the bytes pass through
+  it in the clear), so run the relay on a host you control. A mesh VPN avoids this entirely.
+* Anything the phone approves runs on the Mac with your user's permissions — same as approving it in
+  Claude Desktop. Prefer a private transport (VPN, or your own relay) over exposing the daemon.
 
 ## Protocol drift
 
