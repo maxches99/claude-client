@@ -28,13 +28,13 @@ DIST="dist"
 
 SIGNING=""
 if [ -n "$TEAM_ID" ]; then
-    SIGNING="DEVELOPMENT_TEAM=$TEAM_ID CODE_SIGN_IDENTITY=${SIGNING_IDENTITY:-Apple Development} CODE_SIGN_STYLE=Manual"
-    [ -n "$SIGN_IDENTITY" ] && SIGNING="DEVELOPMENT_TEAM=$TEAM_ID CODE_SIGN_IDENTITY=$SIGN_IDENTITY CODE_SIGN_STYLE=Manual"
+    SIGNING="DEVELOPMENT_TEAM=$TEAM_ID CODE_SIGN_IDENTITY=${SIGN_IDENTITY:-Apple Development} CODE_SIGN_STYLE=Manual"
 fi
 
+# Universal binary, so the same zip runs on Apple silicon and Intel Macs.
 # shellcheck disable=SC2086
 xcodebuild -project ClaudeRemoteHost/ClaudeRemoteHost.xcodeproj -scheme ClaudeRemoteHost -configuration Release \
-    -derivedDataPath "$DERIVED" -quiet $SIGNING build
+    -derivedDataPath "$DERIVED" -quiet ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO $SIGNING build
 
 APP="$DERIVED/Build/Products/Release/$APP_NAME.app"
 [ -d "$APP" ] || { echo "build did not produce $APP" >&2; exit 1; }
