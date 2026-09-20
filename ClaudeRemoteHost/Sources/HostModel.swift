@@ -208,6 +208,24 @@ final class HostModel {
         NSWorkspace.shared.open(log.fileURL)
     }
 
+    func openApprovalLog() {
+        guard let daemon else { return }
+        let path = daemon.approvalLogPath
+        if !FileManager.default.fileExists(atPath: path) {
+            FileManager.default.createFile(atPath: path, contents: Data(), attributes: [.posixPermissions: 0o600])
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    func blockDevice(_ id: String, _ blocked: Bool) {
+        daemon?.setDeviceBlocked(id, blocked)
+        show(blocked ? "Phone blocked — it can't connect until unblocked" : "Phone unblocked")
+    }
+
+    func forgetDevice(_ id: String) {
+        daemon?.forgetDevice(id)
+    }
+
     func refreshClaude() {
         daemon?.refreshClaudeStatusInBackground()
     }

@@ -171,3 +171,36 @@ final class PullRequestTests: XCTestCase {
         XCTAssertEqual(pr.ciState, .success)
     }
 }
+
+final class E2ELinkTests: XCTestCase {
+    func testHandshakeAndSealedRoundTrip() throws {
+        let phone = E2ELink(token: "secret-token", role: .initiator)
+        let mac = E2ELink(token: "secret-token", role: .responder)
+        XCTAssertTrue(try mac.accept(phone.handshakeMessage()))
+        XCTAssertTrue(try phone.accept(mac.handshakeMessage()))
+        XCTAssertTrue(phone.isEstablished && mac.isEstablished)
+        let sealed = try phone.seal("{\"hello\":1}")
+        XCTAssertTrue(E2ELink.isSealed(sealed))
+        XCTAssertFalse(sealed.contains("hello"))
+        XCTAssertEqual(try mac.open(sealed), "{\"hello\":1}")
+        let back = try mac.seal("{\"welcome\":2}")
+        XCTAssertEqual(try phone.open(back), "{\"welcome\":2}")
+        // Replaying a frame fails: the counter moved on.
+        XCTAssertThrowsError(try mac.open(sealed))
+    }
+
+    func testWrongTokenCannotOpen() throws {
+        let phone = E2ELink(token: "right", role: .initiator)
+        let relay = E2ELink(token: "wrong", role: .responder)
+        _ = try relay.accept(phone.handshakeMessage())
+        _ = try phone.accept(relay.handshakeMessage())
+        XCTAssertThrowsError(try relay.open(try phone.seal("{}")))
+    }
+
+    func testNonHandshakeFramesAreNotConsumed() throws {
+        let link = E2ELink(token: "t", role: .responder)
+        XCTAssertFalse(try link.accept("{\"hello\":{\"token\":\"t\"}}"))
+        XCTAssertFalse(link.isEstablished)
+        XCTAssertThrowsError(try link.seal("x"))
+    }
+}

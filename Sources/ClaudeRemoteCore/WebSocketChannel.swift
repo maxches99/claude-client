@@ -36,6 +36,15 @@ public final class WebSocketChannel: @unchecked Sendable {
         set { lock.withLock { _onState = newValue } }
     }
 
+    private var _secure: E2ELink?
+    /// End-to-end encryption once its handshake is done: outgoing text is sealed, incoming frames
+    /// are opened before `onText` sees them (a frame that fails to authenticate closes the link).
+    /// Handshake frames themselves travel in the clear, before this is set.
+    public var secure: E2ELink? {
+        get { lock.withLock { _secure } }
+        set { lock.withLock { _secure = newValue } }
+    }
+
     public init(connection: NWConnection, queue: DispatchQueue) {
         self.connection = connection
         self.queue = queue
@@ -110,9 +119,14 @@ public final class WebSocketChannel: @unchecked Sendable {
     }
 
     public func send(text: String, completion: (@Sendable (NWError?) -> Void)? = nil) {
+        var payload = text
+        if let secure, secure.isEstablished {
+            guard let sealed = try? secure.seal(text) else { return }
+            payload = sealed
+        }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "text", metadata: [metadata])
-        connection.send(content: Data(text.utf8), contentContext: context, isComplete: true, completion: .contentProcessed { error in
+        connection.send(content: Data(payload.utf8), contentContext: context, isComplete: true, completion: .contentProcessed { error in
             completion?(error)
         })
     }
@@ -141,7 +155,16 @@ public final class WebSocketChannel: @unchecked Sendable {
                     return
                 case .text, .binary:
                     if let content, let text = String(data: content, encoding: .utf8) {
-                        self.onText?(text)
+                        if let secure = self.secure, secure.isEstablished {
+                            guard let plain = try? secure.open(text) else {
+                                // Tampered, replayed or from the wrong key: the link is not ours any more.
+                                self.connection.cancel()
+                                return
+                            }
+                            self.onText?(plain)
+                        } else {
+                            self.onText?(text)
+                        }
                     }
                 default:
                     break

@@ -45,12 +45,13 @@ public struct WatchPairing: Codable, Equatable, Sendable {
     }
 
     /// Routes to try, relay first (works anywhere), then a direct address, each with its TLS role.
-    public func routes() -> [(url: URL, tls: TLSRole)] {
-        var out: [(URL, TLSRole)] = []
-        if let r = relayClientURL() { out.append((r, r.scheme == "wss" ? .clientDefault : .none)) }
+    /// `relay` routes are sealed end to end on top of the transport (see `E2ELink`).
+    public func routes() -> [(url: URL, tls: TLSRole, relay: Bool)] {
+        var out: [(URL, TLSRole, Bool)] = []
+        if let r = relayClientURL() { out.append((r, r.scheme == "wss" ? .clientDefault : .none, true)) }
         if let d = directURL() {
             let tls: TLSRole = useTLS ? .clientPinned(expected: fingerprint, learned: nil) : .none
-            out.append((d, tls))
+            out.append((d, tls, false))
         }
         return out
     }

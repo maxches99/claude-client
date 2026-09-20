@@ -5,7 +5,10 @@ import ClaudeRemoteCore
 
 @main
 struct ClaudeRemoteWidgetBundle: WidgetBundle {
-    var body: some Widget { SessionLiveActivity() }
+    var body: some Widget {
+        SessionLiveActivity()
+        SessionsWidget()
+    }
 }
 
 /// A running session on the lock screen and in the Dynamic Island: what the agent is doing, a turn

@@ -113,13 +113,15 @@ final class WatchClient {
         for route in routes {
             let connection = NWConnection(to: .url(route.url), using: WebSocketChannel.parameters(tls: route.tls))
             let ch = WebSocketChannel(connection: connection, queue: queue)
+            let e2e: E2ELink? = route.relay ? E2ELink(token: pairing.token, role: .initiator) : nil
+            let hello = { (try? ProtocolCoding.encode(ClientMessage.hello(token: pairing.token, client: "watch"))) ?? "" }
             racers.append(ch)
             ch.onState = { [weak self] state in
                 Task { @MainActor [weak self] in
                     guard let self, gen == self.generation else { return }
                     switch state {
                     case .ready:
-                        ch.send(text: (try? ProtocolCoding.encode(ClientMessage.hello(token: pairing.token, client: "watch"))) ?? "")
+                        if let e2e { ch.send(text: e2e.handshakeMessage()) } else { ch.send(text: hello()) }
                     case .failed, .cancelled:
                         if self.channel === ch {                 // the winning connection dropped
                             self.channel = nil
@@ -145,6 +147,12 @@ final class WatchClient {
                 }
             }
             ch.onText = { [weak self] text in
+                if let e2e, !e2e.isEstablished {
+                    guard (try? e2e.accept(text)) == true else { ch.close(); return }
+                    ch.secure = e2e
+                    ch.send(text: hello())
+                    return
+                }
                 guard let message = try? ProtocolCoding.decode(ServerMessage.self, from: text) else { return }
                 Task { @MainActor [weak self] in
                     guard let self, gen == self.generation else { return }
@@ -206,8 +214,10 @@ final class WatchClient {
             permissions.removeAll { $0.id == requestId }
         case .history(let sessionId, let entries):
             var t = Transcript(); t.apply(entries: entries); transcripts[sessionId] = t
-        case .event(let sessionId, let payload):
+        case .event(let sessionId, let payload, _):
             transcripts[sessionId]?.apply(payload)
+        case .catchUp(let sessionId, let entries, _):
+            transcripts[sessionId]?.apply(entries: entries)
         default:
             break   // projects/models/file/simulators/etc. — not shown on the Watch
         }

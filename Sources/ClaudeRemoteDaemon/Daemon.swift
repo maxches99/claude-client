@@ -68,14 +68,24 @@ public enum DaemonError: Error, CustomStringConvertible {
     }
 }
 
-/// The pairing token, shared by every component that checks it so rotation applies at once.
+/// The pairing token, shared by every component that checks it so rotation applies at once —
+/// plus the device ids that are refused even with the right token.
 final class TokenStore: @unchecked Sendable {
     private let lock = NSLock()
     private var value: String
+    private var blocked: Set<String> = []
     init(_ value: String) { self.value = value }
     var current: String {
         get { lock.withLock { value } }
         set { lock.withLock { value = newValue } }
+    }
+    var blockedDeviceIds: Set<String> {
+        get { lock.withLock { blocked } }
+        set { lock.withLock { blocked = newValue } }
+    }
+    func isBlocked(_ deviceId: String?) -> Bool {
+        guard let deviceId else { return false }
+        return lock.withLock { blocked.contains(deviceId) }
     }
 }
 
@@ -167,6 +177,7 @@ public final class Daemon: @unchecked Sendable {
         let notifierConfig = config.notifierConfig
         notifier = notifierConfig.isEnabled ? Notifier(config: notifierConfig, log: log) : nil
         registry = DeviceRegistry(directory: supportDirectory)
+        tokenStore.blockedDeviceIds = registry.blockedIds
         var livePusher: LiveActivityPusher?
         if let pushConfig = config.livePushConfig {
             do {
@@ -177,7 +188,8 @@ public final class Daemon: @unchecked Sendable {
             }
         }
         let codexBackend = codex.map { CodexBackend(cli: $0, listenPort: config.codexPort, log: log) }
-        manager = SessionManager(cli: cli, codex: codexBackend, notifier: notifier, livePusher: livePusher, log: log)
+        manager = SessionManager(cli: cli, codex: codexBackend, notifier: notifier, livePusher: livePusher,
+                                 approvalLog: SessionManager.approvalLogPath(supportDirectory: supportDirectory), log: log)
         SimulatorStreamer.log = log
         SimulatorInput.log = log
 
@@ -347,6 +359,32 @@ public final class Daemon: @unchecked Sendable {
             if let paired { s.paired = paired }
         }
     }
+
+    /// Blocks (or unblocks) a paired phone by its device id; a blocked phone that is connected is
+    /// dropped and refused at its next `hello`.
+    public func setDeviceBlocked(_ deviceId: String, _ blocked: Bool) {
+        let paired = registry.setBlocked(deviceId, blocked)
+        tokenStore.blockedDeviceIds = registry.blockedIds
+        if blocked {
+            let links = lock.withLock { _status.phones.filter { ($0.deviceId ?? "client:\($0.client)") == deviceId } }
+            for link in links {
+                server?.close(phone: link.id)
+                lock.withLock { relay }?.close(phone: link.id)
+            }
+            log("device \(deviceId.prefix(8)) blocked (\(links.count) connection(s) dropped)")
+        }
+        update { s in s.paired = paired }
+    }
+
+    /// Drops a phone from the paired list (it may pair again with the token).
+    public func forgetDevice(_ deviceId: String) {
+        let paired = registry.remove(deviceId)
+        tokenStore.blockedDeviceIds = registry.blockedIds
+        update { s in s.paired = paired }
+    }
+
+    /// Where every decision made from a phone is recorded, one JSON line each.
+    public var approvalLogPath: String { SessionManager.approvalLogPath(supportDirectory: supportDirectory) }
 
     // MARK: pairing token
 

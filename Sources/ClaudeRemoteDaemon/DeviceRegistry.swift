@@ -52,14 +52,30 @@ public struct PairedDevice: Codable, Identifiable, Equatable, Sendable {
     public var lastSeen: Date
     public var lastRoute: PhoneRoute
     public var connections: Int
+    /// Refused at `hello` even with the right token — "forget this phone" without a new token for
+    /// every other one. (The id is what the phone reports, so this keeps an old phone out, not an
+    /// attacker with the token; rotate the token for that.)
+    public var blocked: Bool
 
-    public init(id: String, name: String, firstSeen: Date, lastSeen: Date, lastRoute: PhoneRoute, connections: Int) {
+    public init(id: String, name: String, firstSeen: Date, lastSeen: Date, lastRoute: PhoneRoute, connections: Int, blocked: Bool = false) {
         self.id = id
         self.name = name
         self.firstSeen = firstSeen
         self.lastSeen = lastSeen
         self.lastRoute = lastRoute
         self.connections = connections
+        self.blocked = blocked
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        firstSeen = try c.decode(Date.self, forKey: .firstSeen)
+        lastSeen = try c.decode(Date.self, forKey: .lastSeen)
+        lastRoute = try c.decode(PhoneRoute.self, forKey: .lastRoute)
+        connections = try c.decode(Int.self, forKey: .connections)
+        blocked = try c.decodeIfPresent(Bool.self, forKey: .blocked) ?? false
     }
 }
 
@@ -123,6 +139,27 @@ final class DeviceRegistry: @unchecked Sendable {
                 devices[i].lastSeen = date
                 persist()
             }
+            return devices.sorted { $0.lastSeen > $1.lastSeen }
+        }
+    }
+
+    var blockedIds: Set<String> {
+        lock.withLock { Set(devices.filter(\.blocked).map(\.id)) }
+    }
+
+    @discardableResult
+    func setBlocked(_ id: String, _ blocked: Bool) -> [PairedDevice] {
+        lock.withLock {
+            if let i = devices.firstIndex(where: { $0.id == id }) { devices[i].blocked = blocked; persist() }
+            return devices.sorted { $0.lastSeen > $1.lastSeen }
+        }
+    }
+
+    @discardableResult
+    func remove(_ id: String) -> [PairedDevice] {
+        lock.withLock {
+            devices.removeAll { $0.id == id }
+            persist()
             return devices.sorted { $0.lastSeen > $1.lastSeen }
         }
     }

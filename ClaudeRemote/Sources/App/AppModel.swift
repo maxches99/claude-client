@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import UIKit
+import WidgetKit
 import ClaudeRemoteCore
 
 @MainActor
@@ -34,6 +35,15 @@ final class AppModel {
     var projects: [ProjectInfo] = []
     var states: [String: SessionState] = [:]
     var transcripts: [String: Transcript] = [:]
+    /// The last numbered event applied per session, for a resume after reconnecting.
+    var lastSeq: [String: Int] = [:]
+    /// Raw transcript entries per open session (history + durable events), what the offline cache stores.
+    private var rawEntries: [String: [JSONValue]] = [:]
+    private var cacheDirty: Set<String> = []
+    private var cacheSaveTask: Task<Void, Never>?
+    private var cache: OfflineCache? { activeMacId.map(OfflineCache.init(macId:)) }
+    /// Sessions shown while disconnected come from the cache; the transcript is read-only then.
+    var showingCachedSessions = false
     var permissions: [PermissionRequest] = []
     var errorBanner: String?
     /// Sessions and chats are separate tabs, each with its own navigation stack.
@@ -92,6 +102,7 @@ final class AppModel {
         let saved = PairedMacs.load()
         macs = saved.macs
         activeMacId = saved.activeId ?? saved.macs.first?.id
+        loadCachedSessions()
         if let mac = activeMac { connection.connect(mac) }
     }
 
@@ -141,7 +152,92 @@ final class AppModel {
         resetHostState()
         activeMacId = id
         persistMacs()
+        loadCachedSessions()
         connection.connect(mac)
+    }
+
+    // MARK: home-screen widget
+
+    private var widgetTask: Task<Void, Never>?
+
+    /// Writes the widget's summary (coalesced: sessions change a lot while an agent works).
+    private func scheduleWidgetUpdate() {
+        guard widgetTask == nil else { return }
+        widgetTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            self?.widgetTask = nil
+            self?.updateWidget()
+        }
+    }
+
+    private func updateWidget() {
+        let pendingIds = Set(permissions.map(\.sessionId))
+        let rows = sessions
+            .filter { $0.status != .unknown || $0.origin != .stored }
+            .sorted { a, b in
+                func rank(_ s: SessionSummary) -> Int {
+                    if pendingIds.contains(s.id) || s.status == .awaitingPermission { return 0 }
+                    if s.status == .running { return 1 }
+                    return 2
+                }
+                return rank(a) != rank(b) ? rank(a) < rank(b) : a.updatedAt > b.updatedAt
+            }
+            .prefix(4)
+            .map { WidgetSummary.Row(id: $0.id, title: $0.title, project: $0.projectName,
+                                     status: pendingIds.contains($0.id) ? .awaitingPermission : $0.status, agent: $0.agent) }
+        let pending = Set(pendingIds).union(sessions.filter { $0.status == .awaitingPermission }.map(\.id)).count
+        let running = sessions.filter { $0.status == .running }.count
+        WidgetSummary.save(WidgetSummary(pending: pending, running: running, hostName: activeMac?.displayName ?? "",
+                                         connected: isConnected, rows: Array(rows)))
+        WidgetCenter.shared.reloadTimelines(ofKind: WidgetSummary.kind)
+    }
+
+    // MARK: offline cache
+
+    private func loadCachedSessions() {
+        guard let cache, sessions.isEmpty else { return }
+        let cached = cache.loadSessions()
+        if !cached.isEmpty {
+            sessions = cached
+            showingCachedSessions = true
+        }
+    }
+
+    /// Remembers an entry for the cache and schedules a save.
+    private func remember(_ sessionId: String, entries: [JSONValue], replace: Bool) {
+        let durable = entries.filter { $0["type"]?.string != "stream_event" }
+        if replace { rawEntries[sessionId] = durable } else { rawEntries[sessionId, default: []] += durable }
+        if let list = rawEntries[sessionId], list.count > 600 { rawEntries[sessionId] = Array(list.suffix(600)) }
+        cacheDirty.insert(sessionId)
+        scheduleCacheSave()
+    }
+
+    private func scheduleCacheSave() {
+        guard cacheSaveTask == nil else { return }
+        cacheSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            self?.cacheSaveTask = nil
+            self?.flushCache()
+        }
+    }
+
+    func flushCache() {
+        guard let cache else { return }
+        cacheSaveTask?.cancel(); cacheSaveTask = nil
+        if !showingCachedSessions, !sessions.isEmpty { cache.saveSessions(sessions) }
+        for id in cacheDirty { if let entries = rawEntries[id] { cache.saveTranscript(id, entries: entries) } }
+        cacheDirty = []
+        cache.prune()
+    }
+
+    /// Opens a session from the cache when the Mac cannot be reached; the live open replaces it later.
+    private func openFromCache(_ sessionId: String) -> Bool {
+        guard let cache, let entries = cache.loadTranscript(sessionId) else { return false }
+        var transcript = Transcript()
+        transcript.apply(entries: entries)
+        transcripts[sessionId] = transcript
+        rawEntries[sessionId] = entries
+        return true
     }
 
     private func persistMacs() {
@@ -161,6 +257,10 @@ final class AppModel {
         projects = []
         states = [:]
         transcripts = [:]
+        lastSeq = [:]
+        rawEntries = [:]
+        cacheDirty = []
+        showingCachedSessions = false
         permissions = []
         errorBanner = nil
         sessionPath = []
@@ -202,6 +302,7 @@ final class AppModel {
 
     func open(_ sessionId: String) {
         if transcripts[sessionId] == nil { transcripts[sessionId] = Transcript() }
+        if !isConnected { _ = openFromCache(sessionId) }
         connection.send(.open(sessionId: sessionId))
     }
 
@@ -550,27 +651,44 @@ final class AppModel {
             updateActiveMac { $0.hostName = host.hostName; $0.lastConnectedAt = Date() }
             refresh()
             if codexModels.isEmpty { requestCodexModels() }
-            // Re-attach to everything we were looking at before the reconnect.
-            for id in openSessionIds { connection.send(.open(sessionId: id)) }
+            // Re-attach to everything we were looking at before the reconnect — asking only for the
+            // events missed where the transcript is still here.
+            for id in openSessionIds { connection.send(.open(sessionId: id, since: transcripts[id] != nil ? lastSeq[id] : nil)) }
             if let udid = simulatorFeed.watching { sendSimulatorStream(udid, enabled: true) }
             for id in liveActivities.activeSessionIds { registerActivityToken(id, token: liveActivities.pushToken(for: id)) }
         case .error(let text, _):
             errorBanner = text
         case .sessions(let items):
             sessions = items
+            showingCachedSessions = false
+            scheduleCacheSave()
+            scheduleWidgetUpdate()
         case .projects(let items):
             projects = items
         case .history(let sessionId, let entries):
             var transcript = Transcript()
             transcript.apply(entries: entries)
             transcripts[sessionId] = transcript
+            lastSeq[sessionId] = nil
+            remember(sessionId, entries: entries, replace: true)
             if awaitingCreatedSession {
                 awaitingCreatedSession = false
                 present(sessionId, kind: awaitingKind)
             }
-        case .event(let sessionId, let payload):
+        case .catchUp(let sessionId, let entries, let seq):
             guard transcripts[sessionId] != nil else { return }
+            transcripts[sessionId]?.apply(entries: entries)
+            lastSeq[sessionId] = seq
+            remember(sessionId, entries: entries, replace: false)
+            for entry in entries where entry["type"]?.string != "stream_event" {
+                activityTrackers[sessionId, default: ActivityTracker()].apply(entry)
+            }
+            syncActivity(sessionId)
+        case .event(let sessionId, let payload, let seq):
+            guard transcripts[sessionId] != nil else { return }
+            if let seq { lastSeq[sessionId] = seq }
             transcripts[sessionId]?.apply(payload)
+            if payload["type"]?.string != "stream_event" { remember(sessionId, entries: [payload], replace: false) }
             if payload["type"]?.string != "stream_event" {
                 activityTrackers[sessionId, default: ActivityTracker()].apply(payload)
                 syncActivity(sessionId)
@@ -578,9 +696,11 @@ final class AppModel {
         case .permissionRequest(let request):
             if !permissions.contains(where: { $0.id == request.id }) { permissions.append(request) }
             syncActivity(request.sessionId)
+            updateWidget()
         case .permissionResolved(let sessionId, let requestId):
             permissions.removeAll { $0.id == requestId }
             syncActivity(sessionId)
+            scheduleWidgetUpdate()
         case .state(let state):
             let wasRunning = states[state.id]?.status == .running || states[state.id]?.status == .awaitingPermission
             states[state.id] = state
@@ -727,6 +847,8 @@ final class AppModel {
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     func enteredBackground() {
+        flushCache()
+        updateWidget()
         guard !liveActivities.activeSessionIds.isEmpty, backgroundTask == .invalid else { return }
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "ccremote.activity.linger") { [weak self] in
             self?.endBackgroundTask()

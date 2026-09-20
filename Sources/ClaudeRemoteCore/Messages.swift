@@ -9,7 +9,9 @@ public enum ClientMessage: Codable, Sendable {
     case listSessions
     case listProjects
     /// Attach to a session: resumes it under the daemon if needed, or tails it when it is open in desktop.
-    case open(sessionId: String)
+    /// With `since` (the last event `seq` the phone applied) a reconnecting phone gets just what it
+    /// missed as `catchUp` when the host still has it, instead of the whole history again.
+    case open(sessionId: String, since: Int? = nil)
     case create(options: NewSessionOptions)
     /// Copy a session (including one open in Claude Desktop) into a new daemon-hosted session and continue there.
     case fork(sessionId: String)
@@ -94,7 +96,11 @@ public enum ServerMessage: Codable, Sendable {
     /// Transcript entries loaded from disk (same shape as live `event` payloads).
     case history(sessionId: String, entries: [JSONValue])
     /// A raw stream-json message from the CLI (assistant / user / stream_event / result / system).
-    case event(sessionId: String, payload: JSONValue)
+    /// `seq` numbers the durable events of a session (partial `stream_event`s carry none), so a
+    /// phone can ask for what it missed after a reconnect.
+    case event(sessionId: String, payload: JSONValue, seq: Int? = nil)
+    /// The events after the `since` a phone asked for in `open`, applied on top of what it has.
+    case catchUp(sessionId: String, entries: [JSONValue], lastSeq: Int)
     case permissionRequest(request: PermissionRequest)
     case permissionResolved(sessionId: String, requestId: String)
     case state(state: SessionState)

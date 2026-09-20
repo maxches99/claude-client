@@ -101,6 +101,7 @@ public actor SessionManager {
     private let registry: LiveSessionRegistry
     private let notifier: Notifier?
     private let livePusher: LiveActivityPusher?
+    private let approvalLog: String?
     private let log: @Sendable (String) -> Void
     private var subscribers: [UUID: Sender] = [:]
     /// Live Activity push tokens per session, per phone. Kept while the phone is away — that's the point.
@@ -127,7 +128,9 @@ public actor SessionManager {
     private var hookWaiters: [String: HookWaiter] = [:]
 
     public init(cli: ClaudeCLI, codex: CodexBackend? = nil, store: TranscriptStore = TranscriptStore(), registry: LiveSessionRegistry = LiveSessionRegistry(),
-                notifier: Notifier? = nil, livePusher: LiveActivityPusher? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) {
+                notifier: Notifier? = nil, livePusher: LiveActivityPusher? = nil, approvalLog: String? = nil,
+                log: @escaping @Sendable (String) -> Void = { _ in }) {
+        self.approvalLog = approvalLog
         self.cli = cli
         self.codex = codex
         self.store = store
@@ -161,6 +164,35 @@ public actor SessionManager {
 
     private func broadcast(_ message: ServerMessage) {
         for send in subscribers.values { send(message) }
+    }
+
+    /// Recent durable events per session, numbered, so a phone that reconnects can catch up.
+    private var eventLog: [String: [(seq: Int, payload: JSONValue)]] = [:]
+    private var eventSeq: [String: Int] = [:]
+    private static let eventLogLimit = 400
+
+    /// Sends a session event to every phone, numbering and remembering it unless it is a partial
+    /// stream delta (those are superseded by the full message that follows).
+    private func emit(sessionId: String, payload: JSONValue) {
+        guard payload["type"]?.string != "stream_event" else {
+            broadcast(.event(sessionId: sessionId, payload: payload))
+            return
+        }
+        let seq = (eventSeq[sessionId] ?? 0) + 1
+        eventSeq[sessionId] = seq
+        var log = eventLog[sessionId] ?? []
+        log.append((seq, payload))
+        if log.count > SessionManager.eventLogLimit { log.removeFirst(log.count - SessionManager.eventLogLimit) }
+        eventLog[sessionId] = log
+        broadcast(.event(sessionId: sessionId, payload: payload, seq: seq))
+    }
+
+    /// Everything after `since`, if the log still reaches back that far (nil otherwise = resend history).
+    private func catchUp(sessionId: String, since: Int) -> [JSONValue]? {
+        let current = eventSeq[sessionId] ?? 0
+        if since == current { return [] }
+        guard since < current, let log = eventLog[sessionId], let first = log.first, first.seq <= since + 1 else { return nil }
+        return log.filter { $0.seq > since }.map(\.payload)
     }
 
     // MARK: info
@@ -274,7 +306,14 @@ public actor SessionManager {
     // MARK: open / create
 
     /// Attach the caller to a session. Sends `history` + `state` to `reply`; subsequent traffic is broadcast.
-    public func open(sessionId: String, reply: Sender) async throws {
+    public func open(sessionId: String, since: Int? = nil, reply: Sender) async throws {
+        // A reconnecting phone that still holds the transcript only needs the gap.
+        if let since, let state = hosted[sessionId]?.state ?? watched[sessionId]?.state ?? watchedCodex[sessionId]?.state,
+           let missed = catchUp(sessionId: sessionId, since: since) {
+            reply(.catchUp(sessionId: sessionId, entries: missed, lastSeq: eventSeq[sessionId] ?? since))
+            reply(.state(state: state))
+            return
+        }
         if let h = hosted[sessionId] {
             sendHistory(sessionId: sessionId, to: reply)
             reply(.state(state: h.state))
@@ -545,7 +584,7 @@ public actor SessionManager {
         } else if let codex {
             // Codex does not echo the prompt; show ours right away, then hand the turn over.
             let event = try await codex.prompt(threadId: sessionId, text: text, images: images, options: codexOptions(h))
-            broadcast(.event(sessionId: sessionId, payload: event))
+            emit(sessionId: sessionId, payload: event)
             h.forkedHistory?.append(event)
         }
         if h.title == nil {
@@ -604,13 +643,41 @@ public actor SessionManager {
         return .object(fields)
     }
 
+    public static func approvalLogPath(supportDirectory: String) -> String { supportDirectory + "/approvals.jsonl" }
+
+    /// One line per decision made from a phone: when, who, which session and tool, what was decided.
+    private func recordApproval(_ request: PermissionRequest, allow: Bool, remember: Bool, by device: String?, source: String) {
+        guard let approvalLog else { return }
+        let summary = ToolSummary.line(name: request.toolName, input: request.input)
+        let entry: JSONValue = .object([
+            "at": .string(ISO8601DateFormatter().string(from: Date())),
+            "device": .string(device ?? "phone"),
+            "session": .string(request.sessionId),
+            "project": .string(((cwdFor(request.sessionId) ?? "") as NSString).lastPathComponent),
+            "tool": .string(request.toolName),
+            "summary": .string(String(summary.prefix(300))),
+            "decision": .string(allow ? (remember ? "allow+remember" : "allow") : "deny"),
+            "source": .string(source),
+        ])
+        let line = entry.serializedString() + "\n"
+        if let handle = FileHandle(forWritingAtPath: approvalLog) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            handle.write(Data(line.utf8))
+        } else {
+            FileManager.default.createFile(atPath: approvalLog, contents: Data(line.utf8), attributes: [.posixPermissions: 0o600])
+        }
+    }
+
     public func resolvePermission(sessionId: String, requestId: String, allow: Bool, message: String?, remember: Bool = false,
-                                  updatedInput: JSONValue? = nil) async {
-        if hookWaiters[requestId] != nil {
+                                  updatedInput: JSONValue? = nil, by device: String? = nil) async {
+        if let waiter = hookWaiters[requestId] {
+            recordApproval(waiter.request, allow: allow, remember: remember, by: device, source: "hook")
             resolveHookPermission(requestId: requestId, allow: allow, message: message, remember: remember, updatedInput: updatedInput)
             return
         }
         guard let h = hosted[sessionId], let request = h.pending.removeValue(forKey: requestId) else { return }
+        recordApproval(request, allow: allow, remember: remember, by: device, source: h.agent == .codex ? "codex" : "claude")
         let original = h.originalInputs.removeValue(forKey: requestId) ?? request.input
         if let waiter = h.waiters.removeValue(forKey: requestId) {
             waiter.resume(returning: SessionManager.decision(allow: allow, input: original, updatedInput: updatedInput, suggestions: request.suggestions,
@@ -823,7 +890,7 @@ public actor SessionManager {
         let events = w.translator.apply(line)
         for event in events {
             w.history.append(event)
-            broadcast(.event(sessionId: sessionId, payload: event))
+            emit(sessionId: sessionId, payload: event)
         }
         let status: SessionStatus = w.translator.isRunning ? .running : .idle
         if status != w.state.status {
@@ -881,7 +948,7 @@ public actor SessionManager {
         // Attach the transcript tail as soon as the file shows up (new sessions write it on first turn).
         if !w.tailing, let stored = store.session(id: sessionId) {
             let history = store.history(path: stored.path)
-            for entry in history.entries { broadcast(.event(sessionId: sessionId, payload: entry)) }
+            for entry in history.entries { emit(sessionId: sessionId, payload: entry) }
             attachTail(to: w, sessionId: sessionId, path: stored.path, startOffset: history.endOffset)
         }
         if w.tailing { attachSubagentTails(to: w, sessionId: sessionId) }
@@ -897,7 +964,7 @@ public actor SessionManager {
         w.transcriptPath = path
         w.tail = TranscriptTail(path: path, startOffset: startOffset) { [weak self] entry in
             guard let self else { return }
-            Task { await self.broadcast(.event(sessionId: sessionId, payload: entry)) }
+            Task { await self.emit(sessionId: sessionId, payload: entry) }
         }
         attachSubagentTails(to: w, sessionId: sessionId, fromStart: false)
     }
@@ -910,7 +977,7 @@ public actor SessionManager {
             let size = (try? FileManager.default.attributesOfItem(atPath: file)[.size] as? NSNumber)?.uint64Value ?? 0
             w.subagentTails[file] = TranscriptTail(path: file, startOffset: fromStart ? 0 : size, accepts: { _ in true }) { [weak self] entry in
                 guard let self, let tagged = TranscriptStore.tagSubagent(entry, parent: parent) else { return }
-                Task { await self.broadcast(.event(sessionId: sessionId, payload: tagged)) }
+                Task { await self.emit(sessionId: sessionId, payload: tagged) }
             }
         }
     }
@@ -1540,7 +1607,7 @@ public actor SessionManager {
         default:
             break
         }
-        broadcast(.event(sessionId: sessionId, payload: message))
+        emit(sessionId: sessionId, payload: message)
     }
 
     private func handleControlRequest(sessionId: String, requestId: String, request: JSONValue) async -> JSONValue? {
@@ -1623,7 +1690,7 @@ public actor SessionManager {
             guard let h = hosted[threadId] else { return }
             // Keep the replayable history (full messages, results); deltas are transient.
             if payload["type"]?.string != "stream_event" { h.forkedHistory?.append(payload) }
-            broadcast(.event(sessionId: threadId, payload: payload))
+            emit(sessionId: threadId, payload: payload)
         case .turnStarted(let threadId):
             guard let h = hosted[threadId] else { return }
             if h.turnStartedAt == nil { h.turnStartedAt = Date() }

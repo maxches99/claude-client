@@ -88,6 +88,10 @@ final class RelayClient: @unchecked Sendable {
         for s in open { s.close() }
     }
 
+    func close(phone id: UUID) {
+        lock.withLock { sessions[id] }?.close()
+    }
+
     /// Keeps the idle control connection warm so a reverse proxy (Caddy) doesn't drop it.
     private func startKeepalive() {
         keepalive?.cancel()

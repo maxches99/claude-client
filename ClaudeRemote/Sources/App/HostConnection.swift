@@ -150,16 +150,19 @@ final class HostConnection {
             let token = pairing.token
             var settled = false   // this racer reached a terminal state (won or lost)
             let channel = WebSocketChannel(connection: NWConnection(to: .url(url), using: WebSocketChannel.parameters(tls: tls)), queue: self.queue)
+            // Through the relay the Mac's own certificate is not on the wire, so the traffic is sealed
+            // end to end with a key only the paired ends can derive; direct links pin the Mac's cert.
+            let e2e: E2ELink? = target == .relay ? E2ELink(token: token, role: .initiator) : nil
+            let hello = { (try? ProtocolCoding.encode(ClientMessage.hello(token: token, client: "ios", device: DeviceIdentity.name,
+                                                                          deviceId: DeviceIdentity.id))) ?? "" }
             self.racers.append(channel)
             channel.onState = { [weak self] state in
                 Task { @MainActor [weak self] in
                     guard let self, gen == self.generation else { return }
                     switch state {
                     case .ready:
-                        // Send hello; the winner is decided when `welcome` comes back.
-                        channel.send(text: (try? ProtocolCoding.encode(ClientMessage.hello(token: token, client: "ios",
-                                                                                             device: DeviceIdentity.name,
-                                                                                             deviceId: DeviceIdentity.id))) ?? "")
+                        // Send hello (after the encryption handshake on a relay); the winner is decided when `welcome` comes back.
+                        if let e2e { channel.send(text: e2e.handshakeMessage()) } else { channel.send(text: hello()) }
                     case .failed, .cancelled, .waiting:
                         if self.channel === channel {
                             // The winning connection dropped — restart the race with backoff.
@@ -176,6 +179,13 @@ final class HostConnection {
                 }
             }
             channel.onText = { [weak self] text in
+                if let e2e, !e2e.isEstablished {
+                    // The Mac's half of the handshake: from here on every frame is sealed.
+                    guard (try? e2e.accept(text)) == true else { channel.close(); return }
+                    channel.secure = e2e
+                    channel.send(text: hello())
+                    return
+                }
                 guard let message = try? ProtocolCoding.decode(ServerMessage.self, from: text) else { return }
                 Task { @MainActor [weak self] in
                     guard let self, gen == self.generation else { return }

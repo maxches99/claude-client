@@ -86,6 +86,10 @@ final class WebSocketServer: @unchecked Sendable {
         for s in open { s.close() }
     }
 
+    func close(phone id: UUID) {
+        lock.withLock { sessions[id] }?.close()
+    }
+
     /// "Address already in use" is the one people hit (another ccremote is running) — say so.
     static func describe(_ error: NWError) -> String {
         if case .posix(let code) = error, code == .EADDRINUSE {

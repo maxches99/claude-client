@@ -107,7 +107,8 @@ struct ConnectionBanner: View {
 
     /// Name the Mac while connecting — with several paired, "Connecting…" alone doesn't say which.
     private func text(for status: HostConnection.Status) -> String {
-        if status == .connecting, let mac = model.activeMac { return "Connecting to \(mac.displayName)…" }
-        return status.label
+        let cached = model.showingCachedSessions ? " · showing what was last seen" : ""
+        if status == .connecting, let mac = model.activeMac { return "Connecting to \(mac.displayName)…" + cached }
+        return status.label + cached
     }
 }

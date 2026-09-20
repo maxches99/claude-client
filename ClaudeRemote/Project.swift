@@ -18,6 +18,7 @@ let project = Project(
             deploymentTargets: .iOS("17.0"),
             infoPlist: .file(path: "Info.plist"),
             sources: ["Sources/**", "Shared/**"],
+            entitlements: .file(path: "ClaudeRemote.entitlements"),
             dependencies: [
                 .package(product: "ClaudeRemoteCore"),
                 // A Watch app can't ride along in the Mac Catalyst build.
@@ -38,6 +39,7 @@ let project = Project(
             deploymentTargets: .iOS("17.0"),
             infoPlist: .file(path: "ClaudeRemoteWidget/Info.plist"),
             sources: ["ClaudeRemoteWidget/Sources/**", "Shared/**"],
+            entitlements: .file(path: "ClaudeRemoteWidget/ClaudeRemoteWidget.entitlements"),
             dependencies: [
                 .package(product: "ClaudeRemoteCore"),
             ],

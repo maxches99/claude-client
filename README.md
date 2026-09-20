@@ -342,7 +342,32 @@ Running a second daemon for development next to the Host app? Use another port *
 `CCREMOTE_CLAUDE_PATH` / `CCREMOTE_CODEX_PATH` also override the binaries. Other files in the support dir: `token`,
 `tls-identity.p12` (+ pem), `relay-room`, `devices.json` (paired phones), `pairing-qr.png`.
 
+## Reconnects, offline, widget
+
+* A reconnecting phone asks for the events it missed (`open … since <seq>`): the Mac numbers every
+  durable event and keeps the last few hundred per session, so a dropped connection costs the gap,
+  not the whole transcript again — unless the Mac restarted or the gap is too old.
+* With the Mac unreachable the app still opens: the last session list and the transcripts it had
+  opened come from a per-Mac cache (Library/Caches; the banner says "showing what was last seen").
+  Sending waits for the connection.
+* A **home-screen / lock-screen widget** ("Sessions") shows approvals waiting, agents working and the
+  sessions worth a look; a tap opens the first one needing approval. The app updates it whenever
+  sessions or permissions change (App Group; a simulator build shows placeholder data).
+
 ## Security notes
+
+* **Through the relay the traffic is end-to-end encrypted.** The relay only ever carries sealed frames:
+  after the WebSocket opens, phone and Mac exchange ephemeral X25519 keys and nonces and derive a
+  ChaCha20-Poly1305 key from that plus the pairing token (`E2ELink`), so the relay — which sees every
+  byte — can neither read nor forge anything, and a token that leaks later does not open past
+  traffic. Each frame is bound to its direction and sequence, so it cannot be replayed. Direct links
+  pin the Mac's certificate instead.
+* **Phones can be blocked one at a time.** The Host panel's menu on a paired phone has Block (it is
+  dropped and refused at its next hello, by the device id it reports) and Forget; "New token" still
+  cuts everyone off at once.
+* **Every decision made from a phone is logged** to `~/Library/Application Support/ccremote/approvals.jsonl`
+  (when, which phone, session, tool, summary, allow / deny / remembered) — "Approvals…" in the panel
+  opens it.
 
 * **Transport is `wss://` by default.** The daemon mints a self-signed cert (once, in the support
   dir) and publishes its SHA-256 fingerprint in the pairing URL/QR; the app **pins** it. Pairing

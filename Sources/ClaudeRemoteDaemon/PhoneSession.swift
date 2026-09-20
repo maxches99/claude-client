@@ -20,6 +20,8 @@ final class PhoneSession: @unchecked Sendable {
     private let onClose: @Sendable (UUID) -> Void
     private var authenticated = false
     private var closed = false
+    /// Who this is, for the approval log.
+    private var deviceLabel = "phone"
 
     init(channel: WebSocketChannel, route: PhoneRoute, remote: String?, manager: SessionManager, tokenStore: TokenStore, daemonVersion: String,
          log: @escaping @Sendable (String) -> Void,
@@ -83,6 +85,21 @@ final class PhoneSession: @unchecked Sendable {
     }
 
     private func handle(_ text: String) {
+        // A phone may open with an encryption handshake (it does through the relay): answer it and
+        // switch the channel to sealed frames; everything after, hello included, is encrypted.
+        if !authenticated, channel.secure == nil, text.hasPrefix("{\"e2e\"") {
+            let link = E2ELink(token: tokenStore.current, role: .responder)
+            do {
+                guard try link.accept(text) else { return }
+            } catch {
+                send(.error(message: "\(error)", sessionId: nil))
+                return
+            }
+            channel.send(text: link.handshakeMessage())   // still plaintext: `secure` is set after
+            channel.secure = link
+            log("client \(id.uuidString.prefix(8)) end-to-end encryption on (\(route.rawValue))")
+            return
+        }
         let message: ClientMessage
         do {
             message = try ProtocolCoding.decode(ClientMessage.self, from: text)
@@ -91,9 +108,16 @@ final class PhoneSession: @unchecked Sendable {
             return
         }
         guard authenticated else {
+            if case .hello(_, _, _, let deviceId) = message, tokenStore.isBlocked(deviceId) {
+                log("client \(id.uuidString.prefix(8)) refused: device \(deviceId?.prefix(8) ?? "?") is blocked")
+                send(.error(message: "This phone was removed from the Mac. Pair again with a new QR code.", sessionId: nil))
+                channel.close()
+                return
+            }
             if case .hello(let token, let client, let device, let deviceId) = message, token == tokenStore.current {
                 authenticated = true
                 log("client \(id.uuidString.prefix(8)) authenticated (\(device ?? client), \(route.rawValue))")
+                deviceLabel = device ?? client
                 onAuthenticated(PhoneLink(id: id, client: client, device: device, deviceId: deviceId, route: route, remote: remote))
                 Task { [weak self] in
                     guard let self else { return }
@@ -146,8 +170,8 @@ final class PhoneSession: @unchecked Sendable {
                 send(.sessions(items: await manager.listSessions()))
             case .listProjects:
                 send(.projects(items: await manager.listProjects()))
-            case .open(let sessionId):
-                try await manager.open(sessionId: sessionId) { [weak self] msg in self?.send(msg) }
+            case .open(let sessionId, let since):
+                try await manager.open(sessionId: sessionId, since: since) { [weak self] msg in self?.send(msg) }
             case .create(let options):
                 let state = try await manager.create(options)
                 send(.history(sessionId: state.id, entries: []))
@@ -159,7 +183,7 @@ final class PhoneSession: @unchecked Sendable {
                 try await manager.prompt(sessionId: sessionId, text: text, images: images, attachments: attachments)
             case .permission(let sessionId, let requestId, let allow, let reason, let remember, let updatedInput):
                 await manager.resolvePermission(sessionId: sessionId, requestId: requestId, allow: allow, message: reason,
-                                                remember: remember ?? false, updatedInput: updatedInput)
+                                                remember: remember ?? false, updatedInput: updatedInput, by: deviceLabel)
             case .dequeue(let sessionId, let promptId):
                 await manager.dequeue(sessionId: sessionId, promptId: promptId)
             case .interrupt(let sessionId):
@@ -291,7 +315,7 @@ final class PhoneSession: @unchecked Sendable {
 extension ClientMessage {
     var sessionId: String? {
         switch self {
-        case .open(let id), .fork(let id), .prompt(let id, _, _, _), .permission(let id, _, _, _, _, _), .dequeue(let id, _), .interrupt(let id), .gitDiff(let id, _, _),
+        case .open(let id, _), .fork(let id), .prompt(let id, _, _, _), .permission(let id, _, _, _, _, _), .dequeue(let id, _), .interrupt(let id), .gitDiff(let id, _, _),
              .gitStatus(let id), .gitAction(let id, _), .liveActivity(let id, _, _),
              .listFiles(let id, _), .getUsage(let id), .listDirectory(let id, _), .searchProject(let id, _), .listCommands(let id),
              .runCommand(let id, _, _), .cancelCommand(let id, _), .pullRequest(let id),

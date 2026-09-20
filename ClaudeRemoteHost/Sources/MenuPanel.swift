@@ -212,6 +212,7 @@ struct MenuPanel: View {
         HStack(spacing: 12) {
             OpenWindowButton(id: WindowID.settings) { Text("Settings…") }
             OpenWindowButton(id: WindowID.log) { Text("Log") }
+            Button("Approvals…") { model.openApprovalLog() }
             Spacer()
             Button("Quit") { model.quit() }
         }
@@ -249,6 +250,13 @@ struct PhonesSection: View {
                         .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    if let deviceId = phone.deviceId {
+                        Menu {
+                            Button("Disconnect & block", role: .destructive) { model.blockDevice(deviceId, true) }
+                        } label: { Image(systemName: "ellipsis.circle") }
+                            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    }
+                    Spacer()
                 }
             }
             // Paired phones that are not connected right now.
@@ -256,17 +264,26 @@ struct PhonesSection: View {
                 !model.connectedPhones.contains { ($0.deviceId ?? "client:\($0.client)") == device.id }
             }) { device in
                 HStack(spacing: 8) {
-                    Image(systemName: "iphone.gen3").foregroundStyle(.secondary).frame(width: 16)
+                    Image(systemName: device.blocked ? "iphone.gen3.slash" : "iphone.gen3").foregroundStyle(device.blocked ? .red : .secondary).frame(width: 16)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(device.name).font(.callout)
                         HStack(spacing: 4) {
-                            Text("Paired · last seen")
+                            Text(device.blocked ? "Blocked · last seen" : "Paired · last seen")
                             Text(device.lastSeen, style: .relative)
                             Text("ago")
                         }
                         .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Menu {
+                        if device.blocked {
+                            Button("Unblock") { model.blockDevice(device.id, false) }
+                        } else {
+                            Button("Block", role: .destructive) { model.blockDevice(device.id, true) }
+                        }
+                        Button("Forget") { model.forgetDevice(device.id) }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 }
             }
         }
