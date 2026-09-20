@@ -146,8 +146,11 @@ final class PhoneSession: @unchecked Sendable {
                 try await manager.open(sessionId: state.id) { [weak self] msg in self?.send(msg) }
             case .prompt(let sessionId, let text, let images, let attachments):
                 try await manager.prompt(sessionId: sessionId, text: text, images: images, attachments: attachments)
-            case .permission(let sessionId, let requestId, let allow, let reason, let remember):
-                await manager.resolvePermission(sessionId: sessionId, requestId: requestId, allow: allow, message: reason, remember: remember ?? false)
+            case .permission(let sessionId, let requestId, let allow, let reason, let remember, let updatedInput):
+                await manager.resolvePermission(sessionId: sessionId, requestId: requestId, allow: allow, message: reason,
+                                                remember: remember ?? false, updatedInput: updatedInput)
+            case .dequeue(let sessionId, let promptId):
+                await manager.dequeue(sessionId: sessionId, promptId: promptId)
             case .interrupt(let sessionId):
                 try await manager.interrupt(sessionId: sessionId)
             case .setModel(let sessionId, let model):
@@ -243,7 +246,7 @@ final class PhoneSession: @unchecked Sendable {
 extension ClientMessage {
     var sessionId: String? {
         switch self {
-        case .open(let id), .fork(let id), .prompt(let id, _, _, _), .permission(let id, _, _, _, _), .interrupt(let id), .gitDiff(let id, _, _),
+        case .open(let id), .fork(let id), .prompt(let id, _, _, _), .permission(let id, _, _, _, _, _), .dequeue(let id, _), .interrupt(let id), .gitDiff(let id, _, _),
              .gitStatus(let id), .gitAction(let id, _), .liveActivity(let id, _, _),
              .listFiles(let id, _), .getUsage(let id),
              .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id):

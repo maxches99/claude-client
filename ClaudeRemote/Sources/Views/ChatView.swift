@@ -108,8 +108,13 @@ struct ChatView: View {
             }
         }
         .sheet(item: $presentedPermission) { request in
-            PermissionSheet(request: request)
-                .presentationDetents([.medium, .large])
+            if request.isQuestion {
+                QuestionSheet(request: request).presentationDetents([.large])
+            } else if request.isPlanReview {
+                PlanSheet(request: request).presentationDetents([.large])
+            } else {
+                PermissionSheet(request: request).presentationDetents([.medium, .large])
+            }
         }
         .sheet(isPresented: $showSimulator) { SimulatorView { files.append($0) } }
         .sheet(isPresented: $showLimits) { LimitsView(sessionId: sessionId) }
@@ -117,6 +122,16 @@ struct ChatView: View {
         .onChange(of: pending?.id) {
             // The inline card is the prompt; a stale details sheet just goes away.
             if pending == nil { presentedPermission = nil }
+        }
+        .onChange(of: model.composerInsert) { _, insert in
+            // A quoted diff selection from the Git screen or the permission sheet lands in the draft.
+            guard let insert, insert.sessionId == sessionId else { return }
+            model.composerInsert = nil
+            showGit = false
+            presentedPermission = nil
+            let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+            draft = (trimmed.isEmpty ? "" : draft + "\n\n") + insert.text + "\n\n"
+            composerFocused = true
         }
         .onAppear { model.openIfNeeded(sessionId) }
     }
@@ -487,7 +502,17 @@ struct ComposerDock: View {
     var body: some View {
         VStack(spacing: 8) {
             if let pending {
-                PermissionDockCard(request: pending, onDetails: { onShowPermission(pending) })
+                if pending.isQuestion {
+                    QuestionCard(request: pending, compact: true, onDetails: { onShowPermission(pending) })
+                        .id(pending.id)
+                } else if pending.isPlanReview {
+                    PlanDockCard(request: pending, onReview: { onShowPermission(pending) })
+                } else {
+                    PermissionDockCard(request: pending, onDetails: { onShowPermission(pending) })
+                }
+            }
+            if let queued = state?.queued, !queued.isEmpty {
+                QueuedPromptsStrip(sessionId: sessionId, queued: queued)
             }
             if let error = state?.lastError, state?.status == .exited {
                 notice(error, tint: CDS.danger)
@@ -508,7 +533,7 @@ struct ComposerDock: View {
         if agent == .codex {
             return "Open in the Codex app on the Mac — this is a live view; what you send is queued there for the session to pick up."
         }
-        return "Open in \(summary?.sourceLabel ?? "Desktop") on the Mac — messages are delivered there; permission prompts are answered on the Mac."
+        return "Open in \(summary?.sourceLabel ?? "Desktop") on the Mac — messages are delivered there. Permission prompts come here when the Mac's hook is on (Host → Settings), otherwise they're answered on the Mac."
     }
 
     private func notice(_ text: String, tint: Color) -> some View {

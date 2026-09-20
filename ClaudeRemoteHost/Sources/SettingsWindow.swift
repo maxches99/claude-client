@@ -1,4 +1,5 @@
 import SwiftUI
+import ClaudeCodeHost
 import ClaudeRemoteDaemon
 
 /// Edits `config.json`. Applying restarts the daemon (phone-hosted CLI sessions end; they can
@@ -9,6 +10,8 @@ struct SettingsWindow: View {
     @State private var draft = DaemonConfig()
     @State private var portText = ""
     @State private var loaded = false
+    @State private var hookInstalled = false
+    @State private var hookError: String?
     @Environment(\.dismiss) private var dismiss
 
     private var isDirty: Bool { draft != model.config }
@@ -112,7 +115,7 @@ struct SettingsWindow: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 760)
+        .frame(width: 560, height: 860)
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Text(isDirty ? "Applying restarts the host; sessions started from the phone stop (they can be resumed)." : " ")
@@ -135,6 +138,7 @@ struct SettingsWindow: View {
     private func load() {
         draft = model.config
         portText = draft.port == 7811 ? "" : String(draft.port)
+        hookInstalled = ClaudeHooks.isInstalled()
     }
 
     private func optional(_ binding: Binding<String?>) -> Binding<String> {

@@ -18,7 +18,11 @@ public enum ClientMessage: Codable, Sendable {
     case prompt(sessionId: String, text: String, images: [InlineImage] = [], attachments: [Attachment]? = nil)
     /// `remember: true` also persists the CLI's suggested permission rule (from `permission_suggestions`),
     /// so matching tool calls are auto-approved later ("Allow & remember"). Nil/false = one-off allow.
-    case permission(sessionId: String, requestId: String, allow: Bool, message: String?, remember: Bool? = nil)
+    /// `updatedInput` replaces the tool input the CLI proceeds with — how a question card answers an
+    /// AskUserQuestion (`{questions, answers}`); nil keeps the input as requested.
+    case permission(sessionId: String, requestId: String, allow: Bool, message: String?, remember: Bool? = nil, updatedInput: JSONValue? = nil)
+    /// Drop a prompt that is still waiting in the session's queue (see `SessionState.queued`).
+    case dequeue(sessionId: String, promptId: String)
     case interrupt(sessionId: String)
     case setModel(sessionId: String, model: String)
     /// Claude: permission mode. Codex: approval policy.

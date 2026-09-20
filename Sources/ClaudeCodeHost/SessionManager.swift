@@ -42,6 +42,11 @@ public actor SessionManager {
         var activityPushTimer: Task<Void, Never>?
         /// History a Codex fork/resume came with, replayed to the next phone that opens it.
         var forkedHistory: [JSONValue]?
+        /// Prompts sent while a turn was running; the first goes out when the turn ends.
+        var queue: [(prompt: QueuedPrompt, images: [InlineImage], attachments: [Attachment]?)] = []
+        /// Tool inputs as the CLI sent them, where the phone-facing request was enriched (a plan read
+        /// from disk); the reply echoes the original.
+        var originalInputs: [String: JSONValue] = [:]
         var agent: AgentKind { state.agent }
         init(process: CLIProcess?, state: SessionState) {
             self.process = process
@@ -109,6 +114,14 @@ public actor SessionManager {
     private var codexThreads: [CodexBackend.ThreadInfo] = []
     /// Codex threads this daemon closed recently — `thread/list` picks them up with a delay.
     private var recentCodexThreads: [CodexBackend.ThreadInfo] = []
+    /// Permission prompts of sessions we do not host (Desktop / terminal), handed to us by the CLI's
+    /// `PermissionRequest` hook and parked until a phone answers or the hook gives up.
+    private struct HookWaiter {
+        let request: PermissionRequest
+        let originalInput: JSONValue
+        let continuation: CheckedContinuation<JSONValue?, Never>
+    }
+    private var hookWaiters: [String: HookWaiter] = [:]
 
     public init(cli: ClaudeCLI, codex: CodexBackend? = nil, store: TranscriptStore = TranscriptStore(), registry: LiveSessionRegistry = LiveSessionRegistry(),
                 notifier: Notifier? = nil, livePusher: LiveActivityPusher? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) {
@@ -137,7 +150,11 @@ public actor SessionManager {
 
     public func unsubscribe(_ id: UUID) {
         subscribers[id] = nil
+        // Nobody left to answer: let the Mac show its own prompt instead of holding the CLI.
+        if subscribers.isEmpty { cancelHookPermissions(reason: "no phone connected") }
     }
+
+    public var hasSubscribers: Bool { !subscribers.isEmpty }
 
     private func broadcast(_ message: ServerMessage) {
         for send in subscribers.values { send(message) }
@@ -213,7 +230,7 @@ public actor SessionManager {
         let ownPids = Set(hosted.values.compactMap { $0.process?.pid })
         for live in registry.liveSessions() where !seen.contains(live.sessionId) && !ownPids.contains(live.pid) {
             let s = storedById[live.sessionId]
-            let status: SessionStatus = live.status == "busy" ? .running : .idle
+            let status: SessionStatus = hasHookPermission(sessionId: live.sessionId) ? .awaitingPermission : (live.status == "busy" ? .running : .idle)
             result.append(SessionSummary(id: live.sessionId, title: s?.title ?? live.name ?? "Desktop session", cwd: live.cwd,
                                          updatedAt: s?.updatedAt ?? live.updatedAt, origin: .desktop, status: status,
                                          desktopName: live.name, entrypoint: live.entrypoint))
@@ -265,7 +282,9 @@ public actor SessionManager {
         if let live = registry.liveSessions().first(where: { $0.sessionId == sessionId && !ownPids.contains($0.pid) }) {
             // Open in Claude Desktop / a terminal: follow the transcript instead of starting a second process.
             // Prompts are delivered through the process's messaging inbox (see PeerInbox).
-            let state = SessionState(id: sessionId, origin: .desktop, status: live.status == "busy" ? .running : .idle, cwd: live.cwd)
+            var state = SessionState(id: sessionId, origin: .desktop, status: live.status == "busy" ? .running : .idle, cwd: live.cwd)
+            state.pendingPermissions = hookWaiters.values.map(\.request).filter { $0.sessionId == sessionId }.sorted { $0.createdAt < $1.createdAt }
+            if !state.pendingPermissions.isEmpty { state.status = .awaitingPermission }
             let w = Watched(state: state, live: live)
             watched[sessionId] = w
             if let stored {
@@ -487,6 +506,15 @@ public actor SessionManager {
             }
             throw ManagerError.unknownSession(sessionId)
         }
+        if h.state.status == .running || h.state.status == .awaitingPermission {
+            // Mid-turn: park it. Sending now would either interleave with the running turn (Claude)
+            // or be refused (Codex); the queue goes out in order as turns end.
+            let queued = QueuedPrompt(text: text, attachmentCount: images.count)
+            h.queue.append((queued, images, nil))
+            h.state.queued.append(queued)
+            broadcast(.state(state: h.state))
+            return
+        }
         if let process = h.process {
             try process.sendUser(text, images: images)
         } else if let codex {
@@ -509,27 +537,144 @@ public actor SessionManager {
         CodexBackend.TurnOptions(model: h.state.model, effort: h.state.effort, approvalPolicy: h.state.permissionMode, sandbox: h.state.sandbox)
     }
 
-    public func resolvePermission(sessionId: String, requestId: String, allow: Bool, message: String?, remember: Bool = false) async {
-        guard let h = hosted[sessionId], let request = h.pending.removeValue(forKey: requestId) else { return }
-        if let waiter = h.waiters.removeValue(forKey: requestId) {
-            let response: JSONValue
-            if allow {
-                var fields: [String: JSONValue] = ["behavior": "allow", "updatedInput": request.input]
-                // "Allow & remember": echo the CLI's suggested rule so matching calls are auto-approved later.
-                if remember, let suggestions = request.suggestions, suggestions.array?.isEmpty == false {
-                    fields["updatedPermissions"] = suggestions
-                }
-                response = .object(fields)
-            } else {
-                response = .object(["behavior": "deny", "message": .string(message ?? "Denied from phone")])
+    /// Pull a prompt back out of the queue before it is sent.
+    public func dequeue(sessionId: String, promptId: String) {
+        guard let h = hosted[sessionId] else { return }
+        h.queue.removeAll { $0.prompt.id == promptId }
+        h.state.queued.removeAll { $0.id == promptId }
+        broadcast(.state(state: h.state))
+    }
+
+    /// The turn ended: send the next queued prompt, if any. Runs after the idle state went out so
+    /// the phone sees the turn boundary.
+    private func flushQueue(sessionId: String) {
+        guard let h = hosted[sessionId], h.state.status == .idle, !h.queue.isEmpty else { return }
+        let next = h.queue.removeFirst()
+        h.state.queued.removeAll { $0.id == next.prompt.id }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.prompt(sessionId: sessionId, text: next.prompt.text, images: next.images, attachments: next.attachments)
+            } catch {
+                await self.queueFailed(sessionId: sessionId, error: "\(error)")
             }
-            waiter.resume(returning: response)
+        }
+    }
+
+    private func queueFailed(sessionId: String, error: String) {
+        guard let h = hosted[sessionId] else { return }
+        h.state.lastError = "Queued prompt failed: \(error)"
+        broadcast(.state(state: h.state))
+    }
+
+    /// The reply for a `can_use_tool` / hook decision. `updatedInput` (a question's answers) wins over
+    /// the input as requested; "remember" echoes the CLI's suggested rule so matching calls are
+    /// auto-approved later.
+    private static func decision(allow: Bool, input: JSONValue, updatedInput: JSONValue?, suggestions: JSONValue?, remember: Bool,
+                                 message: String?, echoInput: Bool) -> JSONValue {
+        guard allow else { return .object(["behavior": "deny", "message": .string(message ?? "Denied from phone")]) }
+        var fields: [String: JSONValue] = ["behavior": "allow"]
+        if let updatedInput { fields["updatedInput"] = updatedInput } else if echoInput { fields["updatedInput"] = input }
+        if remember, let suggestions, suggestions.array?.isEmpty == false { fields["updatedPermissions"] = suggestions }
+        return .object(fields)
+    }
+
+    public func resolvePermission(sessionId: String, requestId: String, allow: Bool, message: String?, remember: Bool = false,
+                                  updatedInput: JSONValue? = nil) async {
+        if hookWaiters[requestId] != nil {
+            resolveHookPermission(requestId: requestId, allow: allow, message: message, remember: remember, updatedInput: updatedInput)
+            return
+        }
+        guard let h = hosted[sessionId], let request = h.pending.removeValue(forKey: requestId) else { return }
+        let original = h.originalInputs.removeValue(forKey: requestId) ?? request.input
+        if let waiter = h.waiters.removeValue(forKey: requestId) {
+            waiter.resume(returning: SessionManager.decision(allow: allow, input: original, updatedInput: updatedInput, suggestions: request.suggestions,
+                                                             remember: remember, message: message, echoInput: true))
         } else if let codex {
             await codex.decide(requestId: requestId, allow: allow)
         }
         h.state.pendingPermissions.removeAll { $0.id == requestId }
         broadcast(.permissionResolved(sessionId: sessionId, requestId: requestId))
         update(h, status: h.pending.isEmpty ? .running : .awaitingPermission)
+    }
+
+    // MARK: permissions of sessions we do not host (PermissionRequest hook)
+
+    /// The CLI of a Desktop / terminal session is about to show a permission prompt and asks us
+    /// first (through the `PermissionRequest` hook). Parks the request for a phone to answer and
+    /// returns the hook decision, or nil to let the Mac prompt as usual — at once when no phone is
+    /// connected or the session is one of ours (its `can_use_tool` already reaches the phone).
+    public func requestHookPermission(requestId: String, sessionId: String, toolName: String, input: JSONValue, suggestions: JSONValue?,
+                                      cwd: String?) async -> JSONValue? {
+        guard hosted[sessionId] == nil, !subscribers.isEmpty else { return nil }
+        let shown = SessionManager.enrichedInput(toolName: toolName, input: input)
+        let request = PermissionRequest(id: requestId, sessionId: sessionId, toolName: toolName, input: shown,
+                                        title: nil, description: nil, displayName: nil, decisionReason: nil, toolUseId: nil, suggestions: suggestions)
+        log("[\(sessionId.prefix(8))] hook permission: \(toolName)")
+        let response: JSONValue? = await withCheckedContinuation { continuation in
+            hookWaiters[requestId] = HookWaiter(request: request, originalInput: input, continuation: continuation)
+            if let w = watched[sessionId] {
+                w.state.pendingPermissions.append(request)
+                w.state.status = .awaitingPermission
+                broadcast(.state(state: w.state))
+            }
+            broadcast(.permissionRequest(request: request))
+            broadcast(.sessions(items: listSessions()))
+            schedulePermissionNotification(sessionId: sessionId, requestId: requestId, permission: request)
+        }
+        return response
+    }
+
+    /// The hook gave up waiting (its connection closed): forget the request; the Mac prompts.
+    public func cancelHookPermission(requestId: String) {
+        guard let waiter = hookWaiters.removeValue(forKey: requestId) else { return }
+        waiter.continuation.resume(returning: nil)
+        finishHookPermission(waiter.request)
+    }
+
+    private func cancelHookPermissions(reason: String) {
+        guard !hookWaiters.isEmpty else { return }
+        log("hook permissions released (\(reason))")
+        for id in Array(hookWaiters.keys) { cancelHookPermission(requestId: id) }
+    }
+
+    private func resolveHookPermission(requestId: String, allow: Bool, message: String?, remember: Bool, updatedInput: JSONValue?) {
+        guard let waiter = hookWaiters.removeValue(forKey: requestId) else { return }
+        // Only an explicit new input (answers) travels back; the hook path rejects an "updated" input
+        // that merely repeats the original for tools that need user interaction.
+        waiter.continuation.resume(returning: SessionManager.decision(allow: allow, input: waiter.originalInput, updatedInput: updatedInput,
+                                                                      suggestions: waiter.request.suggestions, remember: remember,
+                                                                      message: message, echoInput: false))
+        log("[\(waiter.request.sessionId.prefix(8))] hook permission \(allow ? "allowed" : "denied") from phone: \(waiter.request.toolName)")
+        finishHookPermission(waiter.request)
+    }
+
+    private func finishHookPermission(_ request: PermissionRequest) {
+        if let w = watched[request.sessionId] {
+            w.state.pendingPermissions.removeAll { $0.id == request.id }
+            if w.state.pendingPermissions.isEmpty, w.state.status == .awaitingPermission {
+                w.state.status = w.live.status == "busy" ? .running : .idle
+            }
+            broadcast(.state(state: w.state))
+        }
+        broadcast(.permissionResolved(sessionId: request.sessionId, requestId: request.id))
+        broadcast(.sessions(items: listSessions()))
+    }
+
+    private func hasHookPermission(sessionId: String) -> Bool {
+        hookWaiters.values.contains { $0.request.sessionId == sessionId }
+    }
+
+    /// What the phone should see for a tool input: ExitPlanMode's plan is read from the plan file when
+    /// the CLI did not inline it.
+    private static func enrichedInput(toolName: String, input: JSONValue) -> JSONValue {
+        guard toolName == PlanReview.toolName, PlanReview.plan(in: input) == nil,
+              let path = PlanReview.planFilePath(in: input),
+              let data = FileManager.default.contents(atPath: (path as NSString).expandingTildeInPath),
+              let text = String(data: data.prefix(400_000), encoding: .utf8), !text.isEmpty else { return input }
+        var fields = input.object ?? [:]
+        fields["plan"] = .string(text)
+        return .object(fields)
     }
 
     public func interrupt(sessionId: String) async throws {
@@ -712,7 +857,7 @@ public actor SessionManager {
             for entry in history.entries { broadcast(.event(sessionId: sessionId, payload: entry)) }
             attachTail(to: w, sessionId: sessionId, path: stored.path, startOffset: history.endOffset)
         }
-        let status: SessionStatus = live.status == "busy" ? .running : .idle
+        let status: SessionStatus = hasHookPermission(sessionId: sessionId) ? .awaitingPermission : (live.status == "busy" ? .running : .idle)
         if status != w.state.status {
             w.state.status = status
             broadcast(.state(state: w.state))
@@ -1080,6 +1225,7 @@ public actor SessionManager {
             h.thinking = false
             update(h, status: .idle)
             broadcast(.sessions(items: listSessions()))
+            flushQueue(sessionId: sessionId)
             if let notifier {
                 let name = notifyName(h)
                 if isError {
@@ -1101,10 +1247,14 @@ public actor SessionManager {
         switch request["subtype"]?.string {
         case "can_use_tool":
             guard let h = hosted[sessionId] else { return nil }
+            let toolName = request["tool_name"]?.string ?? "tool"
+            let input = request["input"] ?? .object([:])
+            let shown = SessionManager.enrichedInput(toolName: toolName, input: input)
+            if shown != input { h.originalInputs[requestId] = input }
             let permission = PermissionRequest(
                 id: requestId, sessionId: sessionId,
-                toolName: request["tool_name"]?.string ?? "tool",
-                input: request["input"] ?? .object([:]),
+                toolName: toolName,
+                input: shown,
                 title: request["title"]?.string,
                 description: request["description"]?.string,
                 displayName: request["display_name"]?.string,
@@ -1143,6 +1293,8 @@ public actor SessionManager {
         for (_, waiter) in h.waiters { waiter.resume(returning: nil) }
         h.waiters.removeAll()
         h.pending.removeAll()
+        h.queue.removeAll()
+        h.state.queued.removeAll()
         h.state.pendingPermissions.removeAll()
         h.state.status = .exited
         if status != 0 {
@@ -1183,6 +1335,7 @@ public actor SessionManager {
             h.thinking = false
             update(h, status: .idle)
             broadcast(.sessions(items: listSessions()))
+            flushQueue(sessionId: threadId)
             if let notifier {
                 let name = notifyName(h)
                 if isError {
@@ -1311,9 +1464,16 @@ public actor SessionManager {
     }
 
     private func firePermissionNotificationIfPending(sessionId: String, requestId: String, permission: PermissionRequest, notifier: Notifier) {
-        guard let h = hosted[sessionId], h.pending[requestId] != nil else { return }
+        let name: String
+        if let h = hosted[sessionId], h.pending[requestId] != nil {
+            name = notifyName(h)
+        } else if let waiter = hookWaiters[requestId] {
+            name = ((cwdFor(waiter.request.sessionId) ?? "") as NSString).lastPathComponent
+        } else {
+            return
+        }
         let summary = ToolSummary.line(name: permission.toolName, input: permission.input)
-        let body = "\(notifyName(h)) · \(permission.toolName)" + (summary.isEmpty ? "" : ": \(summary)")
+        let body = "\(name) · \(permission.toolName)" + (summary.isEmpty ? "" : ": \(summary)")
         notifier.notify(.permission, body: body)
     }
 }

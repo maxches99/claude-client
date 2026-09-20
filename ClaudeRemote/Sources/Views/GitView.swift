@@ -325,6 +325,7 @@ struct GitFileDiffView: View {
     let file: GitFile
 
     @State private var showStaged: Bool
+    @State private var selection: Set<Int> = []
 
     init(sessionId: String, file: GitFile) {
         self.sessionId = sessionId
@@ -347,13 +348,24 @@ struct GitFileDiffView: View {
                     Text(showStaged ? "Nothing staged for this file." : "No working-tree changes.")
                         .font(CDS.caption).foregroundStyle(CDS.textMuted).padding()
                 } else {
-                    DiffText(diff: diff).padding(8)
+                    DiffText(diff: diff, selection: $selection).padding(8)
                 }
             } else {
                 ProgressView().tint(CDS.textMuted).padding()
             }
         }
         .background(CDS.surface0)
+        .safeAreaInset(edge: .bottom) {
+            if let diff, !selection.isEmpty {
+                DiffSelectionBar(sessionId: sessionId, diff: diff, selection: $selection).padding(12)
+            } else if diff?.isEmpty == false {
+                Text("Tap a line, then another, to select a range and ask the agent about it.")
+                    .font(CDS.caption).foregroundStyle(CDS.textMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .background(CDS.surface0.opacity(0.95))
+            }
+        }
         .navigationTitle(file.fileName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(CDS.surface0, for: .navigationBar)
@@ -384,7 +396,7 @@ struct GitFileDiffView: View {
                 }
             }
         }
-        .task(id: showStaged) { model.requestGitFileDiff(sessionId, path: file.path, staged: showStaged) }
+        .task(id: showStaged) { selection = []; model.requestGitFileDiff(sessionId, path: file.path, staged: showStaged) }
         .onChange(of: model.gitStatuses[sessionId]) {
             // After stage / unstage the file may only have one side left — follow it, or leave when it's gone.
             guard let current else { dismiss(); return }

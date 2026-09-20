@@ -22,8 +22,8 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
 | Path | What |
 |---|---|
 | `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, `CodexTranslator` / `CodexRollout` (Codex events and session files → the same reducer), WebSocket channel (TLS roles) |
-| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `TLSIdentity`, `SessionManager` |
-| `Sources/ClaudeRemoteDaemon` | The daemon as a library: `Daemon` (config → listener + Bonjour, relay dial-out, notifier, phone tracking, status), `DaemonConfig` (`config.json`), `PhoneSession`, `WebSocketServer`, `RelayClient`, `DeviceRegistry`, pairing URL + QR |
+| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` |
+| `Sources/ClaudeRemoteDaemon` | The daemon as a library: `Daemon` (config → listener + Bonjour, relay dial-out, notifier, phone tracking, status), `DaemonConfig` (`config.json`), `PhoneSession`, `WebSocketServer`, `HookServer` (hook socket), `RelayClient`, `DeviceRegistry`, pairing URL + QR |
 | `Sources/ccremote` | Thin CLI front-end for the daemon (flags, terminal QR) |
 | `ClaudeRemoteHost/` | **Mac menu-bar app** hosting the daemon: status, paired phones, QR, settings, open-at-login, keep-awake (Tuist project) |
 | `relay/` | Node relay for reaching the Mac off-network (`relay/README.md`) |
@@ -104,8 +104,8 @@ list and enter the token.
   sessions use to message each other). Because that channel is peer-to-peer, the Mac shows
   your prompt as coming from another session — Claude still acts on it, but for a clean
   user-role thread use "Continue a copy on the phone", which forks it
-  (`--resume --fork-session`) into a Phone session with the full history. Permission prompts
-  for a Desktop session are still answered on the Mac.
+  (`--resume --fork-session`) into a Phone session with the full history. Their permission
+  prompts can come to the phone too — see "Approving Desktop and terminal sessions" below.
 * **Recent** — transcripts on disk. Opening one resumes it under the daemon.
 
 The app has two tabs: **Sessions** (work in a project) and **Chats**. Claude is clay-coloured
@@ -140,6 +140,37 @@ session turns into an ordinary one the phone can resume. It cannot be driven fro
 message you send is handed to `codex queue`, so the session picks it up in the app. Closed threads
 open the normal way (resume), or "Continue a copy on the phone" forks them.
 
+## Questions, plans, and the queue
+
+* **Questions** — when the agent asks something (`AskUserQuestion`), the card above the composer
+  is the form: the options as chips (one or several per question), "Other…" for a typed answer,
+  one question at a time with Next / Send answers; "Expand" opens all of them in a sheet with
+  room for notes. The answers go back through the same permission reply, as the CLI's own
+  dialog would send them. Answering needs no Face ID — nothing runs yet.
+* **Plans** — `ExitPlanMode` shows as "Plan ready for review": a glimpse in the card, Review to
+  read the plan rendered like a reply (and share it), then Approve, "Approve & accept edits"
+  when the CLI suggests switching mode, or Request changes with a note — which is sent back as
+  the rejection reason, so the agent revises the plan.
+* **Queue** — sending while the agent is mid-turn does not interrupt it: the prompt waits in a
+  strip above the composer ("Queued · goes out when this turn ends") and is sent, in order, as
+  soon as the turn finishes. The × pulls one back. Works for Claude and Codex sessions the phone
+  hosts; a Desktop session's inbox already queues on its own.
+
+## Approving Desktop and terminal sessions
+
+Sessions the Mac runs itself — Claude Desktop, `claude` in a terminal, an SDK script — cannot
+be driven over stdin, but their permission prompts can still be answered from the phone. Turn on
+**Host app → Settings → "Ask the phone before prompting on the Mac"** (or `ccremote
+--install-hook`). That adds a `PermissionRequest` hook to `~/.claude/settings.json`: before the
+CLI shows its dialog it POSTs the request over the daemon's Unix socket
+(`~/Library/Application Support/ccremote/hook.sock`); the daemon shows it on every connected
+phone as the usual permission card (with Allow / Deny / "Allow & don't ask again", the question
+form, or the plan review), and the hook's answer is the decision. Nothing is answered on the Mac
+meanwhile — its dialog only appears if no phone answers within ten minutes, or at once when no
+phone is connected (the socket answers empty and the CLI prompts as usual). Hooks are read when a
+session starts, so sessions already open keep prompting on the Mac until restarted; without the
+daemon running the hook exits quietly. `--uninstall-hook` (or the toggle) removes it.
+
 ## Git from the phone
 
 The branch icon in a session opens the repo: current branch (switch or create one from the menu),
@@ -148,6 +179,11 @@ a per-file diff, stage / unstage / discard by swipe, and a commit box (staged on
 Actions run `git` on the Mac in the session's directory with `GIT_TERMINAL_PROMPT=0`, so a push that
 needs a password fails fast instead of hanging — use the keychain helper or an SSH key with an agent.
 While the agent is mid-turn in that repo, actions are refused so the phone doesn't race its edits.
+
+Diffs are how you point at code: tap a line, then another, and the range is selected; **Ask about
+this** drops it into the composer as a quote — the file, the line numbers and the lines as a
+fenced `diff` block — so "this condition is inverted" carries exactly the lines you mean. The same
+works in the permission sheet's working-tree review. Copy puts the same quote on the clipboard.
 
 ## Find, share, dictate
 
@@ -259,6 +295,7 @@ ccremote [--port 7811] [--token …] [--claude /path/to/claude] [--codex /path/t
          [--relay wss://vps | --no-relay] [--relay-secret S] [--room R] [--relay-fingerprint FP]
          [--ntfy TOPIC] [--telegram-token T --telegram-chat ID] [--no-notify-done]
          [--apns-key PATH --apns-key-id ID --apns-team TEAM] [--apns-bundle ID] [--apns-production]
+         [--install-hook | --uninstall-hook]
 ```
 
 Running a second daemon for development next to the Host app? Use another port **and** `--no-relay`

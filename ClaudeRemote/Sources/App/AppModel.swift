@@ -243,26 +243,58 @@ final class AppModel {
 
     func prompt(_ sessionId: String, text: String, images: [InlineImage] = [], attachments: [Attachment]? = nil) {
         connection.send(.prompt(sessionId: sessionId, text: text, images: images, attachments: attachments))
+        // Mid-turn the host queues it; the turn that is running keeps its own timer.
+        let status = states[sessionId]?.status
+        guard status != .running, status != .awaitingPermission else { return }
         activityTrackers[sessionId, default: ActivityTracker()].turnStartedAt = Date()
         activityTrackers[sessionId]?.lastTool = nil
     }
 
-    func decide(_ request: PermissionRequest, allow: Bool, reason: String? = nil, remember: Bool = false) {
-        // Approving runs a tool on the Mac — gate Allow behind Face ID when enabled. Deny is never gated.
-        if allow && requireBiometricsForApproval {
+    func decide(_ request: PermissionRequest, allow: Bool, reason: String? = nil, remember: Bool = false, updatedInput: JSONValue? = nil) {
+        // Approving runs a tool on the Mac — gate Allow behind Face ID when enabled. Deny is never
+        // gated, and neither is answering a question or approving a plan (nothing runs yet).
+        if allow && requireBiometricsForApproval && request.runsCode {
             Task { @MainActor in
                 let ok = await Biometrics.authenticate(reason: "Approve \(request.toolName)")
                 guard ok else { return }   // failed/cancelled → leave the request pending to retry
-                self.sendDecision(request, allow: true, reason: reason, remember: remember)
+                self.sendDecision(request, allow: true, reason: reason, remember: remember, updatedInput: updatedInput)
             }
             return
         }
-        sendDecision(request, allow: allow, reason: reason, remember: remember)
+        sendDecision(request, allow: allow, reason: reason, remember: remember, updatedInput: updatedInput)
     }
 
-    private func sendDecision(_ request: PermissionRequest, allow: Bool, reason: String?, remember: Bool = false) {
-        connection.send(.permission(sessionId: request.sessionId, requestId: request.id, allow: allow, message: reason, remember: remember ? true : nil))
+    /// Answers an AskUserQuestion: the picked labels per question (a typed "other" is just a label
+    /// no option has), plus optional notes.
+    func answer(_ request: PermissionRequest, answers: [String: [String]], notes: [String: String] = [:]) {
+        decide(request, allow: true, updatedInput: AskUserQuestion.answeredInput(request.input, answers: answers, notes: notes))
+    }
+
+    private func sendDecision(_ request: PermissionRequest, allow: Bool, reason: String?, remember: Bool = false, updatedInput: JSONValue? = nil) {
+        connection.send(.permission(sessionId: request.sessionId, requestId: request.id, allow: allow, message: reason,
+                                    remember: remember ? true : nil, updatedInput: updatedInput))
         permissions.removeAll { $0.id == request.id }
+    }
+
+    func dequeue(_ sessionId: String, promptId: String) {
+        connection.send(.dequeue(sessionId: sessionId, promptId: promptId))
+        states[sessionId]?.queued.removeAll { $0.id == promptId }
+    }
+
+    // MARK: composer hand-offs
+
+    /// Text another screen wants in a session's composer (a quoted diff selection from the Git
+    /// screen or the permission sheet). The chat view takes it and clears it.
+    var composerInsert: ComposerInsert?
+
+    struct ComposerInsert: Equatable {
+        let sessionId: String
+        let text: String
+        let token = UUID()
+    }
+
+    func insertIntoComposer(_ sessionId: String, text: String) {
+        composerInsert = ComposerInsert(sessionId: sessionId, text: text)
     }
 
     // MARK: app lock

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Wire-protocol version. Bump when messages change incompatibly.
-public let protocolVersion = 2
+public let protocolVersion = 3
 
 /// Which coding agent runs a session. Claude Code is the default everywhere a field is missing,
 /// so messages from an older build still decode.
@@ -207,10 +207,12 @@ public struct SessionState: Codable, Equatable, Sendable {
     public var sandbox: String?
     /// Slash commands the CLI advertised in its init message, for the composer's "/" menu.
     public var slashCommands: [String]
+    /// Prompts sent while the agent was mid-turn, in the order they will go out once it finishes.
+    public var queued: [QueuedPrompt]
 
     public init(id: String, origin: SessionOrigin, status: SessionStatus, cwd: String, model: String? = nil, permissionMode: String? = nil,
                 pendingPermissions: [PermissionRequest] = [], lastError: String? = nil, agent: AgentKind = .claude, kind: SessionKind = .agent,
-                effort: String? = nil, sandbox: String? = nil, slashCommands: [String] = []) {
+                effort: String? = nil, sandbox: String? = nil, slashCommands: [String] = [], queued: [QueuedPrompt] = []) {
         self.id = id
         self.origin = origin
         self.status = status
@@ -224,6 +226,7 @@ public struct SessionState: Codable, Equatable, Sendable {
         self.effort = effort
         self.sandbox = sandbox
         self.slashCommands = slashCommands
+        self.queued = queued
     }
 
     public init(from decoder: Decoder) throws {
@@ -241,6 +244,23 @@ public struct SessionState: Codable, Equatable, Sendable {
         effort = try c.decodeIfPresent(String.self, forKey: .effort)
         sandbox = try c.decodeIfPresent(String.self, forKey: .sandbox)
         slashCommands = try c.decodeIfPresent([String].self, forKey: .slashCommands) ?? []
+        queued = try c.decodeIfPresent([QueuedPrompt].self, forKey: .queued) ?? []
+    }
+}
+
+/// A prompt waiting for the current turn to end. The host keeps the images / attachments; the phone
+/// only needs to show what was typed and let the user pull it back out of the queue.
+public struct QueuedPrompt: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var text: String
+    public var attachmentCount: Int
+    public var queuedAt: Date
+
+    public init(id: String = UUID().uuidString.lowercased(), text: String, attachmentCount: Int = 0, queuedAt: Date = Date()) {
+        self.id = id
+        self.text = text
+        self.attachmentCount = attachmentCount
+        self.queuedAt = queuedAt
     }
 }
 

@@ -23,5 +23,6 @@ let package = Package(
         // The CLI front-end: parses flags, runs a Daemon, prints the pairing QR.
         .executableTarget(name: "ccremote", dependencies: ["ClaudeRemoteDaemon", "ClaudeCodeHost", "ClaudeRemoteCore"]),
         .testTarget(name: "ClaudeRemoteCoreTests", dependencies: ["ClaudeRemoteCore"]),
+        .testTarget(name: "ClaudeCodeHostTests", dependencies: ["ClaudeCodeHost", "ClaudeRemoteCore"]),
     ]
 )

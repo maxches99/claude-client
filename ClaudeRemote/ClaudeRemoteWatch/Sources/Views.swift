@@ -137,16 +137,25 @@ struct PermissionCard: View {
             if !summary.isEmpty {
                 Text(summary).font(.caption2).foregroundStyle(.secondary).lineLimit(4)
             }
-            HStack(spacing: 8) {
+            if request.isQuestion {
+                // Picking options is the phone's job; the wrist can only decline.
+                Text("Answer on the phone").font(.caption2).foregroundStyle(.secondary)
                 Button(role: .destructive) { client.decide(request, allow: false) } label: {
-                    Text("Deny").frame(maxWidth: .infinity)
+                    Text("Skip").frame(maxWidth: .infinity)
                 }
-                Button { client.decide(request, allow: true) } label: {
-                    Text("Allow").frame(maxWidth: .infinity)
+                .font(.footnote)
+            } else {
+                HStack(spacing: 8) {
+                    Button(role: .destructive) { client.decide(request, allow: false) } label: {
+                        Text(request.isPlanReview ? "Reject" : "Deny").frame(maxWidth: .infinity)
+                    }
+                    Button { client.decide(request, allow: true) } label: {
+                        Text(request.isPlanReview ? "Approve" : "Allow").frame(maxWidth: .infinity)
+                    }
+                    .tint(.green)
                 }
-                .tint(.green)
+                .font(.footnote)
             }
-            .font(.footnote)
         }
         .padding(10)
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))

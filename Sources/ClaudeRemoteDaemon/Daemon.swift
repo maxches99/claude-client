@@ -110,6 +110,7 @@ public final class Daemon: @unchecked Sendable {
     private let registry: DeviceRegistry
     private var server: WebSocketServer?
     private var relay: RelayClient?
+    private var hooks: HookServer?
     private var pathMonitor: NWPathMonitor?
     private let monitorQueue = DispatchQueue(label: "ccremote.daemon.path")
     private let lock = NSLock()
@@ -256,6 +257,11 @@ public final class Daemon: @unchecked Sendable {
         self.server = server
         try server.start()
 
+        // Permission prompts of Desktop / terminal sessions arrive here when the hook is installed.
+        let hooks = HookServer(path: ClaudeHooks.socketPath(supportDirectory: supportDirectory), manager: manager, log: log)
+        hooks.start()
+        self.hooks = hooks
+
         // Re-derive the LAN address (and the pairing URL) when the network changes.
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] _ in self?.refreshPairing() }
@@ -309,6 +315,8 @@ public final class Daemon: @unchecked Sendable {
         stopRelay()
         server?.stop()
         server = nil
+        hooks?.stop()
+        hooks = nil
         await manager.shutdown()
         update { s in
             s.listener = .stopped

@@ -31,6 +31,8 @@ func usage() -> Never {
       --apns-key PATH / --apns-key-id ID / --apns-team TEAM   push Live Activity updates to the phone (APNs auth key)
       --apns-bundle ID   the iOS app's bundle id (default dev.maxches.ClaudeRemote)
       --apns-production  use the production APNs gateway (default: sandbox, for Xcode builds)
+      --install-hook / --uninstall-hook   add / remove the PermissionRequest hook in ~/.claude/settings.json, so
+                     Desktop and terminal sessions ask the phone before prompting on the Mac (then exit)
       --quiet        do not print the QR code
     """)
     exit(2)
@@ -62,6 +64,20 @@ if CommandLine.arguments.count >= 4, CommandLine.arguments[1] == "--sim-video" {
         exit(0)
     } catch {
         log("\(error.localizedDescription)")
+        exit(1)
+    }
+}
+
+// One-shot: put the daemon's permission hook into (or take it out of) Claude Code's user settings.
+if CommandLine.arguments.count == 2, ["--install-hook", "--uninstall-hook"].contains(CommandLine.arguments[1]) {
+    let install = CommandLine.arguments[1] == "--install-hook"
+    do {
+        if install { try ClaudeHooks.install() } else { try ClaudeHooks.uninstall() }
+        print(install ? "PermissionRequest hook installed in \(ClaudeHooks.settingsPath). Sessions started from now on ask the phone first."
+                      : "PermissionRequest hook removed from \(ClaudeHooks.settingsPath).")
+        exit(0)
+    } catch {
+        log("\(error)")
         exit(1)
     }
 }
