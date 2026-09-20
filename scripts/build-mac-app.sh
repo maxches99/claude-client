@@ -18,13 +18,13 @@ for arg in "$@"; do
     esac
 done
 
-command -v xcodegen >/dev/null || { echo "xcodegen is required: brew install xcodegen" >&2; exit 1; }
+command -v tuist >/dev/null || { echo "tuist is required: brew install tuist" >&2; exit 1; }
 
 APP_NAME="ClaudeRemote Host"
 DERIVED=".build/xcode"
 DIST="dist"
 
-( cd ClaudeRemoteHost && xcodegen generate --quiet )
+tuist generate --no-open >/dev/null
 
 SIGNING=""
 if [ -n "$TEAM_ID" ]; then
@@ -33,7 +33,7 @@ fi
 
 # Universal binary, so the same zip runs on Apple silicon and Intel Macs.
 # shellcheck disable=SC2086
-xcodebuild -project ClaudeRemoteHost/ClaudeRemoteHost.xcodeproj -scheme ClaudeRemoteHost -configuration Release \
+xcodebuild -workspace ClaudeRemote.xcworkspace -scheme ClaudeRemoteHost -configuration Release \
     -derivedDataPath "$DERIVED" -quiet ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO $SIGNING build
 
 APP="$DERIVED/Build/Products/Release/$APP_NAME.app"

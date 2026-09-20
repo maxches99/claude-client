@@ -1,0 +1,7 @@
+// Per-machine signing for the iOS / watchOS targets. Xcode reads this at build time, so the team never
+// has to be picked by hand after `tuist generate`. Put yours into the untracked Tuist/team.xcconfig:
+//
+//   DEVELOPMENT_TEAM = ABCDE12345
+//
+// (copy Tuist/team.xcconfig.example). Without it Xcode asks for a team on the first device build.
+#include? "team.xcconfig"

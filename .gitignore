@@ -2,6 +2,7 @@
 .swiftpm/
 *.xcodeproj
 *.xcworkspace
+Derived/
 xcuserdata/
 DerivedData/
 .DS_Store
@@ -11,3 +12,6 @@ relay/node_modules/
 
 # Mac app build output
 dist/
+
+# Tuist: your Apple team, see Tuist/team.xcconfig.example
+Tuist/team.xcconfig

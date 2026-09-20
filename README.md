@@ -25,10 +25,11 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
 | `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `TLSIdentity`, `SessionManager` |
 | `Sources/ClaudeRemoteDaemon` | The daemon as a library: `Daemon` (config → listener + Bonjour, relay dial-out, notifier, phone tracking, status), `DaemonConfig` (`config.json`), `PhoneSession`, `WebSocketServer`, `RelayClient`, `DeviceRegistry`, pairing URL + QR |
 | `Sources/ccremote` | Thin CLI front-end for the daemon (flags, terminal QR) |
-| `ClaudeRemoteHost/` | **Mac menu-bar app** hosting the daemon: status, paired phones, QR, settings, open-at-login, keep-awake (xcodegen project) |
+| `ClaudeRemoteHost/` | **Mac menu-bar app** hosting the daemon: status, paired phones, QR, settings, open-at-login, keep-awake (Tuist project) |
 | `relay/` | Node relay for reaching the Mac off-network (`relay/README.md`) |
-| `ClaudeRemote/` | iOS app (xcodegen project) |
+| `ClaudeRemote/` | iOS app + widget, watchOS app + complication (Tuist project) |
 | `Tests/` | Reducer / protocol tests (`swift test`) |
+| `Tuist.swift`, `Workspace.swift`, `Tuist/` | Tuist config: `tuist generate` writes `ClaudeRemote.xcworkspace` with both app projects; your Apple team goes into the untracked `Tuist/team.xcconfig` |
 
 ## Setup
 
@@ -43,9 +44,8 @@ big QR to scan.
 scripts/build-mac-app.sh --install      # builds dist/ClaudeRemote Host.app (+ zip), installs, launches
 ```
 
-Or open `ClaudeRemoteHost/ClaudeRemoteHost.xcodeproj` (after `cd ClaudeRemoteHost && xcodegen generate`)
-and run it from Xcode. To put it on **another Mac**: copy `dist/ClaudeRemote-Host.zip` over, unzip,
-drag to Applications, open. The build is ad-hoc signed unless you export `TEAM_ID` (see the script),
+Or `tuist generate` (`brew install tuist`) and run the `ClaudeRemoteHost` scheme from Xcode. To put it
+on **another Mac**: copy `dist/ClaudeRemote-Host.zip` over, unzip, drag to Applications, open. The build is ad-hoc signed unless you export `TEAM_ID` (see the script),
 so Gatekeeper may ask once — right-click → Open, or allow it under System Settings › Privacy & Security.
 The app installs nothing else: no LaunchAgent, no scripts; "Open at login" is a normal Login Item.
 
@@ -88,9 +88,11 @@ says "Not logged in", click **Log in…** — or run it yourself:
 
 ### iPhone
 
-`cd ClaudeRemote && xcodegen generate && open ClaudeRemote.xcodeproj`, set your team, run on the
-phone. On first launch scan the QR from the Mac (menu-bar panel or pairing window), or pick the Mac
-from the Bonjour list and enter the token.
+`cp Tuist/team.xcconfig.example Tuist/team.xcconfig`, put your Apple team ID in it (once — the file is
+untracked), then `tuist generate` opens `ClaudeRemote.xcworkspace` with the team already set; run the
+`ClaudeRemote` scheme on the phone. On first
+launch scan the QR from the Mac (menu-bar panel or pairing window), or pick the Mac from the Bonjour
+list and enter the token.
 
 ## Sessions
 
