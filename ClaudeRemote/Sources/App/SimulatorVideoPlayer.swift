@@ -11,6 +11,22 @@ import ClaudeRemoteCore
 @MainActor
 final class SimulatorVideoPlayer {
     let layer = AVSampleBufferDisplayLayer()
+    /// The host view currently showing the layer (see `SimulatorVideoView`).
+    weak var activeHost: UIView?
+    /// Every host view alive, so the layer can be handed to another one when its owner goes away —
+    /// SwiftUI does not re-run `updateUIView` on a covered host just because the cover went.
+    let hosts = NSHashTable<SimulatorVideoView.LayerHostView>.weakObjects()
+
+    /// `host` stops showing the layer: give it to another host that is on screen, if any.
+    func rehome(from host: UIView) {
+        if activeHost === host { activeHost = nil }
+        guard let next = hosts.allObjects.first(where: { $0 !== host && $0.window != nil }) else { return }
+        activeHost = next
+        next.claimLayer()
+    }
+    /// Called when the layer moved to another host: the layer drops its picture on the way, so the
+    /// owner asks the Mac for a fresh key frame (a static screen would otherwise stay black).
+    var onRehost: (() -> Void)?
     private var format: CMVideoFormatDescription?
     private var awaitingKeyframe = true
 
@@ -33,8 +49,9 @@ final class SimulatorVideoPlayer {
                 awaitingKeyframe = false
             }
         }
-        if layer.sampleBufferRenderer.status == .failed {
-            // The renderer gave up (e.g. a resolution change it did not like): start over at the next key frame.
+        if layer.sampleBufferRenderer.status == .failed || layer.sampleBufferRenderer.requiresFlushToResumeDecoding {
+            // The renderer gave up (a resolution change it did not like), or it paused while the layer was
+            // off screen / re-hosted and wants a flush: start over at the next key frame.
             layer.sampleBufferRenderer.flush()
             awaitingKeyframe = !frame.keyframe
         }
@@ -79,31 +96,72 @@ final class SimulatorVideoPlayer {
 }
 
 /// Hosts the player's layer in SwiftUI; the layer always fills the view (size it with `.aspectRatio`).
+/// One player layer can only live in one view: the host that most recently came on screen owns it
+/// (the full-screen view takes it from the sheet, which re-renders every second and would otherwise
+/// steal it back), and hands it back when it leaves the window.
 struct SimulatorVideoView: UIViewRepresentable {
     let player: SimulatorVideoPlayer
 
     func makeUIView(context: Context) -> LayerHostView {
         let view = LayerHostView()
         view.backgroundColor = .black
-        view.layer.addSublayer(player.layer)
+        view.player = player
+        player.hosts.add(view)
         return view
     }
 
     func updateUIView(_ uiView: LayerHostView, context: Context) {
-        if player.layer.superlayer !== uiView.layer {
-            player.layer.removeFromSuperlayer()
-            uiView.layer.addSublayer(player.layer)
-        }
-        uiView.setNeedsLayout()
+        uiView.player = player
+        uiView.claimLayer()
+    }
+
+    static func dismantleUIView(_ uiView: LayerHostView, coordinator: ()) {
+        uiView.release()
     }
 
     final class LayerHostView: UIView {
+        var player: SimulatorVideoPlayer?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil {
+                player?.activeHost = self
+            } else {
+                release()
+            }
+            claimLayer()
+        }
+
+        /// Give the layer up (leaving the window, or the full-screen view closing).
+        func release() {
+            player?.rehome(from: self)
+        }
+
         override func layoutSubviews() {
             super.layoutSubviews()
+            claimLayer()
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             layer.sublayers?.forEach { $0.frame = bounds }
             CATransaction.commit()
+        }
+
+        func claimLayer() {
+            guard window != nil, let player else { return }
+            // An owner that is no longer in a window (a dismissed full-screen cover) has given up.
+            if player.activeHost == nil || player.activeHost?.window == nil { player.activeHost = self }
+            guard player.activeHost === self else { return }
+            let playerLayer = player.layer
+            guard playerLayer.superlayer !== layer else { return }
+            let moved = playerLayer.superlayer != nil
+            playerLayer.removeFromSuperlayer()
+            layer.addSublayer(playerLayer)
+            playerLayer.frame = bounds
+            if moved {
+                // The renderer stops decoding once its layer changes hosts; flush and start from a fresh key frame.
+                player.layer.sampleBufferRenderer.flush()
+                player.onRehost?()
+            }
         }
     }
 }

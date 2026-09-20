@@ -600,6 +600,11 @@ final class AppModel {
     // MARK: simulator live view
 
     func watchSimulator(_ udid: String) {
+        simulatorFeed.player.onRehost = { [weak self] in
+            // Same request again: the Mac answers a (re)watch with a forced key frame.
+            guard let self, let udid = self.simulatorFeed.watching else { return }
+            self.sendSimulatorStream(udid, enabled: true)
+        }
         if let current = simulatorFeed.watching, current != udid { sendSimulatorStream(current, enabled: false) }
         simulatorFeed.startWatching(udid)
         sendSimulatorStream(udid, enabled: true)
@@ -615,6 +620,19 @@ final class AppModel {
                                          maxPixelSize: enabled ? SimulatorFeed.maxPixelSize : nil,
                                          fps: enabled ? SimulatorFeed.fps : nil,
                                          codec: enabled ? "h264" : nil))
+    }
+
+    /// The session whose agent is currently inside a simulator tool call (`mcp__…iOS_Simulator__control`),
+    /// so the live view can say "hands off" instead of fighting over the screen. Nil when none is.
+    var simulatorDriver: String? {
+        for (id, transcript) in transcripts where states[id]?.status == .running {
+            let driving = transcript.items.contains {
+                if case .toolUse(_, let name, _, _, let streaming) = $0.kind { return streaming && name.contains("iOS_Simulator") }
+                return false
+            }
+            if driving { return sessions.first { $0.id == id }?.title ?? "The agent" }
+        }
+        return nil
     }
 
     /// Send a touch / key / button to the simulator being watched.

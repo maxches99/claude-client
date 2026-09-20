@@ -12,6 +12,12 @@ enum Media {
         return InlineImage(mediaType: "image/jpeg", base64: jpeg.base64EncodedString())
     }
 
+    /// The same downscaled JPEG, but as a file attachment (see ChatView: files reach every session kind).
+    static func imageAttachment(from data: Data, filename: String, maxSide: CGFloat = 1600, quality: CGFloat = 0.7) -> Attachment? {
+        guard let image = UIImage(data: data), let jpeg = downscale(image, maxSide: maxSide).jpegData(compressionQuality: quality) else { return nil }
+        return attachment(data: jpeg, filename: filename, mediaType: "image/jpeg")
+    }
+
     private static func downscale(_ image: UIImage, maxSide: CGFloat) -> UIImage {
         let size = image.size
         let longest = max(size.width, size.height)

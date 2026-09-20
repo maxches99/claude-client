@@ -7,7 +7,6 @@ struct ChatView: View {
     @Environment(AppModel.self) private var model
     let sessionId: String
     @State private var draft = ""
-    @State private var attachments: [InlineImage] = []
     @State private var files: [Attachment] = []
     @State private var macFiles: [String] = []
     @State private var expandedGroups: Set<String> = []
@@ -46,7 +45,6 @@ struct ChatView: View {
             transcriptView
             ComposerDock(
                 draft: $draft,
-                attachments: $attachments,
                 files: $files,
                 macFiles: $macFiles,
                 focused: $composerFocused,
@@ -429,16 +427,15 @@ struct ChatView: View {
 
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !attachments.isEmpty || !files.isEmpty || !macFiles.isEmpty else { return }
+        guard !text.isEmpty || !files.isEmpty || !macFiles.isEmpty else { return }
         // Files already on the Mac travel as path references (the agent reads them in place), not bytes.
         var fullText = text
         if !macFiles.isEmpty {
             let refs = macFiles.map { "- \($0)" }.joined(separator: "\n")
             fullText += (fullText.isEmpty ? "" : "\n\n") + "Attached files on the Mac:\n\(refs)"
         }
-        model.prompt(sessionId, text: fullText, images: attachments, attachments: files.isEmpty ? nil : files)
+        model.prompt(sessionId, text: fullText, attachments: files.isEmpty ? nil : files)
         draft = ""
-        attachments = []
         files = []
         macFiles = []
     }
@@ -450,7 +447,6 @@ struct ChatView: View {
 struct ComposerDock: View {
     @Environment(AppModel.self) private var model
     @Binding var draft: String
-    @Binding var attachments: [InlineImage]
     @Binding var files: [Attachment]
     @Binding var macFiles: [String]
     var focused: FocusState<Bool>.Binding
@@ -483,7 +479,7 @@ struct ComposerDock: View {
     // Attachments work on every session: hosted sessions get inline images, while desktop / watched
     // sessions receive all files (images included) staged to disk on the Mac and referenced by path.
     private var canAttach: Bool { model.isConnected }
-    private var hasAttachments: Bool { !attachments.isEmpty || !files.isEmpty || !macFiles.isEmpty }
+    private var hasAttachments: Bool { !files.isEmpty || !macFiles.isEmpty }
     private var canSend: Bool {
         (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasAttachments) && model.isConnected
     }
@@ -832,9 +828,6 @@ struct ComposerDock: View {
     private var attachmentStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(Array(attachments.enumerated()), id: \.offset) { index, image in
-                    imageThumb(image) { attachments.remove(at: index) }
-                }
                 ForEach(Array(files.enumerated()), id: \.offset) { index, file in
                     fileChip(file) { files.remove(at: index) }
                 }
@@ -863,19 +856,14 @@ struct ComposerDock: View {
         }
     }
 
-    private func imageThumb(_ image: InlineImage, remove: @escaping () -> Void) -> some View {
+    /// Images show as thumbnails, everything else as a name + size chip.
+    private func fileChip(_ file: Attachment, remove: @escaping () -> Void) -> some View {
         ZStack(alignment: .topTrailing) {
-            if let ui = UIImage(data: Data(base64Encoded: image.base64) ?? Data()) {
+            if file.mediaType.hasPrefix("image/"), let ui = UIImage(data: Data(base64Encoded: file.base64) ?? Data()) {
                 Image(uiImage: ui).resizable().scaledToFill()
                     .frame(width: 56, height: 56)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            removeBadge(remove)
-        }
-    }
-
-    private func fileChip(_ file: Attachment, remove: @escaping () -> Void) -> some View {
-        ZStack(alignment: .topTrailing) {
+            } else {
             HStack(spacing: 8) {
                 Image(systemName: iconName(for: file.mediaType))
                     .font(.system(size: 18))
@@ -889,6 +877,7 @@ struct ComposerDock: View {
             .padding(.leading, 8).padding(.trailing, 16).padding(.vertical, 8)
             .frame(maxWidth: 190, alignment: .leading)
             .background(CDS.fillControl, in: RoundedRectangle(cornerRadius: 8))
+            }
             removeBadge(remove)
         }
     }
@@ -926,8 +915,12 @@ struct ComposerDock: View {
                     } else {
                         attachError = "That video is larger than \(Media.humanSize(Media.maxAttachmentBytes))."
                     }
-                } else if let image = Media.inlineImage(from: data) {
-                    attachments.append(image)
+                } else if let att = Media.imageAttachment(from: data, filename: "photo-\(shortStamp()).jpg") {
+                    // As a file, not an inline image block: files reach every kind of session (hosted ones
+                    // inline them, desktop ones get them staged on the Mac), inline images only hosted ones.
+                    files.append(att)
+                } else {
+                    attachError = "That image could not be read."
                 }
             }
             pickerItems = []

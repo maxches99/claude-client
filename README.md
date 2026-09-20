@@ -209,6 +209,10 @@ simulator has focused. Text goes through the simulator pasteboard and ⌘V rathe
 so Cyrillic and emoji work and the guest's keyboard layout is irrelevant (watchOS runtimes have no
 pasteboard, so text is unavailable there).
 
+Two fingers zoom the picture (1–4×, around the pinch) for precise taps; a full-screen button shows
+it edge to edge on black, with a landscape simulator rotated to fill the phone. While an agent is
+inside a simulator tool call the status line says so, so you don't fight it for the screen.
+
 The camera button grabs a full-resolution still: opened from a chat it lands in that chat's
 composer as an image attachment (so "this button is misaligned" can carry the picture); opened from
 the session list it goes to the clipboard. The device menu also runs the simulators themselves —

@@ -15,10 +15,6 @@ struct SimulatorView: View {
     @State private var selected: String?
     /// Ticks so the "Live" indicator and fps readout stay current between frames.
     @State private var now = Date()
-    /// The finger currently on the simulator's screen: where the last `moved` went and when.
-    @State private var touch: (point: CGPoint, sentAt: Date)?
-    /// Brief ring where the last tap landed.
-    @State private var tapMark: (point: CGPoint, id: UUID)?
     @State private var showKeyboard = false
     @State private var capturing = false
     @State private var draft = ""
@@ -29,6 +25,7 @@ struct SimulatorView: View {
 
     @State private var showApps = false
     @State private var showBoot = false
+    @State private var fullScreen = false
     @State private var showOpenURL = false
     @State private var urlDraft = ""
 
@@ -64,6 +61,7 @@ struct SimulatorView: View {
                 if let udid = selected { SimulatorAppsView(udid: udid) }
             }
             .sheet(isPresented: $showBoot) { SimulatorBootView() }
+            .fullScreenCover(isPresented: $fullScreen) { SimulatorFullScreenView(onCapture: onCapture) }
             .alert("Open URL in \(device?.name ?? "the simulator")", isPresented: $showOpenURL) {
                 TextField("https://… or myapp://…", text: $urlDraft)
                     .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
@@ -140,117 +138,14 @@ struct SimulatorView: View {
     // MARK: pieces
 
     private var screen: some View {
-        GeometryReader { geo in
-            ZStack {
-                if let size = feed.pictureSize {
-                    Group {
-                        if feed.videoSize != nil {
-                            SimulatorVideoView(player: feed.player)
-                        } else if let frame = feed.frame {
-                            Image(uiImage: frame.image).resizable()
-                        }
-                    }
-                    .aspectRatio(max(size.width, 1) / max(size.height, 1), contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 22))
-                    .overlay { touchSurface }
-                    .padding(6)
-                    .background(Color.black, in: RoundedRectangle(cornerRadius: 28))
-                    .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(CDS.border))
-                    .opacity(feed.isAlive(now: now) ? 1 : 0.6)
-                } else {
-                    VStack(spacing: 10) {
-                        ProgressView().tint(CDS.textMuted)
-                        Text("Connecting to \(device?.name ?? "the simulator")…")
-                            .font(CDS.body).foregroundStyle(CDS.textMuted)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(CDS.surface1, in: RoundedRectangle(cornerRadius: 28))
-                    .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(CDS.border))
-                }
-            }
-            .frame(width: geo.size.width, height: geo.size.height)
-        }
-    }
-
-    /// Sits exactly over the picture, so gesture locations are fractions of the simulator screen.
-    /// The finger is forwarded live — down on first contact, moves as it goes, up on release — so
-    /// scrolls and drags happen under it; a quick down/up is simply a tap on the other side.
-    private var touchSurface: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                Color.clear
-                if let tapMark {
-                    Circle()
-                        .strokeBorder(Color.white.opacity(0.9), lineWidth: 2)
-                        .background(Circle().fill(Color.white.opacity(0.25)))
-                        .frame(width: 28, height: 28)
-                        .position(tapMark.point)
-                        .transition(.scale(scale: 0.4).combined(with: .opacity))
-                        .id(tapMark.id)
-                }
-            }
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                    .onChanged { value in
-                        if touch == nil {
-                            forward(.began, value.location, in: geo.size)
-                            showTapMark(at: value.location)
-                        } else if let touch, Date().timeIntervalSince(touch.sentAt) >= 1 / 40 || hypot(value.location.x - touch.point.x, value.location.y - touch.point.y) >= 6 {
-                            forward(.moved, value.location, in: geo.size)
-                        }
-                    }
-                    .onEnded { value in
-                        if touch == nil { forward(.began, value.location, in: geo.size) }
-                        forward(.ended, value.location, in: geo.size)
-                        touch = nil
-                    }
-            )
-        }
-    }
-
-    private func forward(_ phase: SimulatorTouchPhase, _ point: CGPoint, in size: CGSize) {
-        guard size.width > 0, size.height > 0 else { return }
-        let x = Double(min(max(point.x / size.width, 0), 1)), y = Double(min(max(point.y / size.height, 0), 1))
-        model.sendSimulatorInput(.touch(phase: phase, x: x, y: y))
-        touch = (point, Date())
-    }
-
-    private func showTapMark(at point: CGPoint) {
-        withAnimation(.easeOut(duration: 0.15)) { tapMark = (point, UUID()) }
-        let marked = tapMark?.id
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            if tapMark?.id == marked { withAnimation(.easeIn(duration: 0.2)) { tapMark = nil } }
-        }
+        SimulatorScreenView()
+            .opacity(feed.isAlive(now: now) ? 1 : 0.6)
     }
 
     private var controls: some View {
-        HStack(spacing: 10) {
-            controlButton("house", label: "Home") { model.sendSimulatorInput(.button(button: .home)) }
-            controlButton("lock", label: "Lock") { model.sendSimulatorInput(.button(button: .lock)) }
-            controlButton("keyboard", label: "Keyboard", active: showKeyboard) {
-                showKeyboard.toggle()
-                draftFocused = showKeyboard
-            }
-            controlButton(capturing ? "hourglass" : "camera", label: onCapture != nil ? "Attach a screenshot to the chat" : "Copy a screenshot") { capture() }
-                .disabled(capturing || feed.pictureSize == nil)
-            Spacer(minLength: 0)
-            controlButton("delete.left", label: "Backspace") { model.sendSimulatorInput(.key(key: .backspace)) }
-            controlButton("return", label: "Return") { model.sendSimulatorInput(.key(key: .return)) }
-        }
-    }
-
-    private func controlButton(_ symbol: String, label: String, active: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(active ? CDS.onPrimary : CDS.textSecondary)
-                .frame(width: 44, height: 36)
-                .background(active ? CDS.fillPrimary : CDS.fillControl, in: RoundedRectangle(cornerRadius: CDS.radius))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
+        SimulatorControls(showKeyboard: $showKeyboard, capturing: capturing, canCapture: feed.pictureSize != nil,
+                          captureLabel: onCapture != nil ? "Attach a screenshot to the chat" : "Copy a screenshot",
+                          onCapture: capture, onFullScreen: { fullScreen = true }, onKeyboard: { draftFocused = showKeyboard })
     }
 
     /// Text typed here lands in whatever field has focus in the simulator (pasted, so any script works).
@@ -314,7 +209,7 @@ struct SimulatorView: View {
     private var status: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(inputErrorShowing ? CDS.dangerFill : feed.isAlive(now: now) ? CDS.successFill : CDS.textMuted)
+                .fill(inputErrorShowing ? CDS.dangerFill : model.simulatorDriver != nil ? CDS.warningFill : feed.isAlive(now: now) ? CDS.successFill : CDS.textMuted)
                 .frame(width: 7, height: 7)
             Text(statusText).font(CDS.caption).foregroundStyle(CDS.textSecondary)
             Spacer(minLength: 0)
@@ -326,7 +221,11 @@ struct SimulatorView: View {
 
     private var statusText: String {
         if let notice = feed.notice(at: now) { return notice.message }
-        if let pending = feed.pendingAction, pending.udid == selected { return "\(pending.action.label)…" }
+        if let pending = feed.pendingAction {
+            let name = feed.devices.first { $0.udid == pending.udid }?.name ?? "simulator"
+            return pending.udid == selected ? "\(pending.action.label)…" : "\(pending.action.label) \(name)…"
+        }
+        if let driver = model.simulatorDriver { return "\(driver) is driving the simulator" }
         guard feed.pictureSize != nil else { return "Waiting for the first frame" }
         guard feed.isAlive(now: now) else { return "No signal from the Mac" }
         let fps = feed.measuredFPS
@@ -487,6 +386,127 @@ struct SimulatorBootView: View {
             .navigationTitle("Boot a simulator")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }
+    }
+}
+
+/// Home / Lock / keyboard / screenshot / full screen / Backspace / Return — shared by the sheet and the full-screen view.
+struct SimulatorControls: View {
+    @Environment(AppModel.self) private var model
+    @Binding var showKeyboard: Bool
+    var capturing: Bool
+    var canCapture: Bool
+    var captureLabel: String
+    var dark = false
+    var onCapture: () -> Void
+    var onFullScreen: (() -> Void)?
+    var onKeyboard: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            button("house", label: "Home") { model.sendSimulatorInput(.button(button: .home)) }
+            button("lock", label: "Lock") { model.sendSimulatorInput(.button(button: .lock)) }
+            button("keyboard", label: "Keyboard", active: showKeyboard) {
+                showKeyboard.toggle()
+                onKeyboard()
+            }
+            button(capturing ? "hourglass" : "camera", label: captureLabel, action: onCapture)
+                .disabled(capturing || !canCapture)
+            if let onFullScreen {
+                button("arrow.up.left.and.arrow.down.right", label: "Full screen", action: onFullScreen)
+                    .disabled(!canCapture)
+            }
+            Spacer(minLength: 0)
+            button("delete.left", label: "Backspace") { model.sendSimulatorInput(.key(key: .backspace)) }
+            button("return", label: "Return") { model.sendSimulatorInput(.key(key: .return)) }
+        }
+    }
+
+    private func button(_ symbol: String, label: String, active: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(active ? (dark ? Color.black : CDS.onPrimary) : (dark ? Color.white.opacity(0.85) : CDS.textSecondary))
+                .frame(width: 44, height: 36)
+                .background(active ? (dark ? Color.white : CDS.fillPrimary) : (dark ? Color.white.opacity(0.14) : CDS.fillControl), in: RoundedRectangle(cornerRadius: CDS.radius))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+}
+
+/// The picture on black, edge to edge; a landscape simulator is shown rotated to fill a portrait phone.
+struct SimulatorFullScreenView: View {
+    var onCapture: ((Attachment) -> Void)?
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var showKeyboard = false
+    @State private var draft = ""
+    @State private var capturing = false
+    @FocusState private var draftFocused: Bool
+
+    private var feed: SimulatorFeed { model.simulatorFeed }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 10) {
+                SimulatorScreenView(rotateLandscape: true, bezel: false)
+                if showKeyboard {
+                    HStack(spacing: 8) {
+                        TextField("Type into the simulator", text: $draft, axis: .vertical)
+                            .lineLimit(1...3).font(CDS.body).foregroundStyle(.white)
+                            .focused($draftFocused).submitLabel(.send).onSubmit(sendDraft)
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(Color.white.opacity(0.14), in: RoundedRectangle(cornerRadius: CDS.radius))
+                        Button(action: sendDraft) {
+                            Image(systemName: "arrow.up").font(.system(size: 15, weight: .semibold)).foregroundStyle(.black)
+                                .frame(width: 36, height: 36).background(Color.white, in: Circle())
+                        }
+                        .buttonStyle(.plain).disabled(draft.isEmpty).opacity(draft.isEmpty ? 0.4 : 1)
+                    }
+                }
+                SimulatorControls(showKeyboard: $showKeyboard, capturing: capturing, canCapture: feed.pictureSize != nil,
+                                  captureLabel: onCapture != nil ? "Attach a screenshot to the chat" : "Copy a screenshot", dark: true,
+                                  onCapture: capture, onFullScreen: nil, onKeyboard: { draftFocused = showKeyboard })
+            }
+            .padding(.horizontal, 12).padding(.top, 44).padding(.bottom, 8)
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                    .frame(width: 32, height: 32).background(Color.white.opacity(0.18), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 8).padding(.trailing, 12)
+            .accessibilityLabel("Leave full screen")
+        }
+        .statusBarHidden(true)
+        .onChange(of: feed.booted.isEmpty) { _, empty in if empty { dismiss() } }
+        .onDisappear {
+            // Hand the video layer back to the sheet underneath (its host gets no SwiftUI update for this).
+            if let host = feed.player.activeHost { feed.player.rehome(from: host) }
+        }
+    }
+
+    private func sendDraft() {
+        let text = draft
+        guard !text.isEmpty else { return }
+        model.sendSimulatorInput(.text(text: text))
+        draft = ""
+    }
+
+    private func capture() {
+        capturing = true
+        model.requestSimulatorScreenshot { image, error in
+            capturing = false
+            guard let image, let jpeg = image.jpegData(compressionQuality: 0.85) else { feed.show(error ?? "Could not capture the screen", error: true); return }
+            if let onCapture, let attachment = Media.attachment(data: jpeg, filename: "simulator-\(Int(Date().timeIntervalSince1970)).jpg", mediaType: "image/jpeg") {
+                onCapture(attachment)
+                dismiss()
+            } else {
+                UIPasteboard.general.image = image
+                feed.show("Screenshot copied — paste it into a chat")
+            }
         }
     }
 }
