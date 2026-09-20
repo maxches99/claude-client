@@ -12,6 +12,9 @@ struct SettingsWindow: View {
     @State private var loaded = false
     @State private var hookInstalled = false
     @State private var hookError: String?
+    @State private var codexPortText = ""
+    @State private var codexEnv: String?
+    @State private var codexEnvError: String?
     @Environment(\.dismiss) private var dismiss
 
     private var isDirty: Bool { draft != model.config }
@@ -107,6 +110,31 @@ struct SettingsWindow: View {
                         Text(codex.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled).lineLimit(2)
                     }
                 }
+                LabeledContent("Shared Codex app-server port") {
+                    TextField("", text: $codexPortText, prompt: Text("off — e.g. 4141"))
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: codexPortText) { _, v in draft.codexPort = UInt16(v).flatMap { $0 > 0 ? $0 : nil } }
+                }
+                HStack {
+                    Text(codexEnv.map { "Codex app is pointed at \($0)" } ?? "Codex app uses its own private app-server")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if let port = draft.codexPort, codexEnv != CodexAppEnvironment.url(port: port) {
+                        Button("Point the Codex app here") {
+                            codexEnvError = CodexAppEnvironment.set(port: port)
+                            codexEnv = CodexAppEnvironment.current()
+                        }
+                    }
+                    if codexEnv != nil {
+                        Button("Reset") {
+                            codexEnvError = CodexAppEnvironment.clear()
+                            codexEnv = CodexAppEnvironment.current()
+                        }
+                    }
+                }
+                if let codexEnvError { Text(codexEnvError).font(.caption).foregroundStyle(.red) }
+                Text("With a port, the daemon runs `codex app-server --listen ws://127.0.0.1:<port>` and the Codex app can use the same server (launchd env `CODEX_APP_SERVER_WS_URL`; quit and reopen the Codex app after setting it). Sessions open in the app then show up on the phone live and can be prompted, approved and interrupted from there.")
+                    .font(.caption).foregroundStyle(.secondary)
                 LabeledContent("Config file") {
                     Text(DaemonConfig.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                 }
@@ -115,7 +143,7 @@ struct SettingsWindow: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 860)
+        .frame(width: 560, height: 940)
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Text(isDirty ? "Applying restarts the host; sessions started from the phone stop (they can be resumed)." : " ")
@@ -139,6 +167,8 @@ struct SettingsWindow: View {
         draft = model.config
         portText = draft.port == 7811 ? "" : String(draft.port)
         hookInstalled = ClaudeHooks.isInstalled()
+        codexPortText = draft.codexPort.map(String.init) ?? ""
+        codexEnv = CodexAppEnvironment.current()
     }
 
     private func optional(_ binding: Binding<String?>) -> Binding<String> {

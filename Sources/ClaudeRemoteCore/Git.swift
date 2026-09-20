@@ -76,6 +76,8 @@ public enum GitAction: Codable, Equatable, Sendable {
     case fetch
     case checkout(branch: String)
     case createBranch(name: String)
+    /// `gh pr create` for the current branch (pushing it with an upstream first when it has none).
+    case createPullRequest(title: String, body: String, draft: Bool)
 
     public var label: String {
         switch self {
@@ -88,6 +90,7 @@ public enum GitAction: Codable, Equatable, Sendable {
         case .fetch: return "Fetch"
         case .checkout(let b): return "Checkout \(b)"
         case .createBranch(let n): return "New branch \(n)"
+        case .createPullRequest: return "Create pull request"
         }
     }
 }

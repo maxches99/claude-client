@@ -144,7 +144,50 @@ public final class TranscriptStore: @unchecked Sendable {
             entries.append(entry)
         }
         if entries.count > limit { entries.removeFirst(entries.count - limit) }
+        entries += subagentEntries(transcriptPath: path)
         return History(entries: entries, endOffset: UInt64(end))
+    }
+
+    /// Sub-agent transcripts live next to the session file (`<id>/subagents/agent-*.jsonl`, each
+    /// with a `.meta.json` naming the Agent tool_use that spawned it). Their entries are returned
+    /// tagged with `parent_tool_use_id`, the same shape the live stream uses, so the reducer nests
+    /// them under that tool call.
+    public func subagentEntries(transcriptPath path: String, limit: Int = 300) -> [JSONValue] {
+        var out: [JSONValue] = []
+        for (file, parent) in TranscriptStore.subagentFiles(transcriptPath: path) {
+            guard let data = FileManager.default.contents(atPath: file) else { continue }
+            var entries: [JSONValue] = []
+            for line in data.split(separator: 0x0A) {
+                guard let entry = try? JSONValue.parse(line), let tagged = TranscriptStore.tagSubagent(entry, parent: parent) else { continue }
+                entries.append(tagged)
+            }
+            if entries.count > limit { entries.removeFirst(entries.count - limit) }
+            out += entries
+        }
+        return out
+    }
+
+    /// (jsonl path, parent tool_use id) for every sub-agent file of the session.
+    public static func subagentFiles(transcriptPath path: String) -> [(path: String, parent: String)] {
+        let dir = ((path as NSString).deletingPathExtension as NSString).appendingPathComponent("subagents")
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return [] }
+        var result: [(String, String)] = []
+        for name in names.sorted() where name.hasPrefix("agent-") && name.hasSuffix(".jsonl") {
+            let meta = (dir as NSString).appendingPathComponent(String(name.dropLast(6)) + ".meta.json")
+            guard let data = FileManager.default.contents(atPath: meta), let json = try? JSONValue.parse(data),
+                  let parent = json["toolUseId"]?.string else { continue }
+            result.append(((dir as NSString).appendingPathComponent(name), parent))
+        }
+        return result
+    }
+
+    /// A sub-agent entry as the reducer expects it (conversation entries only).
+    public static func tagSubagent(_ entry: JSONValue, parent: String) -> JSONValue? {
+        guard ["user", "assistant"].contains(entry["type"]?.string ?? "") else { return nil }
+        var fields = entry.object ?? [:]
+        fields["parent_tool_use_id"] = .string(parent)
+        fields["isSidechain"] = nil
+        return .object(fields)
     }
 
     static func isConversationEntry(_ entry: JSONValue) -> Bool {

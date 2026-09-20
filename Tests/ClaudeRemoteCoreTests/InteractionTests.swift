@@ -135,3 +135,39 @@ final class DiffQuoteTests: XCTestCase {
         XCTAssertEqual(parsed.quote(ids: Set(added.map(\.id)))?.split(separator: "\n").first, "`new.txt` lines 1–2:")
     }
 }
+
+final class SubagentTranscriptTests: XCTestCase {
+    func testSubagentMessagesNestUnderParentToolUse() {
+        var t = Transcript()
+        t.apply(["type": "assistant", "uuid": "a1", "message": ["id": "m1", "content": [["type": "tool_use", "id": "tu1", "name": "Agent", "input": ["description": "Scan"]]]]])
+        t.apply(["type": "assistant", "uuid": "s1", "parent_tool_use_id": "tu1", "message": ["id": "m2", "content": [["type": "tool_use", "id": "tu2", "name": "Read", "input": ["file_path": "/x"]]]]])
+        t.apply(["type": "user", "uuid": "s2", "parent_tool_use_id": "tu1", "message": ["role": "user", "content": [["type": "tool_result", "tool_use_id": "tu2", "content": "ok"]]]])
+        t.apply(["type": "assistant", "uuid": "s3", "parent_tool_use_id": "tu1", "message": ["id": "m3", "content": [["type": "text", "text": "done"]]]])
+        XCTAssertEqual(t.items.count, 1)
+        let sub = try! XCTUnwrap(t.subagents["tu1"])
+        XCTAssertEqual(sub.items.count, 3)
+        XCTAssertTrue(sub.subagents.isEmpty)
+        let blocks = TranscriptLayout.blocks(for: sub.items, sessionRunning: false)
+        XCTAssertEqual(blocks.count, 2)
+    }
+
+    func testSidechainWithoutParentIsStillDropped() {
+        var t = Transcript()
+        t.apply(["type": "assistant", "uuid": "x", "isSidechain": true, "message": ["id": "m", "content": [["type": "text", "text": "hidden"]]]])
+        XCTAssertTrue(t.items.isEmpty)
+        XCTAssertTrue(t.subagents.isEmpty)
+    }
+}
+
+final class PullRequestTests: XCTestCase {
+    func testCIStateFolding() {
+        var pr = PullRequestInfo(number: 1, title: "t", url: "u", state: "OPEN")
+        XCTAssertEqual(pr.ciState, .none)
+        pr.checks = [CheckRun(name: "build", status: "COMPLETED", conclusion: "SUCCESS"), CheckRun(name: "lint", status: "IN_PROGRESS")]
+        XCTAssertEqual(pr.ciState, .pending)
+        pr.checks[1] = CheckRun(name: "lint", status: "COMPLETED", conclusion: "FAILURE")
+        XCTAssertEqual(pr.ciState, .failure)
+        pr.checks[1] = CheckRun(name: "lint", status: "COMPLETED", conclusion: "SKIPPED")
+        XCTAssertEqual(pr.ciState, .success)
+    }
+}

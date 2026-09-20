@@ -60,11 +60,22 @@ final class PhoneSession: @unchecked Sendable {
         closed = true
         log("client \(id.uuidString.prefix(8)) gone (\(reason))")
         onClose(id)
+        let runs = commandRuns
         Task { [manager, id] in
             await manager.unsubscribe(id)
             await SimulatorStreamer.shared.detach(id)
+            // Nobody is reading the output any more.
+            for run in runs { await manager.cancelCommand(runId: run) }
         }
     }
+
+    /// Commands this phone started and has not seen finish (touched from the output thread too).
+    private var commandRuns: Set<String> {
+        get { runsLock.withLock { _commandRuns } }
+        set { runsLock.withLock { _commandRuns = newValue } }
+    }
+    private var _commandRuns: Set<String> = []
+    private let runsLock = NSLock()
 
     func send(_ message: ServerMessage) {
         guard let text = try? ProtocolCoding.encode(message) else { return }
@@ -198,6 +209,40 @@ final class PhoneSession: @unchecked Sendable {
                 } catch {
                     send(.usage(sessionId: sessionId, data: nil, error: "\(error)"))
                 }
+            case .listDirectory(let sessionId, let path):
+                do {
+                    let listing = try await manager.listDirectory(sessionId: sessionId, path: path)
+                    send(.directory(sessionId: sessionId, path: listing.path, entries: listing.entries, error: nil))
+                } catch {
+                    send(.directory(sessionId: sessionId, path: path ?? "", entries: [], error: "\(error)"))
+                }
+            case .searchProject(let sessionId, let query):
+                do {
+                    let result = try await manager.searchProject(sessionId: sessionId, query: query)
+                    send(.searchResults(sessionId: sessionId, query: query, matches: result.matches, truncated: result.truncated, error: nil))
+                } catch {
+                    send(.searchResults(sessionId: sessionId, query: query, matches: [], truncated: false, error: "\(error)"))
+                }
+            case .listCommands(let sessionId):
+                send(.commands(sessionId: sessionId, items: await manager.projectCommands(sessionId: sessionId)))
+            case .runCommand(let sessionId, let runId, let command):
+                do {
+                    commandRuns.insert(runId)
+                    try await manager.runCommand(sessionId: sessionId, runId: runId, command: command) { [weak self] chunk, done, code in
+                        self?.send(.commandOutput(sessionId: sessionId, runId: runId, chunk: chunk, done: done, exitCode: code))
+                        if done { self?.commandRuns.remove(runId) }
+                    }
+                } catch {
+                    send(.commandOutput(sessionId: sessionId, runId: runId, chunk: "\(error)\n", done: true, exitCode: -1))
+                }
+            case .cancelCommand(_, let runId):
+                await manager.cancelCommand(runId: runId)
+            case .pullRequest(let sessionId):
+                do {
+                    send(.pullRequest(sessionId: sessionId, info: try await manager.pullRequest(sessionId: sessionId), error: nil))
+                } catch {
+                    send(.pullRequest(sessionId: sessionId, info: nil, error: "\(error)"))
+                }
             case .liveActivity(let sessionId, let pushToken, let approvalNeedsApp):
                 await manager.registerLiveActivity(sessionId: sessionId, phone: id, token: pushToken, approvalNeedsApp: approvalNeedsApp)
             case .listSimulators:
@@ -248,7 +293,8 @@ extension ClientMessage {
         switch self {
         case .open(let id), .fork(let id), .prompt(let id, _, _, _), .permission(let id, _, _, _, _, _), .dequeue(let id, _), .interrupt(let id), .gitDiff(let id, _, _),
              .gitStatus(let id), .gitAction(let id, _), .liveActivity(let id, _, _),
-             .listFiles(let id, _), .getUsage(let id),
+             .listFiles(let id, _), .getUsage(let id), .listDirectory(let id, _), .searchProject(let id, _), .listCommands(let id),
+             .runCommand(let id, _, _), .cancelCommand(let id, _), .pullRequest(let id),
              .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id):
             return id
         default:

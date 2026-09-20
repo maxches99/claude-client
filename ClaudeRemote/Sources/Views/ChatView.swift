@@ -15,6 +15,10 @@ struct ChatView: View {
     @State private var showSimulator = false
     @State private var showLimits = false
     @State private var showGit = false
+    @State private var showBrowser = false
+    @State private var showCommands = false
+    /// Replies are read aloud and the mic opens for the next prompt — a conversation without looking.
+    @State private var handsFree = false
     @State private var showFind = false
     @State private var findQuery = ""
     @State private var findIndex = 0
@@ -56,6 +60,7 @@ struct ChatView: View {
                 isRunning: isRunning,
                 isDesktop: isDesktop,
                 isChat: isChat,
+                handsFree: $handsFree,
                 onSend: send,
                 onShowPermission: { presentedPermission = $0 }
             )
@@ -72,6 +77,11 @@ struct ChatView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showGit = true } label: {
                         Image(systemName: "arrow.triangle.branch").foregroundStyle(CDS.textSecondary)
+                            .overlay(alignment: .topTrailing) {
+                                if let ci = ciColor {
+                                    Circle().fill(ci).frame(width: 7, height: 7).offset(x: 3, y: -2)
+                                }
+                            }
                     }
                     .accessibilityLabel("Git")
                 }
@@ -83,6 +93,23 @@ struct ChatView: View {
                     }
                     Button("Plan limits…", systemImage: "gauge.with.dots.needle.67percent") { showLimits = true }
                     Button("Find in transcript", systemImage: "magnifyingglass") { openFind() }
+                    if !isChat {
+                        Section {
+                            Button("Browse files…", systemImage: "folder") { showBrowser = true }
+                            Button("Run a command…", systemImage: "terminal") { showCommands = true }
+                        }
+                    }
+                    Section {
+                        if model.narrator.isSpeaking {
+                            Button("Stop reading", systemImage: "speaker.slash") { model.narrator.stop() }
+                        } else {
+                            Button("Read last reply aloud", systemImage: "speaker.wave.2") {
+                                model.narrator.speak(TranscriptExport.lastReply(items: transcript.items))
+                            }
+                            .disabled(TranscriptExport.lastReply(items: transcript.items).isEmpty)
+                        }
+                        Toggle("Hands-free voice", systemImage: "waveform.and.mic", isOn: $handsFree)
+                    }
                     Section {
                         ShareLink(item: exportDocument, preview: SharePreview(summary?.title ?? "Transcript", image: Image(systemName: "doc.text"))) {
                             Label("Share transcript…", systemImage: "square.and.arrow.up")
@@ -119,21 +146,45 @@ struct ChatView: View {
         .sheet(isPresented: $showSimulator) { SimulatorView { files.append($0) } }
         .sheet(isPresented: $showLimits) { LimitsView(sessionId: sessionId) }
         .sheet(isPresented: $showGit) { GitView(sessionId: sessionId) }
+        .sheet(isPresented: $showBrowser) { ProjectBrowserView(sessionId: sessionId) }
+        .sheet(isPresented: $showCommands) { CommandsView(sessionId: sessionId) }
         .onChange(of: pending?.id) {
             // The inline card is the prompt; a stale details sheet just goes away.
             if pending == nil { presentedPermission = nil }
+        }
+        .onChange(of: model.macFileInsert?.token) { _, _ in
+            guard let insert = model.macFileInsert, insert.sessionId == sessionId else { return }
+            model.macFileInsert = nil
+            if !macFiles.contains(insert.path) { macFiles.append(insert.path) }
+            showBrowser = false
+            composerFocused = true
         }
         .onChange(of: model.composerInsert) { _, insert in
             // A quoted diff selection from the Git screen or the permission sheet lands in the draft.
             guard let insert, insert.sessionId == sessionId else { return }
             model.composerInsert = nil
             showGit = false
+            showCommands = false
             presentedPermission = nil
             let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
             draft = (trimmed.isEmpty ? "" : draft + "\n\n") + insert.text + "\n\n"
             composerFocused = true
         }
-        .onAppear { model.openIfNeeded(sessionId) }
+        .onAppear {
+            model.openIfNeeded(sessionId)
+            if !isChat, model.gitStatuses[sessionId] != nil || model.pullRequests[sessionId] != nil { model.requestPullRequest(sessionId) }
+        }
+        .onDisappear { if handsFree { handsFree = false; model.narrator.stop() } }
+    }
+
+    /// The branch's CI, as a dot on the Git icon (only once the PR has been looked up).
+    private var ciColor: Color? {
+        switch model.pullRequests[sessionId]?.info?.ciState {
+        case .success: return CDS.successFill
+        case .failure: return CDS.dangerFill
+        case .pending: return CDS.warningFill
+        default: return nil
+        }
     }
 
     // MARK: header
@@ -381,7 +432,7 @@ struct ChatView: View {
                     .contextMenu { messageMenu(text) }
             }
         case .activity(let group):
-            ActivityGroupView(group: group, expandedGroups: $expandedGroups, expandedSteps: $expandedSteps)
+            ActivityGroupView(group: group, expandedGroups: $expandedGroups, expandedSteps: $expandedSteps, subagents: transcript.subagents)
         case .note(let item):
             if case .note(let text) = item.kind {
                 Text(text).font(CDS.caption).foregroundStyle(CDS.textMuted).frame(maxWidth: .infinity)
@@ -398,6 +449,7 @@ struct ChatView: View {
     @ViewBuilder
     private func messageMenu(_ text: String) -> some View {
         Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }
+        Button("Read aloud", systemImage: "speaker.wave.2") { model.narrator.speak(text) }
         ShareLink(item: text) { Label("Share…", systemImage: "square.and.arrow.up") }
         Button("Quote in reply", systemImage: "text.quote") {
             let quoted = text.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
@@ -473,6 +525,7 @@ struct ComposerDock: View {
     let isRunning: Bool
     let isDesktop: Bool
     let isChat: Bool
+    @Binding var handsFree: Bool
     let onSend: () -> Void
     let onShowPermission: (PermissionRequest) -> Void
 
@@ -486,6 +539,9 @@ struct ComposerDock: View {
     @State private var dictationBase = ""
     @State private var attachError: String?
     @State private var fileSearchTask: Task<Void, Never>?
+    /// Hands-free: the reply already read out, and the pause that sends what was dictated.
+    @State private var spokenReplyId: String?
+    @State private var silenceTask: Task<Void, Never>?
 
     private var agent: AgentKind { state?.agent ?? summary?.agent ?? .claude }
     private var isCodex: Bool { agent == .codex }
@@ -514,6 +570,7 @@ struct ComposerDock: View {
             if let queued = state?.queued, !queued.isEmpty {
                 QueuedPromptsStrip(sessionId: sessionId, queued: queued)
             }
+            if handsFree { handsFreeStrip }
             if let error = state?.lastError, state?.status == .exited {
                 notice(error, tint: CDS.danger)
             }
@@ -526,6 +583,72 @@ struct ComposerDock: View {
         .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 8)
         .background(CDS.surface0)
         .onChange(of: draft) { _, _ in handleDraftChange() }
+        .onChange(of: state?.status) { _, status in
+            if handsFree, status == .idle { speakLatestReply() }
+        }
+        .onChange(of: handsFree) { _, on in
+            if on {
+                spokenReplyId = lastReply?.id   // start with the next reply, not one already read
+                if state?.status != .running, state?.status != .awaitingPermission, !isRunning { Task { await startDictation() } }
+            } else {
+                model.narrator.stop()
+                silenceTask?.cancel()
+                if dictation.isListening { dictation.cancel() }
+            }
+        }
+        .onChange(of: dictation.isListening) { was, listening in
+            // The recognizer gave up on its own (silence): in hands-free, whatever was said goes out.
+            if handsFree, was, !listening { silenceTask?.cancel(); sendDictated() }
+        }
+    }
+
+    private var handsFreeStrip: some View {
+        HStack(spacing: 8) {
+            Image(systemName: model.narrator.isSpeaking ? "speaker.wave.2.fill" : (dictation.isListening ? "mic.fill" : "waveform.and.mic"))
+                .font(.system(size: 12, weight: .medium)).foregroundStyle(agent.tint)
+            Text(model.narrator.isSpeaking ? "Hands-free · reading the reply" : (dictation.isListening ? "Hands-free · listening, pause to send" : (isRunning ? "Hands-free · waiting for the reply" : "Hands-free · tap the mic or wait")))
+                .font(CDS.caption).foregroundStyle(CDS.textSecondary).lineLimit(1)
+            Spacer(minLength: 4)
+            if model.narrator.isSpeaking {
+                Button("Skip") { model.narrator.stop(); Task { await startDictation() } }.font(CDS.caption)
+            }
+            Button { handsFree = false } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(CDS.textMuted) }
+                .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(CDS.surface2, in: RoundedRectangle(cornerRadius: CDS.radius))
+        .overlay(RoundedRectangle(cornerRadius: CDS.radius).strokeBorder(agent.tint.opacity(0.4)))
+    }
+
+    private var lastReply: TranscriptItem? {
+        model.transcripts[sessionId]?.items.last { if case .assistantText = $0.kind { return true } else { return false } }
+    }
+
+    /// Reads the reply that just finished, then opens the mic for the answer.
+    private func speakLatestReply() {
+        guard let reply = lastReply, reply.id != spokenReplyId, case .assistantText(let text, false) = reply.kind else { return }
+        spokenReplyId = reply.id
+        model.narrator.speak(text, itemId: reply.id) {
+            guard handsFree else { return }
+            Task { await startDictation() }
+        }
+    }
+
+    /// In hands-free, a pause of a couple of seconds after speaking sends the prompt.
+    private func armSilenceTimer() {
+        silenceTask?.cancel()
+        guard handsFree, dictation.isListening else { return }
+        silenceTask = Task {
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            guard !Task.isCancelled, handsFree, dictation.isListening else { return }
+            dictation.stop()
+            sendDictated()
+        }
+    }
+
+    private func sendDictated() {
+        guard handsFree, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        onSend()
     }
 
     /// What "this session lives on the Mac" means for the agent in question.
@@ -614,6 +737,7 @@ struct ComposerDock: View {
             guard dictation.isListening || !text.isEmpty else { return }
             let sep = dictationBase.isEmpty || dictationBase.hasSuffix("\n") || dictationBase.hasSuffix(" ") ? "" : " "
             draft = dictationBase + (text.isEmpty ? "" : sep + text)
+            if !text.isEmpty { armSilenceTimer() }
         }
         .onChange(of: dictation.failure) { _, failure in
             switch failure {

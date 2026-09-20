@@ -131,7 +131,20 @@ access) and the **reasoning effort** of the model — all changeable per session
 composer chips, applied to the next turn. Login is shared with the Codex app (`~/.codex/auth.json`),
 so nothing to log in.
 
-A session **open in the Codex app right now** shows up as "Codex app" and is mirrored live: the
+### Sharing the app-server with the Codex app
+
+The Codex app normally runs a private `codex app-server` over stdio, which is why a session open in
+the app can only be mirrored (below). Give the daemon a port instead — Host app → Settings →
+"Shared Codex app-server port" (or `--codex-port 4141`) — and it runs `codex app-server --listen
+ws://127.0.0.1:<port>` and talks to it as a WebSocket client. Point the Codex app at the same server
+("Point the Codex app here", which sets launchd's `CODEX_APP_SERVER_WS_URL` for apps launched from
+then on; quit and reopen the Codex app). Now a thread open in the app is just another thread on
+that server: opening it from the phone resumes it there, which subscribes the phone to its live
+events — including approval requests, which either side can answer — and lets it prompt and
+interrupt. The server outlives daemon restarts when something else started it; the app reconnects to
+it on its own.
+
+Without a shared server, a session **open in the Codex app right now** shows up as "Codex app" and is mirrored live: the
 daemon reads Codex's own session file (`~/.codex/sessions/…/rollout-*.jsonl`, which carries the
 messages, reasoning and tool calls that `thread/read` leaves out for a thread it does not host) and
 tails it. Codex marks such a thread with a held `flock` on `~/.codex/thread-writer-locks/<id>.lock`,
@@ -171,6 +184,26 @@ phone is connected (the socket answers empty and the CLI prompts as usual). Hook
 session starts, so sessions already open keep prompting on the Mac until restarted; without the
 daemon running the hook exits quietly. `--uninstall-hook` (or the toggle) removes it.
 
+## Files, search, commands
+
+* **Browse files…** (session menu) opens the project: folders and files, a search field that greps
+  file contents on the Mac (`git grep`, so ignored files stay out), and any file in the viewer with
+  line numbers — a search hit opens scrolled to its line. The file's menu has **Attach to prompt**,
+  which puts it in the composer as an `@` mention, and Copy path.
+* **Run a command…** runs build / test / generate on the Mac without the agent, streaming the output
+  to the phone with Cancel and the exit code; **Send output to the agent** drops the tail into the
+  composer as a fenced block. Commands come from `.ccremote.json` in the repo
+  (`{"commands": [{"name": "Tests", "command": "swift test"}]}`) or are guessed from the build files
+  (Package.swift, Tuist, package.json, Cargo, Go, pytest, Makefile…); anything can be typed. Running
+  is Face ID-gated like an approval when that setting is on.
+* **Read aloud / hands-free.** Any reply can be read out (message menu, or "Read last reply aloud").
+  **Hands-free voice** in the session menu turns the chat into a conversation: each finished reply
+  is read aloud, then the mic opens; stop talking for a couple of seconds and the prompt is sent.
+  Code blocks are skipped when reading.
+* **Sub-agents.** An `Agent` row shows what its sub-agent is doing ("Reading a file"), and expands
+  into the sub-agent's own transcript — its prose and tool steps, nested as deep as agents go. Works
+  live for sessions the phone hosts and, from the `subagents/` files, for Desktop / terminal ones.
+
 ## Git from the phone
 
 The branch icon in a session opens the repo: current branch (switch or create one from the menu),
@@ -179,6 +212,11 @@ a per-file diff, stage / unstage / discard by swipe, and a commit box (staged on
 Actions run `git` on the Mac in the session's directory with `GIT_TERMINAL_PROMPT=0`, so a push that
 needs a password fails fast instead of hanging — use the keychain helper or an SSH key with an agent.
 While the agent is mid-turn in that repo, actions are refused so the phone doesn't race its edits.
+
+**Pull requests** need GitHub's `gh` on the Mac: the Git screen shows the branch's PR (state, review
+decision, conflicts, every CI check with a link) with "Open on GitHub", or **Create pull request…**
+(title, description, draft — the branch is pushed with an upstream first if it has none). The Git
+icon in a session carries a dot with the CI result once the PR has been looked up.
 
 Diffs are how you point at code: tap a line, then another, and the range is selected; **Ask about
 this** drops it into the composer as a quote — the file, the line numbers and the lines as a
@@ -295,7 +333,7 @@ ccremote [--port 7811] [--token …] [--claude /path/to/claude] [--codex /path/t
          [--relay wss://vps | --no-relay] [--relay-secret S] [--room R] [--relay-fingerprint FP]
          [--ntfy TOPIC] [--telegram-token T --telegram-chat ID] [--no-notify-done]
          [--apns-key PATH --apns-key-id ID --apns-team TEAM] [--apns-bundle ID] [--apns-production]
-         [--install-hook | --uninstall-hook]
+         [--install-hook | --uninstall-hook] [--codex-port N]
 ```
 
 Running a second daemon for development next to the Host app? Use another port **and** `--no-relay`

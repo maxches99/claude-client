@@ -12,6 +12,10 @@ struct GitView: View {
     @State private var confirmDiscard: [String]? = nil   // nil = no dialog; [] = everything
     @State private var newBranchName = ""
     @State private var showNewBranch = false
+    @State private var showNewPR = false
+    @State private var prTitle = ""
+    @State private var prBody = ""
+    @State private var prDraft = false
     @FocusState private var messageFocused: Bool
 
     private var status: GitStatus? { model.gitStatuses[sessionId] }
@@ -77,7 +81,107 @@ struct GitView: View {
                 Text("Creates the branch from the current commit and switches to it.")
             }
         }
-        .onAppear { model.requestGitStatus(sessionId) }
+        .onAppear { model.requestGitStatus(sessionId); model.requestPullRequest(sessionId) }
+        .sheet(isPresented: $showNewPR) { newPullRequestSheet }
+    }
+
+    // MARK: pull request
+
+    private var pr: AppModel.PullRequestState? { model.pullRequests[sessionId] }
+
+    @ViewBuilder private func pullRequestRow(_ status: GitStatus) -> some View {
+        if let info = pr?.info {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: info.state == "MERGED" ? "arrow.triangle.merge" : "arrow.triangle.pull")
+                        .foregroundStyle(info.state == "MERGED" ? CDS.accent : (info.state == "CLOSED" ? CDS.danger : CDS.success))
+                    Text("#\(info.number) \(info.title)").font(CDS.bodyMedium).foregroundStyle(CDS.textPrimary).lineLimit(2)
+                    Spacer(minLength: 4)
+                    if pr?.loading == true { ProgressView().controlSize(.mini) }
+                }
+                HStack(spacing: 6) {
+                    prBadge(info.isDraft ? "Draft" : info.state.capitalized)
+                    if let review = info.reviewDecision { prBadge(review.replacingOccurrences(of: "_", with: " ").capitalized) }
+                    if info.mergeable == "CONFLICTING" { prBadge("Conflicts", tint: CDS.danger) }
+                    if let base = info.baseBranch { Text("→ \(base)").font(CDS.caption).foregroundStyle(CDS.textMuted) }
+                }
+                if !info.checks.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(info.checks) { check in
+                            HStack(spacing: 6) {
+                                Image(systemName: check.isDone ? (check.isSuccess ? "checkmark.circle.fill" : "xmark.circle.fill") : "circle.dotted")
+                                    .font(.caption)
+                                    .foregroundStyle(check.isDone ? (check.isSuccess ? CDS.success : CDS.danger) : CDS.warning)
+                                Text(check.name).font(CDS.caption).foregroundStyle(CDS.textSecondary).lineLimit(1)
+                                Spacer(minLength: 0)
+                                if let url = check.url.flatMap(URL.init) {
+                                    Link(destination: url) { Image(systemName: "arrow.up.right.square").font(.caption).foregroundStyle(CDS.textMuted) }
+                                }
+                            }
+                        }
+                    }
+                    .padding(8)
+                    .background(CDS.fillNeutral, in: RoundedRectangle(cornerRadius: CDS.radius - 2))
+                }
+                HStack(spacing: 8) {
+                    if let url = URL(string: info.url) {
+                        Link(destination: url) { Label("Open on GitHub", systemImage: "safari") }
+                            .buttonStyle(CDSButtonStyle(variant: .secondary, fullWidth: true))
+                    }
+                    Button { model.requestPullRequest(sessionId, force: true) } label: { Image(systemName: "arrow.clockwise") }
+                        .buttonStyle(CDSButtonStyle(variant: .secondary))
+                }
+            }
+            .listRowBackground(CDS.surface0)
+        } else if let error = pr?.error {
+            Label(error, systemImage: "arrow.triangle.pull").font(CDS.caption).foregroundStyle(CDS.textMuted)
+                .listRowBackground(CDS.surface0)
+        } else if status.branch != nil, pr?.loading != true {
+            Button { prTitle = status.lastCommit.map { String($0.drop(while: { $0 != " " }).dropFirst()) } ?? ""; showNewPR = true } label: {
+                Label("Create pull request…", systemImage: "arrow.triangle.pull")
+            }
+            .buttonStyle(CDSButtonStyle(variant: .secondary, fullWidth: true))
+            .listRowBackground(CDS.surface0)
+            .disabled(agentRunning)
+        } else {
+            HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Checking for a pull request…").font(CDS.caption).foregroundStyle(CDS.textMuted) }
+                .listRowBackground(CDS.surface0)
+        }
+    }
+
+    private func prBadge(_ text: String, tint: Color = CDS.textSecondary) -> some View {
+        Text(text).font(.caption2.weight(.semibold)).foregroundStyle(tint)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(CDS.fillNeutral, in: Capsule())
+    }
+
+    private var newPullRequestSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Title", text: $prTitle)
+                    TextField("Description (Markdown)", text: $prBody, axis: .vertical).lineLimit(4...12)
+                    Toggle("Draft", isOn: $prDraft)
+                } footer: {
+                    Text("Pushes the branch with an upstream if it has none, then runs `gh pr create` on the Mac.")
+                }
+            }
+            .navigationTitle("New pull request")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showNewPR = false } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") {
+                        run(.createPullRequest(title: prTitle, body: prBody, draft: prDraft))
+                        showNewPR = false
+                        // The result banner reports the URL; the row picks the PR up on the next fetch.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { model.requestPullRequest(sessionId, force: true) }
+                    }
+                    .disabled(prTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 
     private var discardTitle: String {
@@ -96,6 +200,7 @@ struct GitView: View {
             Section {
                 branchHeader(status)
                 syncRow(status)
+                pullRequestRow(status)
                 if let result { resultRow(result) }
                 if agentRunning {
                     Label("The agent is working in this repo — actions wait for the turn to finish.", systemImage: "hourglass")

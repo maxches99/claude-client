@@ -50,6 +50,18 @@ public enum ClientMessage: Codable, Sendable {
     case listFiles(sessionId: String, query: String)
     /// Ask for the `/usage` data (session cost + plan rate-limit windows) for the limits screen.
     case getUsage(sessionId: String)
+    /// A directory of the session's project (relative to its cwd; nil or empty = the root); answered with `directory`.
+    case listDirectory(sessionId: String, path: String?)
+    /// Search file contents under the project (`git grep`); answered with `searchResults`.
+    case searchProject(sessionId: String, query: String)
+    /// The project's quick commands (`.ccremote.json` or guessed); answered with `commands`.
+    case listCommands(sessionId: String)
+    /// Run a shell command in the project's directory; output streams back as `commandOutput` frames
+    /// tagged with `runId` (chosen by the phone), the last one carrying `done` and the exit code.
+    case runCommand(sessionId: String, runId: String, command: String)
+    case cancelCommand(sessionId: String, runId: String)
+    /// The pull request of the session's current branch (via `gh`); answered with `pullRequest`.
+    case pullRequest(sessionId: String)
     /// iOS Simulators on the Mac, booted or not (also pushed as `simulators` whenever the set changes).
     case listSimulators
     /// Boot / shut down a simulator, launch or quit an app in it, open a URL; answered with `simulatorActionResult`.
@@ -96,6 +108,12 @@ public enum ServerMessage: Codable, Sendable {
     case fileList(sessionId: String, paths: [String])
     /// The `/usage` payload (raw, as the CLI returns it) or an error when limits are unavailable.
     case usage(sessionId: String, data: JSONValue?, error: String?)
+    case directory(sessionId: String, path: String, entries: [DirectoryEntry], error: String?)
+    case searchResults(sessionId: String, query: String, matches: [SearchMatch], truncated: Bool, error: String?)
+    case commands(sessionId: String, items: [ProjectCommand])
+    /// A slice of a running command's output (stdout and stderr interleaved). `done` closes the run.
+    case commandOutput(sessionId: String, runId: String, chunk: String, done: Bool, exitCode: Int32?)
+    case pullRequest(sessionId: String, info: PullRequestInfo?, error: String?)
     case simulators(items: [SimulatorInfo])
     case simulatorActionResult(udid: String, action: SimulatorAction, error: String?)
     case simulatorApps(udid: String, items: [SimulatorApp], error: String?)

@@ -8,54 +8,78 @@ import ClaudeRemoteCore
 /// still be saved. The share button hands the bytes to the share sheet as a real file, so "Save to
 /// Files", AirDrop, or opening in another app all work.
 struct RemoteFileViewer: View {
+    @Environment(\.dismiss) private var dismiss
+    let path: String
+
+    var body: some View {
+        NavigationStack {
+            RemoteFileContent(path: path)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+        }
+    }
+}
+
+/// The file itself — the body of `RemoteFileViewer`, also pushed inside the project browser. With
+/// `line`, a text file scrolls to that line and highlights it (a search hit). `sessionId` adds
+/// "Attach to prompt", which drops the path into that session's composer as an @-mention.
+struct RemoteFileContent: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let path: String
+    var line: Int? = nil
+    var sessionId: String? = nil
+    /// The path as the composer should reference it (relative to the project when known).
+    var attachPath: String? = nil
 
     private var file: AppModel.RemoteFile? { model.remoteFiles[path] }
     private var error: String? { model.remoteFileErrors[path] }
     private var name: String { (path as NSString).lastPathComponent }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if let file {
-                    content(file)
-                } else if let error {
-                    ContentUnavailableView {
-                        Label("Couldn't load", systemImage: "exclamationmark.triangle")
-                    } description: {
-                        Text(error)
-                    } actions: {
-                        Button("Try again") { model.requestFile(path, force: true) }
-                            .buttonStyle(CDSButtonStyle(variant: .secondary))
-                    }
-                } else {
-                    VStack(spacing: 10) {
-                        ProgressView().tint(CDS.textMuted)
-                        Text("Fetching from the Mac…").font(CDS.caption).foregroundStyle(CDS.textMuted)
-                    }
+        Group {
+            if let file {
+                content(file)
+            } else if let error {
+                ContentUnavailableView {
+                    Label("Couldn't load", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Try again") { model.requestFile(path, force: true) }
+                        .buttonStyle(CDSButtonStyle(variant: .secondary))
+                }
+            } else {
+                VStack(spacing: 10) {
+                    ProgressView().tint(CDS.textMuted)
+                    Text("Fetching from the Mac…").font(CDS.caption).foregroundStyle(CDS.textMuted)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(CDS.surface0)
-            .navigationTitle(name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(CDS.surface0)
+        .navigationTitle(name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(CDS.surface0, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
                     if let file {
-                        ShareLink(item: RemoteFileDocument(file: file), preview: SharePreview(name, image: Image(systemName: Self.symbol(for: path)))) {
-                            Image(systemName: "square.and.arrow.up")
+                        ShareLink(item: RemoteFileDocument(file: file), preview: SharePreview(name, image: Image(systemName: RemoteFileViewer.symbol(for: path)))) {
+                            Label("Share…", systemImage: "square.and.arrow.up")
+                        }
+                        if let text = RemoteFileViewer.text(of: file) {
+                            Button("Copy contents", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }
                         }
                     }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    if let file, let text = Self.text(of: file) {
-                        Button { UIPasteboard.general.string = text } label: { Image(systemName: "doc.on.doc") }
-                            .accessibilityLabel("Copy contents")
+                    Button("Copy path", systemImage: "link") { UIPasteboard.general.string = attachPath ?? path }
+                    if let sessionId {
+                        Button("Attach to prompt", systemImage: "at") {
+                            model.attachMacFile(sessionId, path: attachPath ?? path)
+                            dismiss()
+                        }
                     }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
                 }
             }
         }
@@ -66,14 +90,40 @@ struct RemoteFileViewer: View {
     private func content(_ file: AppModel.RemoteFile) -> some View {
         if file.mediaType == "application/pdf" {
             PDFDocumentView(data: file.data)
-        } else if file.mediaType == "text/markdown", let text = Self.text(of: file) {
+        } else if file.mediaType == "text/markdown", line == nil, let text = RemoteFileViewer.text(of: file) {
             ScrollView {
                 MarkdownText(text: text)
                     .padding(.horizontal, CDS.gutter).padding(.vertical, 14)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             }
-        } else if let text = Self.text(of: file) {
+        } else if let text = RemoteFileViewer.text(of: file) {
+            CodeTextView(text: text, highlightLine: line)
+        } else if file.mediaType.hasPrefix("image/"), let ui = UIImage(data: file.data) {
+            ScrollView([.vertical, .horizontal]) {
+                Image(uiImage: ui).resizable().aspectRatio(contentMode: .fit)
+            }
+        } else {
+            ContentUnavailableView {
+                Label(name, systemImage: RemoteFileViewer.symbol(for: path))
+            } description: {
+                Text("\(RemoteFileViewer.kindLabel(for: file.mediaType)) · \(Media.humanSize(file.data.count))\nNo preview for this kind of file — share it to save or open it in another app.")
+            }
+        }
+    }
+}
+
+/// Source text with line numbers; scrolls to `highlightLine` and tints it. Files beyond a few
+/// thousand lines fall back to one selectable block, which scrolls better than that many rows.
+struct CodeTextView: View {
+    let text: String
+    var highlightLine: Int? = nil
+
+    private var lines: [String] { text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) }
+
+    var body: some View {
+        let lines = lines
+        if lines.count > 4000 {
             ScrollView([.vertical, .horizontal]) {
                 Text(text)
                     .font(CDS.codeSmall).foregroundStyle(CDS.textPrimary)
@@ -81,19 +131,40 @@ struct RemoteFileViewer: View {
                     .padding(CDS.gutter)
                     .fixedSize(horizontal: true, vertical: false)
             }
-        } else if file.mediaType.hasPrefix("image/"), let ui = UIImage(data: file.data) {
-            ScrollView([.vertical, .horizontal]) {
-                Image(uiImage: ui).resizable().aspectRatio(contentMode: .fit)
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
-            ContentUnavailableView {
-                Label(name, systemImage: Self.symbol(for: path))
-            } description: {
-                Text("\(Self.kindLabel(for: file.mediaType)) · \(Media.humanSize(file.data.count))\nNo preview for this kind of file — share it to save or open it in another app.")
+            let width = CGFloat(String(lines.count).count) * 8 + 8
+            ScrollViewReader { proxy in
+                ScrollView([.vertical, .horizontal]) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text("\(i + 1)")
+                                    .font(CDS.codeSmall).foregroundStyle(CDS.textMuted.opacity(0.7))
+                                    .frame(width: width, alignment: .trailing)
+                                Text(line.isEmpty ? " " : line)
+                                    .font(CDS.codeSmall).foregroundStyle(CDS.textPrimary)
+                            }
+                            .padding(.vertical, 1)
+                            .padding(.horizontal, 6)
+                            .background(highlightLine == i + 1 ? CDS.accent.opacity(0.18) : .clear)
+                            .id(i + 1)
+                        }
+                    }
+                    .padding(.vertical, 10)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .onAppear {
+                    if let highlightLine { DispatchQueue.main.async { proxy.scrollTo(highlightLine, anchor: .center) } }
+                }
             }
         }
     }
+}
 
+extension RemoteFileViewer {
     /// UTF-8 contents for text-like types (and anything small that decodes as text).
     static func text(of file: AppModel.RemoteFile) -> String? {
         let textLike = file.mediaType.hasPrefix("text/") || ["application/json", "application/xml", "application/x-yaml", "application/javascript"].contains(file.mediaType)

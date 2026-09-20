@@ -85,6 +85,9 @@ public struct Transcript: Equatable, Sendable {
     private var index: [String: Int] = [:]   // item id → position in `items`
     /// tool_use id → item id, so a later tool_result can flip `streaming` off.
     private var toolItemIds: [String: String] = [:]
+    /// What each sub-agent did, keyed by the `Agent` tool_use id that spawned it. Live traffic
+    /// carries `parent_tool_use_id`; transcripts on disk are annotated the same way by the host.
+    public private(set) var subagents: [String: Transcript] = [:]
 
     public init() {}
 
@@ -92,8 +95,16 @@ public struct Transcript: Equatable, Sendable {
 
     public mutating func apply(_ message: JSONValue) {
         guard let type = message["type"]?.string else { return }
-        // Sub-agent traffic is nested under a parent tool use; keep the main thread only.
-        if let parent = message["parent_tool_use_id"], !parent.isNull { return }
+        // Sub-agent traffic is nested under a parent tool use: it gets its own transcript.
+        if let parent = message["parent_tool_use_id"]?.string, !parent.isEmpty {
+            var child = subagents[parent] ?? Transcript()
+            var inner = message.object ?? [:]
+            inner["parent_tool_use_id"] = nil
+            inner["isSidechain"] = nil
+            child.apply(.object(inner))
+            subagents[parent] = child
+            return
+        }
         if message["isSidechain"]?.bool == true { return }
         let timestamp = message["timestamp"]?.string.flatMap(Transcript.parseDate)
 

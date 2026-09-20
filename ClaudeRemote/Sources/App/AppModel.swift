@@ -13,6 +13,7 @@ final class AppModel {
     let imageCache = ImageCache()
     let simulatorFeed = SimulatorFeed()
     let liveActivities = LiveActivityController()
+    let narrator = Narrator()
 
     /// Every Mac this phone has paired with; `activeMacId` is the one the app is connected to.
     private(set) var macs: [PairingInfo] = []
@@ -167,6 +168,7 @@ final class AppModel {
         awaitingCreatedSession = false
         requestedFiles = []
         remoteFiles = [:]
+        directories = [:]; directoryErrors = [:]; searchResults = [:]; projectCommands = [:]; commandRuns = [:]; pullRequests = [:]
         remoteFileErrors = [:]
         gitDiffs = [:]
         gitFileDiffs = [:]
@@ -409,6 +411,102 @@ final class AppModel {
         connection.send(.gitStatus(sessionId: sessionId))
     }
 
+    // MARK: pull requests
+
+    struct PullRequestState: Equatable {
+        var info: PullRequestInfo?
+        var error: String?
+        var fetchedAt: Date
+        var loading: Bool
+    }
+    var pullRequests: [String: PullRequestState] = [:]
+
+    /// Fetches the branch's PR (one network call on the Mac); cached for a few minutes unless forced.
+    func requestPullRequest(_ sessionId: String, force: Bool = false) {
+        if !force, let cached = pullRequests[sessionId], cached.loading || Date().timeIntervalSince(cached.fetchedAt) < 180 { return }
+        pullRequests[sessionId] = PullRequestState(info: pullRequests[sessionId]?.info, error: nil, fetchedAt: Date(), loading: true)
+        connection.send(.pullRequest(sessionId: sessionId))
+    }
+
+    // MARK: project browser & search
+
+    struct DirectoryKey: Hashable { let sessionId: String; let path: String }
+    var directories: [DirectoryKey: [DirectoryEntry]] = [:]
+    var directoryErrors: [DirectoryKey: String] = [:]
+
+    func requestDirectory(_ sessionId: String, path: String) {
+        directoryErrors[DirectoryKey(sessionId: sessionId, path: path)] = nil
+        connection.send(.listDirectory(sessionId: sessionId, path: path))
+    }
+
+    struct SearchResult: Equatable {
+        let query: String
+        let matches: [SearchMatch]
+        let truncated: Bool
+        let error: String?
+    }
+    var searchResults: [String: SearchResult] = [:]
+    var searchInFlight: Set<String> = []
+
+    func searchProject(_ sessionId: String, query: String) {
+        searchInFlight.insert(sessionId)
+        connection.send(.searchProject(sessionId: sessionId, query: query))
+    }
+
+    /// A Mac file another screen wants attached to the session's next prompt (an @-mention chip).
+    var macFileInsert: (sessionId: String, path: String, token: UUID)?
+
+    func attachMacFile(_ sessionId: String, path: String) {
+        macFileInsert = (sessionId, path, UUID())
+    }
+
+    // MARK: quick commands
+
+    var projectCommands: [String: [ProjectCommand]] = [:]
+
+    func requestCommands(_ sessionId: String) {
+        connection.send(.listCommands(sessionId: sessionId))
+    }
+
+    @Observable
+    final class CommandRun: Identifiable {
+        let id: String
+        let sessionId: String
+        let command: String
+        let startedAt = Date()
+        var output = ""
+        var done = false
+        var exitCode: Int32?
+        init(id: String, sessionId: String, command: String) {
+            self.id = id
+            self.sessionId = sessionId
+            self.command = command
+        }
+    }
+    var commandRuns: [String: CommandRun] = [:]
+
+    /// Starts a command on the Mac (Face ID-gated like an approval: it runs code there).
+    func runCommand(_ sessionId: String, command: String, completion: @escaping (CommandRun?) -> Void) {
+        let start = { [self] in
+            let run = CommandRun(id: UUID().uuidString.lowercased(), sessionId: sessionId, command: command)
+            commandRuns[run.id] = run
+            connection.send(.runCommand(sessionId: sessionId, runId: run.id, command: command))
+            completion(run)
+        }
+        if requireBiometricsForApproval {
+            Task { @MainActor in
+                guard await Biometrics.authenticate(reason: "Run a command on the Mac") else { completion(nil); return }
+                start()
+            }
+        } else {
+            start()
+        }
+    }
+
+    func cancelCommand(_ run: CommandRun) {
+        connection.send(.cancelCommand(sessionId: run.sessionId, runId: run.id))
+    }
+
     /// The file diff last asked for; the reply carries the path but not which side, so it lands here.
     private var pendingFileDiff: GitFileKey?
 
@@ -534,6 +632,20 @@ final class AppModel {
         case .usage(_, let data, let error):
             usageReport = data
             usageError = error
+        case .directory(let sessionId, let path, let entries, let error):
+            let key = DirectoryKey(sessionId: sessionId, path: path)
+            if let error { directoryErrors[key] = error } else { directories[key] = entries }
+        case .searchResults(let sessionId, let query, let matches, let truncated, let error):
+            searchInFlight.remove(sessionId)
+            searchResults[sessionId] = SearchResult(query: query, matches: matches, truncated: truncated, error: error)
+        case .commands(let sessionId, let items):
+            projectCommands[sessionId] = items
+        case .commandOutput(_, let runId, let chunk, let done, let exitCode):
+            guard let run = commandRuns[runId] else { break }
+            if !chunk.isEmpty { run.output += chunk }
+            if done { run.done = true; run.exitCode = exitCode }
+        case .pullRequest(let sessionId, let info, let error):
+            pullRequests[sessionId] = PullRequestState(info: info, error: error, fetchedAt: Date(), loading: false)
         case .simulators(let items):
             simulatorFeed.devices = items
         case .simulatorFrame(let frame):
@@ -693,4 +805,9 @@ final class AppModel {
         connection.send(.simulatorScreenshot(udid: udid))
     }
 
+}
+
+extension AppModel.CommandRun: Hashable {
+    static func == (a: AppModel.CommandRun, b: AppModel.CommandRun) -> Bool { a.id == b.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }

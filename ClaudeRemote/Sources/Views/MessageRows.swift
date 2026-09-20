@@ -47,6 +47,8 @@ struct ActivityGroupView: View {
     let group: ActivityGroup
     @Binding var expandedGroups: Set<String>
     @Binding var expandedSteps: Set<String>
+    /// Sub-agent transcripts by the Agent tool_use id that spawned them (nested under that row).
+    var subagents: [String: Transcript] = [:]
 
     private var isExpanded: Bool { expandedGroups.contains(group.id) }
 
@@ -103,7 +105,7 @@ struct ActivityGroupView: View {
         case .thinking(let id, let text, let streaming, let duration):
             ThinkingStepRow(text: text, streaming: streaming, duration: duration, expanded: binding(for: id))
         case .tool(let tool):
-            ToolStepRow(step: tool, live: group.isLive, expanded: binding(for: tool.id))
+            ToolStepRow(step: tool, live: group.isLive, expanded: binding(for: tool.id), subagent: subagents[tool.toolUseId])
         case .orphanResult(let id, let text, let isError, let images):
             ToolResultView(text: text, isError: isError, images: images, keyPrefix: id)
                 .padding(.leading, 26).padding(.vertical, 4)
@@ -241,10 +243,21 @@ struct ToolStepRow: View {
     let step: ToolStep
     var live: Bool = false
     @Binding var expanded: Bool
+    /// What the sub-agent this row spawned has done so far.
+    var subagent: Transcript? = nil
 
     private var presentation: ToolPresentation { ToolPresentation(name: step.name, input: step.input, partialInput: step.partialInput) }
     /// Executing right now: still streaming its call, or awaiting a result inside a live group.
     private var isActive: Bool { step.running || (live && step.awaitingResult) }
+
+    /// "12 steps" once done, or what the sub-agent is doing right now.
+    private var subagentStatus: String? {
+        guard let subagent, !subagent.items.isEmpty else { return nil }
+        let blocks = TranscriptLayout.blocks(for: subagent.items, sessionRunning: isActive)
+        if isActive, case .activity(let group)? = blocks.last, group.isLive { return group.liveStatus }
+        let steps = blocks.reduce(0) { n, b in if case .activity(let g) = b { return n + g.steps.count } else { return n } }
+        return steps > 0 ? "\(steps) step\(steps == 1 ? "" : "s")" : nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -268,6 +281,9 @@ struct ToolStepRow: View {
                             .truncationMode(presentation.truncateMiddle ? .middle : .tail)
                     }
                     Spacer(minLength: 4)
+                    if let status = subagentStatus {
+                        Text(status).font(CDS.caption).foregroundStyle(CDS.textMuted).lineLimit(1)
+                    }
                     if isActive {
                         ProgressView().controlSize(.mini).tint(CDS.textMuted)
                     } else {
@@ -278,6 +294,11 @@ struct ToolStepRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+
+            if expanded, let subagent, !subagent.items.isEmpty {
+                SubagentTranscriptView(transcript: subagent, live: isActive)
+                    .padding(.leading, 26).padding(.bottom, 8)
+            }
 
             // Screenshots and other images a tool returned are the point — show them without expanding.
             if !step.resultImages.isEmpty {
@@ -611,5 +632,40 @@ enum ToolIcon {
         case "SendUserFile": return "paperclip"
         default: return name.hasPrefix("mcp__") ? "puzzlepiece.extension" : "wrench"
         }
+    }
+}
+
+
+/// A sub-agent's work, nested under the Agent row that started it: its prose and its own activity
+/// groups (which can nest further — an agent that runs agents). The prompt is the row's input, so
+/// user turns are not repeated here.
+struct SubagentTranscriptView: View {
+    let transcript: Transcript
+    let live: Bool
+    @State private var expandedGroups: Set<String> = []
+    @State private var expandedSteps: Set<String> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(TranscriptLayout.blocks(for: transcript.items, sessionRunning: live)) { block in
+                switch block {
+                case .assistant(let item):
+                    if case .assistantText(let text, let streaming) = item.kind {
+                        AssistantMessageView(text: text, streaming: streaming)
+                    }
+                case .activity(let group):
+                    AnyView(ActivityGroupView(group: group, expandedGroups: $expandedGroups, expandedSteps: $expandedSteps, subagents: transcript.subagents))
+                case .note(let item), .turnError(let item):
+                    if case .note(let text) = item.kind { Text(text).font(CDS.caption).foregroundStyle(CDS.textMuted) }
+                    if case .turnEnd(let summary, true) = item.kind { Text(summary).font(CDS.caption).foregroundStyle(CDS.danger) }
+                case .user:
+                    EmptyView()
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CDS.surface1, in: RoundedRectangle(cornerRadius: CDS.radius))
+        .overlay(RoundedRectangle(cornerRadius: CDS.radius).strokeBorder(CDS.border))
     }
 }

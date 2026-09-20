@@ -92,7 +92,12 @@ public actor CodexBackend {
 
     public var onEvent: (@Sendable (Event) -> Void)?
 
-    public init(cli: CodexCLI, log: @escaping @Sendable (String) -> Void = { _ in }) {
+    /// Port of the shared app-server (`ws://127.0.0.1:port`), nil for a private stdio one.
+    public nonisolated let listenPort: UInt16?
+    public nonisolated var isShared: Bool { listenPort != nil }
+
+    public init(cli: CodexCLI, listenPort: UInt16? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) {
+        self.listenPort = listenPort
         self.cli = cli
         self.log = log
         self.loggedIn = CodexCLI.hasCredentials()
@@ -114,7 +119,7 @@ public actor CodexBackend {
     }
 
     private func startServer() async throws -> CodexAppServer {
-        let server = CodexAppServer(cliPath: cli.path)
+        let server = CodexAppServer(cliPath: cli.path, listenPort: listenPort)
         let log = self.log
         server.log = { line in log("[codex] \(line)") }
         server.onNotification = { [weak self] method, params in
@@ -223,6 +228,21 @@ public actor CodexBackend {
     /// Threads this daemon hosts — excluded when looking for sessions open elsewhere.
     public func hostedThreadIds() -> Set<String> {
         Set(translators.keys)
+    }
+
+    /// Threads loaded in the shared app-server by another client (the Codex app): on a shared
+    /// server `thread/resume` on one of these subscribes us to its live traffic — approvals included —
+    /// so the phone can follow and drive a session open in the app. Empty for a private server.
+    public func threadsLoadedElsewhere() async -> Set<String> {
+        guard isShared, let server, server.isRunning, initialized else { return [] }
+        guard let result = try? await server.request("thread/loaded/list", .object([:]), timeout: 10) else { return [] }
+        let ids = (result["data"]?.array ?? []).compactMap(\.string)
+        return Set(ids).subtracting(hostedThreadIds())
+    }
+
+    /// Starts the server ahead of use — in shared mode the Codex app needs it up to connect.
+    public func warmUp() async {
+        _ = try? await ensureRunning()
     }
 
     /// The cached list, if any — for callers that must not block.

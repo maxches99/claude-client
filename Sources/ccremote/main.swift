@@ -16,6 +16,8 @@ func usage() -> Never {
       --token TOKEN  pairing token (default: generated once, stored in the support dir)
       --claude PATH  path to the claude binary (default: Claude Desktop's bundled CLI, else PATH)
       --codex PATH   path to the codex binary (default: PATH, else the Codex app's bundled CLI)
+      --codex-port N run the Codex app-server on ws://127.0.0.1:N and share it with the Codex app
+                     (launchctl setenv CODEX_APP_SERVER_WS_URL ws://127.0.0.1:N, then reopen the app)
       --name NAME    Bonjour service name (default: this Mac's name)
       --rotate-token generate a new pairing token (forgets paired phones)
       --print-pairing print the pairing QR / URL and exit

@@ -13,6 +13,9 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
     public var claudePath: String?
     /// Path to the `codex` binary. `nil` → PATH, else the one bundled with the Codex app.
     public var codexPath: String?
+    /// Run the Codex app-server on `ws://127.0.0.1:port` and share it with the Codex app
+    /// (`CODEX_APP_SERVER_WS_URL`), so its sessions can be followed and driven from the phone.
+    public var codexPort: UInt16?
     /// Serve `wss://` with the self-signed identity (default). `false` → plain `ws://`, LAN debugging only.
     public var useTLS: Bool = true
 
@@ -143,6 +146,9 @@ public struct DaemonArguments {
             case "--token": result.tokenOverride = try value(a)
             case "--claude": result.config.claudePath = try value(a)
             case "--codex": result.config.codexPath = try value(a)
+            case "--codex-port":
+                guard let p = UInt16(try value(a)) else { throw ParseError(description: "--codex-port needs a number 1–65535") }
+                result.config.codexPort = p
             case "--name": result.config.serviceName = try value(a)
             case "--quiet": result.quiet = true
             case "--rotate-token": result.rotateToken = true

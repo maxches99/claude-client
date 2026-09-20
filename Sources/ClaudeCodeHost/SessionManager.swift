@@ -60,6 +60,9 @@ public actor SessionManager {
         var live: LiveSessionRegistry.LiveSession
         var poller: DispatchSourceTimer?
         var tailing = false     // transcript file found and being followed
+        var transcriptPath: String?
+        /// Sub-agent files being followed, by path; they appear while the session runs.
+        var subagentTails: [String: TranscriptTail] = [:]
         init(state: SessionState, live: LiveSessionRegistry.LiveSession) {
             self.state = state
             self.live = live
@@ -176,11 +179,21 @@ public actor SessionManager {
 
     public var hasCodex: Bool { codex != nil }
 
+    public func warmUpCodex() async { await codex?.warmUp() }
+
+    /// Codex threads open in the Codex app on the shared app-server — followed and driven by
+    /// resuming them there (see `CodexBackend.threadsLoadedElsewhere`).
+    private var codexLoadedElsewhere: Set<String> = []
+
     /// Fetches what `listSessions` cannot read synchronously (the Codex thread list). Call before
     /// answering an explicit list request; broadcasts reuse the last fetch.
     public func refreshSources() async {
         guard let codex else { return }
-        codexOpenElsewhere = CodexCLI.threadsOpenElsewhere().subtracting(await codex.hostedThreadIds())
+        codexLoadedElsewhere = await codex.threadsLoadedElsewhere()
+        // On a shared server every loaded thread's lock is held by that one process, so the lock
+        // files say nothing about who has it open; `thread/loaded/list` does.
+        let hosted = await codex.hostedThreadIds()
+        codexOpenElsewhere = codex.isShared ? codexLoadedElsewhere : CodexCLI.threadsOpenElsewhere().subtracting(hosted)
         do {
             codexThreads = try await codex.listThreads()
         } catch {
@@ -302,7 +315,19 @@ public actor SessionManager {
         guard let stored else {
             // Not a Claude transcript — a Codex thread on disk, if Codex is around.
             guard let codex, isCodexThread(sessionId) else { throw ManagerError.unknownSession(sessionId) }
-            if codexOpenElsewhere.contains(sessionId) || CodexCLI.threadsOpenElsewhere().contains(sessionId) {
+            var loadedElsewhere = codex.isShared && codexLoadedElsewhere.contains(sessionId)
+            if codex.isShared, !loadedElsewhere { loadedElsewhere = await codex.threadsLoadedElsewhere().contains(sessionId) }
+            if loadedElsewhere {
+                // Open in the Codex app on the shared server: resuming subscribes us to it live.
+                let started = try await codex.resume(threadId: sessionId)
+                let h = adoptCodex(started)
+                h.title = codexThreads.first { $0.id == sessionId }?.title
+                reply(.history(sessionId: sessionId, entries: started.history))
+                reply(.state(state: h.state))
+                broadcast(.sessions(items: listSessions()))
+                return
+            }
+            if !codex.isShared, codexOpenElsewhere.contains(sessionId) || CodexCLI.threadsOpenElsewhere().contains(sessionId) {
                 try await watchCodex(sessionId: sessionId, reply: reply)
                 return
             }
@@ -735,6 +760,7 @@ public actor SessionManager {
         }
         if let w = watched.removeValue(forKey: sessionId) {
             w.tail?.stop()
+            w.subagentTails.values.forEach { $0.stop() }
             w.poller?.cancel()
         }
         stopWatchingCodex(sessionId: sessionId)
@@ -843,6 +869,7 @@ public actor SessionManager {
         guard let w = watched[sessionId] else { return }
         guard let live = registry.liveSession(id: sessionId) else {
             w.tail?.stop()
+            w.subagentTails.values.forEach { $0.stop() }
             w.poller?.cancel()
             watched[sessionId] = nil
             w.state.status = .exited
@@ -857,6 +884,7 @@ public actor SessionManager {
             for entry in history.entries { broadcast(.event(sessionId: sessionId, payload: entry)) }
             attachTail(to: w, sessionId: sessionId, path: stored.path, startOffset: history.endOffset)
         }
+        if w.tailing { attachSubagentTails(to: w, sessionId: sessionId) }
         let status: SessionStatus = hasHookPermission(sessionId: sessionId) ? .awaitingPermission : (live.status == "busy" ? .running : .idle)
         if status != w.state.status {
             w.state.status = status
@@ -866,9 +894,24 @@ public actor SessionManager {
 
     private func attachTail(to w: Watched, sessionId: String, path: String, startOffset: UInt64) {
         w.tailing = true
+        w.transcriptPath = path
         w.tail = TranscriptTail(path: path, startOffset: startOffset) { [weak self] entry in
             guard let self else { return }
             Task { await self.broadcast(.event(sessionId: sessionId, payload: entry)) }
+        }
+        attachSubagentTails(to: w, sessionId: sessionId, fromStart: false)
+    }
+
+    /// Follows sub-agent files as they appear next to a watched transcript. Files already sent with
+    /// the history are followed from their end; ones that show up later are read from the start.
+    private func attachSubagentTails(to w: Watched, sessionId: String, fromStart: Bool = true) {
+        guard let path = w.transcriptPath else { return }
+        for (file, parent) in TranscriptStore.subagentFiles(transcriptPath: path) where w.subagentTails[file] == nil {
+            let size = (try? FileManager.default.attributesOfItem(atPath: file)[.size] as? NSNumber)?.uint64Value ?? 0
+            w.subagentTails[file] = TranscriptTail(path: file, startOffset: fromStart ? 0 : size, accepts: { _ in true }) { [weak self] entry in
+                guard let self, let tagged = TranscriptStore.tagSubagent(entry, parent: parent) else { return }
+                Task { await self.broadcast(.event(sessionId: sessionId, payload: tagged)) }
+            }
         }
     }
 
@@ -1120,6 +1163,8 @@ public actor SessionManager {
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { throw GitError.refused("Branch name is empty.") }
             args = ["checkout", "-q", "-b", trimmed]
+        case .createPullRequest(let title, let body, let draft):
+            return try createPullRequest(cwd: cwd, sessionId: sessionId, title: title, body: body, draft: draft)
         }
         let r = runGit(["-C", cwd] + args, timeout: timeout)
         let output = (r.out + (r.err.isEmpty ? "" : "\n" + r.err)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1128,7 +1173,262 @@ public actor SessionManager {
         return output
     }
 
-    private func runGit(_ args: [String], timeout: TimeInterval = 15) -> (code: Int32, out: String, err: String) {
+    // MARK: pull requests (gh)
+
+    /// `gh` wherever Homebrew or the installer put it; nil when GitHub's CLI is not installed.
+    static func locateGh() -> String? {
+        for p in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"] where FileManager.default.isExecutableFile(atPath: p) { return p }
+        let path = ClaudeCLI.childEnvironment()["PATH"] ?? ""
+        for dir in path.split(separator: ":") {
+            let p = "\(dir)/gh"
+            if FileManager.default.isExecutableFile(atPath: p) { return p }
+        }
+        return nil
+    }
+
+    private func runGh(_ args: [String], cwd: String, timeout: TimeInterval = 40) throws -> (code: Int32, out: String, err: String) {
+        guard let gh = SessionManager.locateGh() else { throw GitError.refused("GitHub CLI (gh) is not installed on the Mac.") }
+        return runTool(gh, args, cwd: cwd, timeout: timeout)
+    }
+
+    /// The pull request for the current branch, with its checks. Nil when the branch has none.
+    public func pullRequest(sessionId: String) throws -> PullRequestInfo? {
+        let cwd = try gitCwd(sessionId)
+        let fields = "number,title,url,state,isDraft,reviewDecision,mergeable,baseRefName,statusCheckRollup"
+        let r = try runGh(["pr", "view", "--json", fields], cwd: cwd)
+        if r.code != 0 {
+            let err = r.err.trimmingCharacters(in: .whitespacesAndNewlines)
+            if err.contains("no pull requests found") || err.contains("no open pull requests") { return nil }
+            throw GitError.failed(err.isEmpty ? "gh exited with status \(r.code)" : err)
+        }
+        guard let json = try? JSONValue.parse(Data(r.out.utf8)), let number = json["number"]?.int else { return nil }
+        let checks = (json["statusCheckRollup"]?.array ?? []).compactMap { c -> CheckRun? in
+            // Check runs carry name/status/conclusion; legacy commit statuses context/state.
+            let name = c["name"]?.string ?? c["context"]?.string ?? "check"
+            if let state = c["state"]?.string, c["status"]?.string == nil {
+                let done = state != "PENDING" && state != "EXPECTED"
+                return CheckRun(name: name, status: done ? "COMPLETED" : "PENDING", conclusion: done ? state : nil, url: c["targetUrl"]?.string)
+            }
+            return CheckRun(name: name, status: c["status"]?.string ?? "PENDING", conclusion: c["conclusion"]?.string.flatMap { $0.isEmpty ? nil : $0 },
+                            url: c["detailsUrl"]?.string)
+        }
+        return PullRequestInfo(number: number, title: json["title"]?.string ?? "", url: json["url"]?.string ?? "",
+                               state: json["state"]?.string ?? "OPEN", isDraft: json["isDraft"]?.bool ?? false,
+                               reviewDecision: json["reviewDecision"]?.string.flatMap { $0.isEmpty ? nil : $0 },
+                               mergeable: json["mergeable"]?.string, baseBranch: json["baseRefName"]?.string, checks: checks)
+    }
+
+    private func createPullRequest(cwd: String, sessionId: String, title: String, body: String, draft: Bool) throws -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw GitError.refused("The pull request needs a title.") }
+        let status = try gitStatus(sessionId: sessionId)
+        guard let branch = status.branch else { throw GitError.refused("Not on a branch.") }
+        var output = ""
+        if status.upstream == nil {
+            let push = runGit(["-C", cwd, "push", "-u", "origin", branch], timeout: 90)
+            if push.code != 0 { throw GitError.failed(push.err.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            output += "Pushed \(branch) to origin.\n"
+        }
+        var args = ["pr", "create", "--title", trimmed, "--body", body]
+        if draft { args.append("--draft") }
+        let r = try runGh(args, cwd: cwd, timeout: 90)
+        let text = (r.out + (r.err.isEmpty ? "" : "\n" + r.err)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if r.code != 0 { throw GitError.failed(text.isEmpty ? "gh exited with status \(r.code)" : text) }
+        log("[\(sessionId.prefix(8))] gh pr create")
+        return output + text
+    }
+
+    // MARK: project browser
+
+    public enum ProjectError: Error, CustomStringConvertible {
+        case outsideProject, notADirectory(String)
+        public var description: String {
+            switch self {
+            case .outsideProject: return "That path is outside the project."
+            case .notADirectory(let p): return "Not a directory: \(p)"
+            }
+        }
+    }
+
+    /// A project directory listing (folders first). `path` is relative to the cwd and may not
+    /// escape it; hidden files are included except `.git` and build output.
+    public func listDirectory(sessionId: String, path: String?) throws -> (path: String, entries: [DirectoryEntry]) {
+        guard let cwd = cwdFor(sessionId) else { throw ManagerError.unknownSession(sessionId) }
+        let rel = (path ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let full = rel.isEmpty ? cwd : (cwd as NSString).appendingPathComponent(rel)
+        let resolved = (full as NSString).standardizingPath
+        let root = (cwd as NSString).standardizingPath
+        guard resolved == root || resolved.hasPrefix(root + "/") else { throw ProjectError.outsideProject }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDir), isDir.boolValue else { throw ProjectError.notADirectory(rel) }
+        let names = try FileManager.default.contentsOfDirectory(atPath: resolved)
+        var entries: [DirectoryEntry] = []
+        for name in names where name != ".git" && name != ".DS_Store" {
+            let p = (resolved as NSString).appendingPathComponent(name)
+            let attrs = (try? FileManager.default.attributesOfItem(atPath: p)) ?? [:]
+            let type = attrs[.type] as? FileAttributeType
+            var dir = type == .typeDirectory
+            if type == .typeSymbolicLink {
+                var flag: ObjCBool = false
+                if FileManager.default.fileExists(atPath: p, isDirectory: &flag) { dir = flag.boolValue }
+            }
+            entries.append(DirectoryEntry(name: name, isDirectory: dir, size: dir ? nil : (attrs[.size] as? NSNumber)?.intValue,
+                                          modifiedAt: attrs[.modificationDate] as? Date))
+        }
+        entries.sort { a, b in
+            if a.isDirectory != b.isDirectory { return a.isDirectory }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+        return (rel, entries)
+    }
+
+    /// Searches file contents: `git grep` inside a repository (respects .gitignore), plain `grep`
+    /// elsewhere. Case-insensitive fixed string; at most 200 matches.
+    public func searchProject(sessionId: String, query: String) async throws -> (matches: [SearchMatch], truncated: Bool) {
+        guard let cwd = cwdFor(sessionId) else { throw ManagerError.unknownSession(sessionId) }
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return ([], false) }
+        let limit = 200
+        return await Task.detached(priority: .utility) { [self] in
+            let inRepo = self.runGit(["-C", cwd, "rev-parse", "--is-inside-work-tree"]).code == 0
+            let r: (code: Int32, out: String, err: String)
+            if inRepo {
+                r = self.runGit(["-C", cwd, "grep", "-n", "-I", "-i", "-F", "--no-color", "-e", q, "--", ".",
+                                 ":!*.lock", ":!*.min.js", ":!*.map"], timeout: 20)
+            } else {
+                let excludes = SessionManager.fileWalkSkipDirs.map { "--exclude-dir=\($0)" }
+                r = self.runTool("/usr/bin/grep", ["-rnIiF", "--no-messages"] + excludes + ["-e", q, "."], cwd: cwd, timeout: 20)
+            }
+            var matches: [SearchMatch] = []
+            var truncated = false
+            for line in r.out.split(separator: "\n") {
+                // path:line:text
+                guard let c1 = line.firstIndex(of: ":") else { continue }
+                let rest = line[line.index(after: c1)...]
+                guard let c2 = rest.firstIndex(of: ":"), let n = Int(rest[..<c2]) else { continue }
+                var path = String(line[..<c1])
+                if path.hasPrefix("./") { path.removeFirst(2) }
+                let text = String(rest[rest.index(after: c2)...]).trimmingCharacters(in: .whitespaces)
+                matches.append(SearchMatch(path: path, line: n, text: String(text.prefix(200))))
+                if matches.count >= limit { truncated = true; break }
+            }
+            return (matches, truncated)
+        }.value
+    }
+
+    // MARK: quick commands
+
+    /// Commands from `.ccremote.json` in the project, or a guess from its build files.
+    public func projectCommands(sessionId: String) -> [ProjectCommand] {
+        guard let cwd = cwdFor(sessionId) else { return [] }
+        let fm = FileManager.default
+        let configPath = (cwd as NSString).appendingPathComponent(".ccremote.json")
+        if let data = fm.contents(atPath: configPath), let json = try? JSONValue.parse(data), let list = json["commands"]?.array {
+            let items = list.compactMap { c -> ProjectCommand? in
+                guard let command = c["command"]?.string, !command.isEmpty else { return nil }
+                return ProjectCommand(id: "repo:" + command, name: c["name"]?.string ?? command, command: command, source: "repo")
+            }
+            if !items.isEmpty { return items }
+        }
+        func has(_ name: String) -> Bool { fm.fileExists(atPath: (cwd as NSString).appendingPathComponent(name)) }
+        var items: [ProjectCommand] = []
+        func add(_ name: String, _ command: String) { items.append(ProjectCommand(id: "default:" + command, name: name, command: command)) }
+        if has("Package.swift") { add("Build", "swift build"); add("Test", "swift test") }
+        if has("Tuist.swift") || has("Project.swift") { add("Generate project (Tuist)", "tuist generate --no-open") }
+        if has("package.json") {
+            add("Install", "npm install"); add("Test", "npm test"); add("Build", "npm run build")
+        }
+        if has("Cargo.toml") { add("Build", "cargo build"); add("Test", "cargo test") }
+        if has("go.mod") { add("Build", "go build ./..."); add("Test", "go test ./...") }
+        if has("pyproject.toml") || has("pytest.ini") || has("setup.py") { add("Test", "pytest") }
+        if has("Makefile") { add("make", "make"); add("make test", "make test") }
+        if has("Gemfile") { add("Test", "bundle exec rspec") }
+        if has("mix.exs") { add("Test", "mix test") }
+        add("Git status", "git status --short --branch")
+        return items
+    }
+
+    private var commandRuns: [String: Process] = [:]
+
+    /// Runs a shell command in the project directory, streaming stdout/stderr through `output`
+    /// (called off the actor, in order) until `done`. Output is capped at 2 MB; the run can be
+    /// cancelled with `cancelCommand`.
+    public func runCommand(sessionId: String, runId: String, command: String, output: @escaping @Sendable (String, Bool, Int32?) -> Void) throws {
+        guard let cwd = cwdFor(sessionId) else { throw ManagerError.unknownSession(sessionId) }
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw GitError.refused("The command is empty.") }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = ["-lc", trimmed]
+        p.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        var env = ClaudeCLI.childEnvironment()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["TERM"] = "dumb"
+        env["NO_COLOR"] = "1"
+        p.environment = env
+        p.standardInput = FileHandle.nullDevice
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        let counter = CommandOutputCounter()
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            let text = String(decoding: data, as: UTF8.self)
+            if counter.add(data.count) <= 2 * 1024 * 1024 { output(text, false, nil) }
+            else if !counter.warned { counter.warned = true; output("\n… output truncated (2 MB)\n", false, nil) }
+        }
+        p.terminationHandler = { [weak self] proc in
+            pipe.fileHandleForReading.readabilityHandler = nil
+            let rest = pipe.fileHandleForReading.readDataToEndOfFile()
+            if !rest.isEmpty, counter.add(rest.count) <= 2 * 1024 * 1024 { output(String(decoding: rest, as: UTF8.self), false, nil) }
+            output("", true, proc.terminationReason == .uncaughtSignal ? -Int32(proc.terminationStatus) : proc.terminationStatus)
+            Task { await self?.commandFinished(runId: runId) }
+        }
+        try p.run()
+        commandRuns[runId] = p
+        log("[\(sessionId.prefix(8))] run: \(trimmed.prefix(80))")
+    }
+
+    public func cancelCommand(runId: String) {
+        commandRuns[runId]?.terminate()
+    }
+
+    private func commandFinished(runId: String) { commandRuns[runId] = nil }
+
+    private final class CommandOutputCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var total = 0
+        var warned = false
+        func add(_ n: Int) -> Int { lock.withLock { total += n; return total } }
+    }
+
+    /// Runs any tool in `cwd` and captures its output; the base for git and gh.
+    nonisolated private func runTool(_ executable: String, _ args: [String], cwd: String? = nil, timeout: TimeInterval = 15) -> (code: Int32, out: String, err: String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: executable)
+        p.arguments = args
+        if let cwd { p.currentDirectoryURL = URL(fileURLWithPath: cwd) }
+        var env = ClaudeCLI.childEnvironment()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GH_PROMPT_DISABLED"] = "1"
+        env["NO_COLOR"] = "1"
+        p.environment = env
+        p.standardInput = FileHandle.nullDevice
+        let outPipe = Pipe(), errPipe = Pipe()
+        p.standardOutput = outPipe; p.standardError = errPipe
+        do { try p.run() } catch { return (-1, "", "cannot run \((executable as NSString).lastPathComponent): \(error.localizedDescription)") }
+        var outData = Data(), errData = Data()
+        let group = DispatchGroup()
+        let q = DispatchQueue(label: "ccremote.tool", attributes: .concurrent)
+        group.enter(); q.async { outData = outPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+        group.enter(); q.async { errData = errPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+        if group.wait(timeout: .now() + timeout) == .timedOut { p.terminate() }
+        p.waitUntilExit()
+        return (p.terminationStatus, String(decoding: outData, as: UTF8.self), String(decoding: errData, as: UTF8.self))
+    }
+
+    nonisolated private func runGit(_ args: [String], timeout: TimeInterval = 15) -> (code: Int32, out: String, err: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         p.arguments = ["-c", "core.pager=cat"] + args

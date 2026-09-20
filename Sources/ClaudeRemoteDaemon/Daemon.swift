@@ -176,7 +176,8 @@ public final class Daemon: @unchecked Sendable {
                 log("live activity push: off — cannot load APNs key \(pushConfig.keyPath): \(error)")
             }
         }
-        manager = SessionManager(cli: cli, codex: codex.map { CodexBackend(cli: $0, log: log) }, notifier: notifier, livePusher: livePusher, log: log)
+        let codexBackend = codex.map { CodexBackend(cli: $0, listenPort: config.codexPort, log: log) }
+        manager = SessionManager(cli: cli, codex: codexBackend, notifier: notifier, livePusher: livePusher, log: log)
         SimulatorStreamer.log = log
         SimulatorInput.log = log
 
@@ -270,6 +271,8 @@ public final class Daemon: @unchecked Sendable {
 
         writePairingImage()
         refreshClaudeStatusInBackground()
+        // A shared Codex server must be up before the Codex app looks for it.
+        if config.codexPort != nil { Task { await manager.warmUpCodex() } }
     }
 
     private func startRelayIfNeeded() {
