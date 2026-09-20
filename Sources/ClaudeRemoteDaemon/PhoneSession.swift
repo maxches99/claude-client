@@ -205,6 +205,27 @@ final class PhoneSession: @unchecked Sendable {
                 } else {
                     await SimulatorStreamer.shared.unwatch(udid: udid, id: id)
                 }
+            case .simulatorAction(let udid, let action):
+                do {
+                    try await SimulatorStreamer.shared.perform(action, udid: udid)
+                    send(.simulatorActionResult(udid: udid, action: action, error: nil))
+                } catch {
+                    log("simulator: \(action.label) \(udid.prefix(8)) failed: \(error.localizedDescription)")
+                    send(.simulatorActionResult(udid: udid, action: action, error: error.localizedDescription))
+                }
+            case .listSimulatorApps(let udid):
+                do {
+                    send(.simulatorApps(udid: udid, items: try await SimulatorStreamer.shared.apps(udid: udid), error: nil))
+                } catch {
+                    send(.simulatorApps(udid: udid, items: [], error: error.localizedDescription))
+                }
+            case .simulatorScreenshot(let udid):
+                do {
+                    let shot = try await SimulatorStreamer.shared.screenshot(udid: udid)
+                    send(.simulatorScreenshot(udid: udid, jpegBase64: shot.jpeg.base64EncodedString(), width: shot.width, height: shot.height, error: nil))
+                } catch {
+                    send(.simulatorScreenshot(udid: udid, jpegBase64: nil, width: 0, height: 0, error: error.localizedDescription))
+                }
             case .simulatorInput(let udid, let event):
                 do {
                     try await SimulatorInput.shared.perform(event, udid: udid)

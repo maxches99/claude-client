@@ -1,6 +1,7 @@
 #if os(macOS)
 import Foundation
 import ImageIO
+import IOSurface
 import UniformTypeIdentifiers
 import ClaudeRemoteCore
 import ClaudeCodeHost
@@ -191,6 +192,36 @@ actor SimulatorStreamer {
         for viewer in active { viewer.send(message) }
     }
 
+    /// A still for the phone to attach to a prompt: straight from the framebuffer when video is running
+    /// (no process spawn), else `simctl io screenshot`. Bounded to 2000 px — plenty for a vision model.
+    func screenshot(udid: String) async throws -> (jpeg: Data, width: Int, height: Int) {
+        if let surface = videoSessions[udid]?.screen.surface,
+           let shot = await Task.detached(priority: .userInitiated, operation: { Self.jpeg(from: surface, maxPixelSize: 2000) }).value {
+            return shot
+        }
+        let raw = await Task.detached(priority: .userInitiated) { Self.screenshot(udid: udid) }.value
+        guard let raw, let scaled = await Task.detached(priority: .userInitiated, operation: { Self.downscale(raw, maxPixelSize: 2000, quality: 0.85) }).value else {
+            throw RunError.exit(1, "screenshot failed")
+        }
+        return (scaled.jpeg, scaled.width, scaled.height)
+    }
+
+    /// The BGRA framebuffer as a JPEG (a copy is taken under the surface lock, so the render server may keep drawing).
+    nonisolated private static func jpeg(from surface: IOSurface, maxPixelSize: Int) -> (jpeg: Data, width: Int, height: Int)? {
+        let ref = unsafeBitCast(surface, to: IOSurfaceRef.self)
+        IOSurfaceLock(ref, .readOnly, nil)
+        defer { IOSurfaceUnlock(ref, .readOnly, nil) }
+        let info = CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        guard let context = CGContext(data: IOSurfaceGetBaseAddress(ref), width: IOSurfaceGetWidth(ref), height: IOSurfaceGetHeight(ref),
+                                      bitsPerComponent: 8, bytesPerRow: IOSurfaceGetBytesPerRow(ref), space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info),
+              let image = context.makeImage() else { return nil }
+        let out = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return downscale(out as Data, maxPixelSize: maxPixelSize, quality: 0.85)
+    }
+
     private var heartbeatLoop: Task<Void, Never>?
 
     /// A static screen produces no video frames; a heartbeat every couple of seconds keeps the phone's
@@ -231,10 +262,13 @@ actor SimulatorStreamer {
     }
 
     private func refreshDevices(broadcast: Bool) async {
-        let fresh = await Task.detached(priority: .utility) { Self.bootedDevices() }.value
+        var fresh = await Task.detached(priority: .utility) { Self.allDevices() }.value
         listedOnce = true
+        // A boot the daemon started counts as "Booting" until bootstatus says the device is usable;
+        // streaming into a half-booted simulator only produces errors.
+        for i in fresh.indices where booting.contains(fresh[i].udid) && fresh[i].state == "Booted" { fresh[i].state = "Booting" }
         guard fresh != devices else { return }
-        let gone = Set(devices.map(\.udid)).subtracting(fresh.map(\.udid))
+        let gone = Set(devices.filter(\.isBooted).map(\.udid)).subtracting(fresh.filter(\.isBooted).map(\.udid))
         for udid in gone {
             videoSessions[udid]?.stop()
             videoSessions[udid] = nil
@@ -246,20 +280,71 @@ actor SimulatorStreamer {
         for send in listeners.values { send(.simulators(items: fresh)) }
     }
 
-    /// `simctl list devices booted -j` → the booted devices, newest runtime first.
-    nonisolated private static func bootedDevices() -> [SimulatorInfo] {
-        guard let data = try? run(["list", "devices", "booted", "-j"], timeout: 10),
+    /// `simctl list devices available -j` → every usable device, booted ones first, then newest runtime.
+    nonisolated private static func allDevices() -> [SimulatorInfo] {
+        guard let data = try? run(["list", "devices", "available", "-j"], timeout: 10),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let runtimes = root["devices"] as? [String: [[String: Any]]] else { return [] }
         var result: [SimulatorInfo] = []
         for (runtimeId, list) in runtimes {
             for d in list {
-                guard let udid = d["udid"] as? String, let name = d["name"] as? String,
-                      let state = d["state"] as? String, state == "Booted" else { continue }
+                guard let udid = d["udid"] as? String, let name = d["name"] as? String, let state = d["state"] as? String else { continue }
                 result.append(SimulatorInfo(udid: udid, name: name, runtime: runtimeName(runtimeId), state: state))
             }
         }
-        return result.sorted { ($0.runtime, $0.name) > ($1.runtime, $1.name) }
+        return result.sorted {
+            if $0.isBooted != $1.isBooted { return $0.isBooted }
+            if $0.runtime != $1.runtime { return SimulatorInfo.runtimePrecedes($0.runtime, $1.runtime) }
+            return $0.name.compare($1.name, options: .numeric) == .orderedAscending
+        }
+    }
+
+    // MARK: actions
+
+    /// Simulators the daemon is booting (state reported as "Booting" until `bootstatus` returns).
+    private var booting: Set<String> = []
+
+    /// Boot / shut down / launch / quit / open URL. Boot blocks until the device is usable (up to two
+    /// minutes) and is headless — no Simulator.app window; the phone's live view is the window.
+    func perform(_ action: SimulatorAction, udid: String) async throws {
+        switch action {
+        case .boot:
+            booting.insert(udid)
+            defer { booting.remove(udid) }
+            _ = try await Self.runDetached(["boot", udid], timeout: 30)
+            await refreshDevices(broadcast: true)
+            _ = try await Self.runDetached(["bootstatus", udid, "-b"], timeout: 120)
+            videoUnavailable.remove(udid)
+        case .shutdown:
+            videoSessions[udid]?.stop()
+            videoSessions[udid] = nil
+            await SimulatorInput.shared.forget(udid: udid)
+            _ = try await Self.runDetached(["shutdown", udid], timeout: 60)
+        case .launch(let bundleId):
+            _ = try await Self.runDetached(["launch", udid, bundleId], timeout: 30)
+        case .terminate(let bundleId):
+            _ = try await Self.runDetached(["terminate", udid, bundleId], timeout: 30)
+        case .openURL(let url):
+            _ = try await Self.runDetached(["openurl", udid, url], timeout: 30)
+        }
+        await refreshDevices(broadcast: true)
+    }
+
+    /// Installed apps, user-installed first (`simctl listapps` prints an OpenStep plist).
+    func apps(udid: String) async throws -> [SimulatorApp] {
+        let data = try await Self.runDetached(["listapps", udid], timeout: 20)
+        guard let root = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: [String: Any]] else { return [] }
+        return root.compactMap { bundleId, info -> SimulatorApp? in
+            let name = (info["CFBundleDisplayName"] as? String) ?? (info["CFBundleName"] as? String) ?? bundleId
+            return SimulatorApp(bundleId: bundleId, name: name, kind: (info["ApplicationType"] as? String) ?? "System")
+        }.sorted {
+            if $0.isUserApp != $1.isUserApp { return $0.isUserApp }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    nonisolated private static func runDetached(_ args: [String], timeout: TimeInterval) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) { try run(args, timeout: timeout) }.value
     }
 
     /// `com.apple.CoreSimulator.SimRuntime.iOS-26-2` → `iOS 26.2`.
@@ -335,7 +420,7 @@ actor SimulatorStreamer {
         return FileManager.default.contents(atPath: path)
     }
 
-    nonisolated private static func downscale(_ jpeg: Data, maxPixelSize: Int) -> (jpeg: Data, width: Int, height: Int)? {
+    nonisolated private static func downscale(_ jpeg: Data, maxPixelSize: Int, quality: CGFloat = jpegQuality) -> (jpeg: Data, width: Int, height: Int)? {
         guard let source = CGImageSourceCreateWithData(jpeg as CFData, nil) else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -345,7 +430,7 @@ actor SimulatorStreamer {
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
         let out = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: jpegQuality] as CFDictionary)
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return (out as Data, image.width, image.height)
     }
@@ -353,11 +438,14 @@ actor SimulatorStreamer {
     // MARK: simctl
 
     enum RunError: LocalizedError {
-        case timeout, exit(Int32)
+        case timeout, exit(Int32, String)
         var errorDescription: String? {
             switch self {
             case .timeout: return "simctl timed out"
-            case .exit(let code): return "simctl failed (exit \(code))"
+            case .exit(let code, let stderr):
+                // simctl's last stderr line is the human one ("Unable to boot device in current state: Booted").
+                let line = stderr.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.last
+                return line.map { $0.hasPrefix("An error was encountered") ? "simctl failed (exit \(code))" : $0 } ?? "simctl failed (exit \(code))"
             }
         }
     }
@@ -379,9 +467,14 @@ actor SimulatorStreamer {
         p.environment = env
         let stdin = input.map { _ in Pipe() }
         p.standardInput = stdin ?? FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
+        let err = Pipe()
+        p.standardError = err
         let out = Pipe()
         p.standardOutput = out
+        var stderr = Data()
+        let drain = DispatchGroup()
+        drain.enter()
+        DispatchQueue.global(qos: .utility).async { stderr = err.fileHandleForReading.readDataToEndOfFile(); drain.leave() }
         try p.run()
         if let stdin, let input {
             stdin.fileHandleForWriting.write(input)
@@ -393,8 +486,9 @@ actor SimulatorStreamer {
         p.waitUntilExit()
         let timedOut = watchdog.isCancelled == false && p.terminationReason == .uncaughtSignal
         watchdog.cancel()
+        drain.wait()
         if timedOut { throw RunError.timeout }
-        guard p.terminationStatus == 0 else { throw RunError.exit(p.terminationStatus) }
+        guard p.terminationStatus == 0 else { throw RunError.exit(p.terminationStatus, String(decoding: stderr, as: UTF8.self)) }
         return data
     }
 }

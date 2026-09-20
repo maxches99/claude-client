@@ -21,7 +21,13 @@ final class SimulatorFeed {
     /// No frame or heartbeat for this long means the stream is stale.
     static let staleAfter: TimeInterval = 6
 
+    /// Every simulator on the Mac, booted ones first.
     var devices: [SimulatorInfo] = []
+    var booted: [SimulatorInfo] { devices.filter(\.isBooted) }
+    /// An action the Mac is still carrying out (a boot can take a minute).
+    var pendingAction: (udid: String, action: SimulatorAction)?
+    /// Installed apps of the simulator last asked about.
+    var apps: (udid: String, items: [SimulatorApp], error: String?)?
     private(set) var watching: String?
     /// Latest JPEG frame (the fallback path); nil while video is flowing.
     private(set) var frame: Frame?
@@ -31,8 +37,10 @@ final class SimulatorFeed {
     /// Last time the daemon confirmed the stream is alive (a frame or a heartbeat).
     private(set) var lastSignalAt: Date?
     private var arrivals: [Date] = []
-    /// The Mac could not deliver our last input; shown in the status line for a few seconds.
-    var inputError: (message: String, at: Date)?
+    /// A short-lived message for the status line: an input the Mac could not deliver, or "Copied".
+    var notice: (message: String, at: Date, isError: Bool)?
+    /// Resolves the `simulatorScreenshot` reply the view is waiting for.
+    var screenshotWaiter: ((UIImage?, String?) -> Void)?
 
     /// Size of what is on screen (video or JPEG), for aspect ratio and the status line.
     var pictureSize: CGSize? {
@@ -42,6 +50,16 @@ final class SimulatorFeed {
     }
 
     var device: SimulatorInfo? { devices.first { $0.udid == watching } }
+
+    func show(_ message: String, error: Bool = false) {
+        notice = (message, Date(), error)
+    }
+
+    /// The current notice if it is still fresh.
+    func notice(at now: Date) -> (message: String, isError: Bool)? {
+        guard let notice, now.timeIntervalSince(notice.at) < 6 else { return nil }
+        return (notice.message, notice.isError)
+    }
 
     func isAlive(now: Date = Date()) -> Bool {
         guard let lastSignalAt else { return false }
@@ -68,7 +86,7 @@ final class SimulatorFeed {
         player.reset()
         arrivals = []
         lastSignalAt = nil
-        inputError = nil
+        notice = nil
     }
 
     func receiveVideo(_ incoming: SimulatorVideoFrame) {

@@ -209,6 +209,12 @@ simulator has focused. Text goes through the simulator pasteboard and ⌘V rathe
 so Cyrillic and emoji work and the guest's keyboard layout is irrelevant (watchOS runtimes have no
 pasteboard, so text is unavailable there).
 
+The camera button grabs a full-resolution still: opened from a chat it lands in that chat's
+composer as an image attachment (so "this button is misaligned" can carry the picture); opened from
+the session list it goes to the clipboard. The device menu also runs the simulators themselves —
+switch between booted ones, boot another headless (no Simulator.app window needed; the phone's
+view is the window), shut one down, launch any installed app, or open a URL / deep link in it.
+
 `simctl` has no input commands, so the daemon injects HID events the way Simulator.app, idb and
 Claude Desktop's own simulator helper do: it `dlopen`s Xcode's private SimulatorKit, builds Indigo
 messages with `IndigoHIDMessageFor…` and posts them through `SimDeviceLegacyHIDClient`

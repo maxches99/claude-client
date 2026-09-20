@@ -509,7 +509,17 @@ final class AppModel {
         case .simulatorVideo(let frame):
             simulatorFeed.receiveVideo(frame)
         case .simulatorInputFailed(let udid, let message):
-            if udid == simulatorFeed.watching { simulatorFeed.inputError = (message, Date()) }
+            if udid == simulatorFeed.watching { simulatorFeed.show(message, error: true) }
+        case .simulatorActionResult(let udid, let action, let error):
+            if simulatorFeed.pendingAction?.udid == udid { simulatorFeed.pendingAction = nil }
+            if let error { simulatorFeed.show("\(action.label): \(error)", error: true) }
+        case .simulatorApps(let udid, let items, let error):
+            simulatorFeed.apps = (udid, items, error)
+        case .simulatorScreenshot(let udid, let jpegBase64, _, _, let error):
+            guard udid == simulatorFeed.watching, let waiter = simulatorFeed.screenshotWaiter else { break }
+            simulatorFeed.screenshotWaiter = nil
+            let image = jpegBase64.flatMap { Data(base64Encoded: $0) }.flatMap { UIImage(data: $0) }
+            waiter(image, image == nil ? (error ?? "The Mac sent no image") : nil)
         case .pong:
             break
         }
@@ -610,8 +620,27 @@ final class AppModel {
     /// Send a touch / key / button to the simulator being watched.
     func sendSimulatorInput(_ event: SimulatorInputEvent) {
         guard let udid = simulatorFeed.watching else { return }
-        simulatorFeed.inputError = nil
+        simulatorFeed.notice = nil
         connection.send(.simulatorInput(udid: udid, event: event))
+    }
+
+    func sendSimulatorAction(_ action: SimulatorAction, udid: String) {
+        simulatorFeed.pendingAction = (udid, action)
+        simulatorFeed.notice = nil
+        connection.send(.simulatorAction(udid: udid, action: action))
+    }
+
+    func requestSimulatorApps(_ udid: String) {
+        if simulatorFeed.apps?.udid != udid { simulatorFeed.apps = nil }
+        connection.send(.listSimulatorApps(udid: udid))
+    }
+
+    /// Ask the Mac for a full-resolution still of the simulator being watched.
+    func requestSimulatorScreenshot(_ completion: @escaping (UIImage?, String?) -> Void) {
+        guard let udid = simulatorFeed.watching else { return completion(nil, "No simulator selected") }
+        simulatorFeed.screenshotWaiter?(nil, "Superseded")
+        simulatorFeed.screenshotWaiter = completion
+        connection.send(.simulatorScreenshot(udid: udid))
     }
 
 }

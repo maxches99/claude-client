@@ -43,4 +43,19 @@ final class SimulatorInputRoundTripTests: XCTestCase {
         XCTAssertEqual(udid, "U")
         XCTAssertEqual(message, "no pasteboard")
     }
+
+    func testRuntimeOrderPutsIOSFirstNewestFirst() {
+        let sorted = ["watchOS 26.5", "iOS 18.4", "tvOS 26.2", "iOS 26.5", "iOS 26.2"].sorted(by: SimulatorInfo.runtimePrecedes)
+        XCTAssertEqual(sorted, ["iOS 26.5", "iOS 26.2", "iOS 18.4", "watchOS 26.5", "tvOS 26.2"])
+    }
+
+    func testActionAndAppsRoundTrip() throws {
+        let decoded = try ProtocolCoding.decode(ClientMessage.self, from: ProtocolCoding.encode(ClientMessage.simulatorAction(udid: "U", action: .launch(bundleId: "com.example.app"))))
+        guard case .simulatorAction(let udid, let action) = decoded else { return XCTFail("not simulatorAction") }
+        XCTAssertEqual(udid, "U")
+        XCTAssertEqual(action, .launch(bundleId: "com.example.app"))
+        let apps = try ProtocolCoding.decode(ServerMessage.self, from: ProtocolCoding.encode(ServerMessage.simulatorApps(udid: "U", items: [SimulatorApp(bundleId: "a.b", name: "AB", kind: "User")], error: nil)))
+        guard case .simulatorApps(_, let items, _) = apps else { return XCTFail("not simulatorApps") }
+        XCTAssertEqual(items.first?.isUserApp, true)
+    }
 }

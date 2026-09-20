@@ -46,8 +46,12 @@ public enum ClientMessage: Codable, Sendable {
     case listFiles(sessionId: String, query: String)
     /// Ask for the `/usage` data (session cost + plan rate-limit windows) for the limits screen.
     case getUsage(sessionId: String)
-    /// Booted iOS Simulators on the Mac (also pushed as `simulators` whenever the set changes).
+    /// iOS Simulators on the Mac, booted or not (also pushed as `simulators` whenever the set changes).
     case listSimulators
+    /// Boot / shut down a simulator, launch or quit an app in it, open a URL; answered with `simulatorActionResult`.
+    case simulatorAction(udid: String, action: SimulatorAction)
+    /// Apps installed on a simulator; answered with `simulatorApps`.
+    case listSimulatorApps(udid: String)
     /// Start / stop receiving live frames of a booted simulator. `maxPixelSize` bounds the frame's
     /// longer side, `fps` the capture rate (capped by the daemon). `codec: "h264"` asks for a video
     /// stream (`simulatorVideo`); without it, or when the Mac cannot read the simulator's framebuffer,
@@ -55,6 +59,8 @@ public enum ClientMessage: Codable, Sendable {
     case simulatorStream(udid: String, enabled: Bool, maxPixelSize: Int?, fps: Double?, codec: String? = nil)
     /// Inject a touch / key / button into a booted simulator. Failures come back as `simulatorInputFailed`.
     case simulatorInput(udid: String, event: SimulatorInputEvent)
+    /// A full-resolution still of the simulator's screen (to attach to a prompt); answered with `simulatorScreenshot`.
+    case simulatorScreenshot(udid: String)
     /// Register (or, with `pushToken == nil`, drop) this phone's Live Activity for a session. When the
     /// Mac has APNs configured it pushes `SessionActivityState` updates to the token, so the activity
     /// keeps moving while the app is in the background. `approvalNeedsApp` mirrors the phone's Face ID
@@ -87,10 +93,14 @@ public enum ServerMessage: Codable, Sendable {
     /// The `/usage` payload (raw, as the CLI returns it) or an error when limits are unavailable.
     case usage(sessionId: String, data: JSONValue?, error: String?)
     case simulators(items: [SimulatorInfo])
+    case simulatorActionResult(udid: String, action: SimulatorAction, error: String?)
+    case simulatorApps(udid: String, items: [SimulatorApp], error: String?)
     case simulatorFrame(frame: SimulatorFrame)
     case simulatorVideo(frame: SimulatorVideoFrame)
     /// A `simulatorInput` the Mac could not deliver (device gone, SimulatorKit missing, …).
     case simulatorInputFailed(udid: String, message: String)
+    /// The still asked for with `simulatorScreenshot` (JPEG), or why there is none.
+    case simulatorScreenshot(udid: String, jpegBase64: String?, width: Int, height: Int, error: String?)
     case pong
 }
 

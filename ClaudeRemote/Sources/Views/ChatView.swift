@@ -113,7 +113,7 @@ struct ChatView: View {
             PermissionSheet(request: request)
                 .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $showSimulator) { SimulatorView() }
+        .sheet(isPresented: $showSimulator) { SimulatorView { files.append($0) } }
         .sheet(isPresented: $showLimits) { LimitsView(sessionId: sessionId) }
         .sheet(isPresented: $showGit) { GitView(sessionId: sessionId) }
         .onChange(of: pending?.id) {

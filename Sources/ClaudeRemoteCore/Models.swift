@@ -354,15 +354,26 @@ public enum CodexSandboxMode: String, CaseIterable, Codable, Sendable {
     }
 }
 
-/// A booted iOS Simulator on the Mac, as listed by `simctl`.
+/// An iOS Simulator on the Mac, as listed by `simctl` (booted or not; unavailable runtimes are left out).
 public struct SimulatorInfo: Codable, Equatable, Identifiable, Sendable {
     public var udid: String
     public var name: String
     /// Human-readable runtime, e.g. "iOS 26.2".
     public var runtime: String
+    /// `Booted`, `Shutdown`, or `Booting` while the daemon waits for a boot it started to finish.
     public var state: String
 
     public var id: String { udid }
+    public var isBooted: Bool { state == "Booted" }
+    public var isBooting: Bool { state == "Booting" }
+
+    /// Runtime ordering for lists: iOS first, then the other platforms, newest version first.
+    public static func runtimePrecedes(_ a: String, _ b: String) -> Bool {
+        let platforms = ["iOS", "iPadOS", "watchOS", "tvOS", "visionOS", "xrOS"]
+        func rank(_ s: String) -> Int { platforms.firstIndex { s.hasPrefix($0) } ?? platforms.count }
+        if rank(a) != rank(b) { return rank(a) < rank(b) }
+        return a.compare(b, options: .numeric) == .orderedDescending
+    }
 
     public init(udid: String, name: String, runtime: String, state: String) {
         self.udid = udid
@@ -448,4 +459,42 @@ public enum SimulatorKey: String, Codable, CaseIterable, Sendable {
 
 public enum SimulatorHardwareButton: String, Codable, CaseIterable, Sendable {
     case home, lock, siri
+}
+
+/// Something the phone can do to a simulator besides watching it.
+public enum SimulatorAction: Codable, Equatable, Sendable {
+    /// Boot headless (no Simulator.app window; the phone's live view is the window).
+    case boot
+    case shutdown
+    case launch(bundleId: String)
+    case terminate(bundleId: String)
+    /// `simctl openurl` — deep links, universal links, http(s).
+    case openURL(url: String)
+
+    public var label: String {
+        switch self {
+        case .boot: return "Boot"
+        case .shutdown: return "Shut down"
+        case .launch: return "Launch"
+        case .terminate: return "Quit"
+        case .openURL: return "Open URL"
+        }
+    }
+}
+
+/// An app installed on a simulator (`simctl listapps`).
+public struct SimulatorApp: Codable, Equatable, Identifiable, Sendable {
+    public var bundleId: String
+    public var name: String
+    /// `User` for apps installed by a developer, `System` for Apple's.
+    public var kind: String
+
+    public var id: String { bundleId }
+    public var isUserApp: Bool { kind == "User" }
+
+    public init(bundleId: String, name: String, kind: String) {
+        self.bundleId = bundleId
+        self.name = name
+        self.kind = kind
+    }
 }
