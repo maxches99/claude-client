@@ -193,25 +193,29 @@ real file, so "Save to Files", AirDrop or "Open in…" keep the name and type.
 ## Simulator live view and control
 
 When an iOS Simulator is booted on the Mac (e.g. the agent is driving your app in it), a phone
-icon appears in the toolbar. It opens a live view of the simulator's screen: the daemon captures
-frames with `xcrun simctl io <udid> screenshot`, downscales them (≤ 1000 px, JPEG) and streams
-them over the same WebSocket at 3 fps idle, up to 8 while your finger is on the screen — only
-while the view is open, and only frames that changed (a static screen costs nothing but a
-heartbeat). Several booted simulators can be switched from the view's menu.
+icon appears in the toolbar. It opens a live view of the simulator's screen, streamed as H.264
+straight from the simulator's framebuffer: the daemon reads the display's IOSurface through
+CoreSimulator's display port, encodes it with VideoToolbox (≤ 1400 px, ~2.5 Mbit/s, up to 30 fps)
+only when something was drawn, and the phone decodes it with `AVSampleBufferDisplayLayer`. A static
+screen costs nothing but a heartbeat. If the framebuffer cannot be opened (no Xcode, an unusual
+runtime) the daemon falls back to JPEG snapshots from `xcrun simctl io <udid> screenshot` at a few
+fps. Several booted simulators can be switched from the view's menu.
 
-The picture is interactive: tap, long-press and drag on it and the same gesture is played into the
-simulator (coordinates travel as fractions of the screen, so the frame size never matters); the
-bar below has Home, Lock, Backspace and Return, and a keyboard button opens a field whose text is
-entered into whatever the simulator has focused. Text goes through the simulator pasteboard and
-⌘V rather than key codes, so Cyrillic and emoji work and the guest's keyboard layout is
-irrelevant (watchOS runtimes have no pasteboard, so text is unavailable there).
+The picture is interactive: your finger is forwarded live — down, moves, up — so taps, long
+presses, swipes and scrolls happen in the simulator as you make them (coordinates travel as
+fractions of the screen, so the frame size never matters); the bar below has Home, Lock,
+Backspace and Return, and a keyboard button opens a field whose text is entered into whatever the
+simulator has focused. Text goes through the simulator pasteboard and ⌘V rather than key codes,
+so Cyrillic and emoji work and the guest's keyboard layout is irrelevant (watchOS runtimes have no
+pasteboard, so text is unavailable there).
 
 `simctl` has no input commands, so the daemon injects HID events the way Simulator.app, idb and
 Claude Desktop's own simulator helper do: it `dlopen`s Xcode's private SimulatorKit, builds Indigo
 messages with `IndigoHIDMessageFor…` and posts them through `SimDeviceLegacyHIDClient`
-(`SimulatorInput.swift`). Nothing is linked against the private frameworks; a Mac without Xcode
-just reports that input is unavailable. `ccremote --sim-input <udid> '{"tap":{"x":0.5,"y":0.5}}'`
-exercises the path from a terminal.
+(`SimulatorInput.swift`; the display side is `SimulatorScreen.swift`). Nothing is linked against
+the private frameworks; a Mac without Xcode just reports that input is unavailable.
+`ccremote --sim-input <udid> '{"tap":{"x":0.5,"y":0.5}}'` and `ccremote --sim-video <udid> 10
+out.h264` exercise both paths from a terminal.
 
 ## Remote access (off Wi-Fi)
 

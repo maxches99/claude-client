@@ -14,24 +14,32 @@ final class SimulatorFeed {
         let receivedAt: Date
     }
 
-    /// Longer side of requested frames, in pixels — plenty for a phone screen, ~80 KB a frame.
-    static let maxPixelSize = 1000
-    static let fps = 3.0
-    /// Capture rate asked for while a finger is on the screen, so taps show their effect sooner.
-    static let interactiveFPS = 8.0
+    /// Longer side of the requested video, in pixels — crisp on a phone, ~2.5 Mbit/s when the screen moves.
+    static let maxPixelSize = 1400
+    /// Video frame rate asked for; the JPEG fallback is capped by the Mac regardless.
+    static let fps = 30.0
     /// No frame or heartbeat for this long means the stream is stale.
     static let staleAfter: TimeInterval = 6
 
     var devices: [SimulatorInfo] = []
     private(set) var watching: String?
+    /// Latest JPEG frame (the fallback path); nil while video is flowing.
     private(set) var frame: Frame?
+    /// Coded size of the video stream once the first key frame arrived; drives the picture's aspect ratio.
+    private(set) var videoSize: CGSize?
+    let player = SimulatorVideoPlayer()
     /// Last time the daemon confirmed the stream is alive (a frame or a heartbeat).
     private(set) var lastSignalAt: Date?
     private var arrivals: [Date] = []
-    /// The rate currently requested from the Mac (`fps` or `interactiveFPS`).
-    var requestedFPS = SimulatorFeed.fps
     /// The Mac could not deliver our last input; shown in the status line for a few seconds.
     var inputError: (message: String, at: Date)?
+
+    /// Size of what is on screen (video or JPEG), for aspect ratio and the status line.
+    var pictureSize: CGSize? {
+        if let videoSize { return videoSize }
+        if let frame, frame.width > 0 { return CGSize(width: frame.width, height: frame.height) }
+        return nil
+    }
 
     var device: SimulatorInfo? { devices.first { $0.udid == watching } }
 
@@ -49,17 +57,29 @@ final class SimulatorFeed {
     }
 
     func startWatching(_ udid: String) {
-        if watching != udid { frame = nil; arrivals = []; lastSignalAt = nil }
+        if watching != udid { frame = nil; videoSize = nil; player.reset(); arrivals = []; lastSignalAt = nil }
         watching = udid
     }
 
     func stopWatching() {
         watching = nil
         frame = nil
+        videoSize = nil
+        player.reset()
         arrivals = []
         lastSignalAt = nil
-        requestedFPS = Self.fps
         inputError = nil
+    }
+
+    func receiveVideo(_ incoming: SimulatorVideoFrame) {
+        guard incoming.udid == watching else { return }
+        lastSignalAt = Date()
+        player.enqueue(incoming)
+        let size = CGSize(width: incoming.width, height: incoming.height)
+        if videoSize != size { videoSize = size }
+        if frame != nil { frame = nil }   // video took over from the JPEG fallback
+        arrivals.append(Date())
+        if arrivals.count > 90 { arrivals.removeFirst(arrivals.count - 90) }
     }
 
     func receive(_ incoming: SimulatorFrame) {
@@ -74,7 +94,7 @@ final class SimulatorFeed {
     }
 
     private func apply(_ image: UIImage, from incoming: SimulatorFrame) {
-        guard incoming.udid == watching, incoming.seq >= (frame?.seq ?? 0) else { return }   // decoded out of order
+        guard incoming.udid == watching, videoSize == nil, incoming.seq >= (frame?.seq ?? 0) else { return }   // decoded out of order
         frame = Frame(image: image, seq: incoming.seq, width: incoming.width, height: incoming.height, receivedAt: Date())
         arrivals.append(Date())
         if arrivals.count > 40 { arrivals.removeFirst(arrivals.count - 40) }

@@ -14,7 +14,7 @@ final class SimulatorInputRoundTripTests: XCTestCase {
         let events: [SimulatorInputEvent] = [
             .tap(x: 0.25, y: 0.75),
             .tap(x: 0.5, y: 0.5, holdSeconds: 1.2),
-            .touch(path: [SimulatorTouchSample(x: 0.8, y: 0.5, dt: 0), SimulatorTouchSample(x: 0.2, y: 0.5, dt: 0.15)]),
+            .touch(phase: .moved, x: 0.8, y: 0.5),
             .text(text: "Hello\nпривет 🙂"),
             .key(key: .backspace),
             .button(button: .home),
@@ -28,6 +28,13 @@ final class SimulatorInputRoundTripTests: XCTestCase {
         let json = try ProtocolCoding.encode(SimulatorInputEvent.tap(x: 0.1, y: 0.2))
         XCTAssertFalse(json.contains("holdSeconds"))
         XCTAssertTrue(json.contains(#""tap""#))
+    }
+
+    func testVideoFrameRoundTrips() throws {
+        let frame = SimulatorVideoFrame(udid: "U", seq: 7, width: 640, height: 1390, keyframe: true, spsBase64: "Zw==", ppsBase64: "aA==", dataBase64: "AAAA", ptsMillis: 1234)
+        let decoded = try ProtocolCoding.decode(ServerMessage.self, from: ProtocolCoding.encode(ServerMessage.simulatorVideo(frame: frame)))
+        guard case .simulatorVideo(let back) = decoded else { return XCTFail("not simulatorVideo") }
+        XCTAssertEqual(back, frame)
     }
 
     func testFailureMessageRoundTrips() throws {

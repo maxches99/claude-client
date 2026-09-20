@@ -100,8 +100,20 @@ final class PhoneSession: @unchecked Sendable {
             }
             return
         }
-        Task { [weak self] in await self?.dispatch(message) }
+        if case .simulatorInput = message {
+            // Touch phases must reach the simulator in the order the finger produced them.
+            let previous = inputChain
+            inputChain = Task { [weak self] in
+                await previous?.value
+                await self?.dispatch(message)
+            }
+        } else {
+            Task { [weak self] in await self?.dispatch(message) }
+        }
     }
+
+    /// Serializes `simulatorInput` handling; other messages are dispatched concurrently.
+    private var inputChain: Task<Void, Never>?
 
     private func sendGitStatus(_ sessionId: String) async {
         do {
@@ -187,9 +199,9 @@ final class PhoneSession: @unchecked Sendable {
                 await manager.registerLiveActivity(sessionId: sessionId, phone: id, token: pushToken, approvalNeedsApp: approvalNeedsApp)
             case .listSimulators:
                 send(.simulators(items: await SimulatorStreamer.shared.list()))
-            case .simulatorStream(let udid, let enabled, let maxPixelSize, let fps):
+            case .simulatorStream(let udid, let enabled, let maxPixelSize, let fps, let codec):
                 if enabled {
-                    await SimulatorStreamer.shared.watch(udid: udid, id: id, maxPixelSize: maxPixelSize, fps: fps) { [weak self] msg in self?.send(msg) }
+                    await SimulatorStreamer.shared.watch(udid: udid, id: id, maxPixelSize: maxPixelSize, fps: fps, codec: codec) { [weak self] msg in self?.send(msg) }
                 } else {
                     await SimulatorStreamer.shared.unwatch(udid: udid, id: id)
                 }

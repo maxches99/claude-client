@@ -8,9 +8,11 @@ import ClaudeCodeHost
 /// Live view of the Mac's booted iOS Simulators for the phone.
 ///
 /// While phones are connected it keeps the booted-device list fresh (`simctl list`, every few
-/// seconds) and pushes it when it changes. While a phone watches a simulator it captures frames
-/// with `simctl io screenshot`, downscales them for the wire and sends only frames that changed
-/// (a heartbeat says "still the same"). Nothing runs when nobody is looking.
+/// seconds) and pushes it when it changes. While a phone watches a simulator it streams the screen:
+/// H.264 straight from the simulator's framebuffer (`SimulatorScreen` + `SimulatorVideoEncoder`)
+/// when the phone asks for video and the private display API cooperates, else JPEG snapshots from
+/// `simctl io screenshot`, downscaled for the wire and sent only when the screen changed (a
+/// heartbeat says "still the same"). Nothing runs when nobody is looking.
 actor SimulatorStreamer {
     static let shared = SimulatorStreamer()
 
@@ -21,9 +23,35 @@ actor SimulatorStreamer {
         let send: @Sendable (ServerMessage) -> Void
         var maxPixelSize: Int
         var interval: TimeInterval
+        /// Asked for H.264 (and the Mac could start it). Others get JPEG snapshots.
+        var video: Bool
     }
 
-    private static let maxFPS = 8.0
+    /// One H.264 stream per simulator, shared by every phone watching it as video.
+    private final class VideoSession {
+        let screen: SimulatorScreen
+        let encoder: SimulatorVideoEncoder
+        let frames: AsyncStream<SimulatorVideoEncoder.Frame>
+        var pump: Task<Void, Never>?
+        var seq = 0
+        var lastSentAt = Date()
+
+        init(screen: SimulatorScreen, maxPixelSize: Int, fps: Double) {
+            self.screen = screen
+            let (stream, continuation) = AsyncStream.makeStream(of: SimulatorVideoEncoder.Frame.self, bufferingPolicy: .bufferingNewest(8))
+            frames = stream
+            encoder = SimulatorVideoEncoder(maxPixelSize: maxPixelSize, fps: fps) { continuation.yield($0) }
+        }
+
+        func stop() {
+            pump?.cancel()
+            screen.stop()
+            encoder.invalidate()
+        }
+    }
+
+    private static let maxFPS = 4.0
+    private static let maxVideoFPS = 30.0
     private static let defaultFPS = 3.0
     private static let heartbeatInterval: TimeInterval = 2
     private static let listInterval: TimeInterval = 4
@@ -34,6 +62,9 @@ actor SimulatorStreamer {
     /// udid → phone → frame settings.
     private var viewers: [String: [UUID: Viewer]] = [:]
     private var frameLoops: [String: Task<Void, Never>] = [:]
+    private var videoSessions: [String: VideoSession] = [:]
+    /// Simulators whose framebuffer could not be opened this boot — no point retrying on every watch.
+    private var videoUnavailable: Set<String> = []
     private var listLoop: Task<Void, Never>?
     private var devices: [SimulatorInfo] = []
     private var listedOnce = false
@@ -63,15 +94,23 @@ actor SimulatorStreamer {
         return devices
     }
 
-    func watch(udid: String, id: UUID, maxPixelSize: Int?, fps: Double?, send: @escaping @Sendable (ServerMessage) -> Void) {
-        let rate = min(max(fps ?? Self.defaultFPS, 0.5), Self.maxFPS)
+    func watch(udid: String, id: UUID, maxPixelSize: Int?, fps: Double?, codec: String?, send: @escaping @Sendable (ServerMessage) -> Void) {
+        let wantsVideo = codec == "h264" && !videoUnavailable.contains(udid)
+        let video = wantsVideo && startVideo(udid: udid, maxPixelSize: maxPixelSize, fps: fps)
+        let rate = min(max(fps ?? Self.defaultFPS, 0.5), video ? Self.maxVideoFPS : Self.maxFPS)
         let size = min(max(maxPixelSize ?? 1000, 200), 2400)
-        viewers[udid, default: [:]][id] = Viewer(send: send, maxPixelSize: size, interval: 1 / rate)
-        // A new viewer wants a full frame right away, whatever the last one saw.
-        lastRaw[udid] = nil
-        if frameLoops[udid] == nil {
-            Self.log("simulator: streaming \(udid.prefix(8)) at ≤\(Int(rate)) fps, ≤\(size)px")
-            frameLoops[udid] = Task { [weak self] in await self?.runFrameLoop(udid: udid) }
+        viewers[udid, default: [:]][id] = Viewer(send: send, maxPixelSize: size, interval: 1 / rate, video: video)
+        if video {
+            reconfigureVideo(udid: udid)
+            videoSessions[udid]?.encoder.requestKeyframe()
+            if let surface = videoSessions[udid]?.screen.surface { videoSessions[udid]?.encoder.encodeIfChanged(surface) }
+        } else {
+            // A new viewer wants a full frame right away, whatever the last one saw.
+            lastRaw[udid] = nil
+            if frameLoops[udid] == nil {
+                Self.log("simulator: streaming \(udid.prefix(8)) as JPEG at ≤\(Int(rate)) fps, ≤\(size)px")
+                frameLoops[udid] = Task { [weak self] in await self?.runFrameLoop(udid: udid) }
+            }
         }
     }
 
@@ -81,13 +120,101 @@ actor SimulatorStreamer {
 
     private func removeViewer(_ id: UUID, udid: String) {
         viewers[udid]?[id] = nil
-        if viewers[udid]?.isEmpty == true {
-            viewers[udid] = nil
+        let remaining = viewers[udid] ?? [:]
+        if !remaining.values.contains(where: { !$0.video }) {
             frameLoops[udid]?.cancel()
             frameLoops[udid] = nil
             lastRaw[udid] = nil
-            Self.log("simulator: stopped streaming \(udid.prefix(8))")
         }
+        if !remaining.values.contains(where: { $0.video }) {
+            videoSessions[udid]?.stop()
+            videoSessions[udid] = nil
+        }
+        if remaining.isEmpty {
+            viewers[udid] = nil
+            Self.log("simulator: stopped streaming \(udid.prefix(8))")
+        } else if videoSessions[udid] != nil {
+            reconfigureVideo(udid: udid)
+        }
+    }
+
+    // MARK: video
+
+    /// Opens the framebuffer and starts encoding; false (and remembered) when the private API says no.
+    private func startVideo(udid: String, maxPixelSize: Int?, fps: Double?) -> Bool {
+        if videoSessions[udid] != nil { return true }
+        do {
+            let screen = try SimulatorScreen(udid: udid)
+            let session = VideoSession(screen: screen,
+                                       maxPixelSize: min(max(maxPixelSize ?? 1400, 200), 2800),
+                                       fps: min(max(fps ?? Self.maxVideoFPS, 1), Self.maxVideoFPS))
+            let encoder = session.encoder
+            try screen.start { [weak screen] in
+                guard let surface = screen?.surface else { return }
+                encoder.encodeIfChanged(surface)
+            }
+            session.pump = Task { [weak self] in
+                for await frame in session.frames {
+                    guard !Task.isCancelled else { return }
+                    await self?.deliverVideo(udid: udid, frame: frame)
+                }
+            }
+            videoSessions[udid] = session
+            Self.log("simulator: streaming \(udid.prefix(8)) as H.264 from the framebuffer")
+            ensureHeartbeat()
+            return true
+        } catch {
+            Self.log("simulator: no video for \(udid.prefix(8)) (\(error.localizedDescription)) — falling back to JPEG")
+            videoUnavailable.insert(udid)
+            return false
+        }
+    }
+
+    /// The largest size and fastest rate any current video viewer asked for.
+    private func reconfigureVideo(udid: String) {
+        guard let session = videoSessions[udid] else { return }
+        let active = (viewers[udid] ?? [:]).values.filter(\.video)
+        guard !active.isEmpty else { return }
+        let size = min(active.map(\.maxPixelSize).max() ?? 1400, 2800)
+        let rate = 1 / (active.map(\.interval).min() ?? (1 / Self.maxVideoFPS))
+        session.encoder.reconfigure(maxPixelSize: size, fps: rate)
+    }
+
+    private func deliverVideo(udid: String, frame: SimulatorVideoEncoder.Frame) {
+        guard let session = videoSessions[udid], let active = viewers[udid]?.values.filter(\.video), !active.isEmpty else { return }
+        session.seq += 1
+        session.lastSentAt = Date()
+        let message = ServerMessage.simulatorVideo(frame: SimulatorVideoFrame(
+            udid: udid, seq: session.seq, width: frame.width, height: frame.height, keyframe: frame.keyframe,
+            spsBase64: frame.sps?.base64EncodedString(), ppsBase64: frame.pps?.base64EncodedString(),
+            dataBase64: frame.data.base64EncodedString(), ptsMillis: frame.ptsMillis))
+        for viewer in active { viewer.send(message) }
+    }
+
+    private var heartbeatLoop: Task<Void, Never>?
+
+    /// A static screen produces no video frames; a heartbeat every couple of seconds keeps the phone's
+    /// "Live" indicator honest (the same `simulatorFrame` heartbeat the JPEG path uses).
+    private func ensureHeartbeat() {
+        guard heartbeatLoop == nil else { return }
+        heartbeatLoop = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(Self.heartbeatInterval * 1_000_000_000))
+                guard let self else { return }
+                if await self.sendVideoHeartbeats() == false { return }
+            }
+        }
+    }
+
+    /// False once there is nothing left to heartbeat (the loop ends and restarts with the next stream).
+    private func sendVideoHeartbeats() -> Bool {
+        guard !videoSessions.isEmpty else { heartbeatLoop = nil; return false }
+        for (udid, session) in videoSessions where Date().timeIntervalSince(session.lastSentAt) >= Self.heartbeatInterval {
+            let frame = SimulatorFrame(udid: udid, seq: session.seq, width: 0, height: 0, jpegBase64: nil, capturedAt: Date())
+            session.lastSentAt = Date()
+            for viewer in (viewers[udid] ?? [:]).values where viewer.video { viewer.send(.simulatorFrame(frame: frame)) }
+        }
+        return true
     }
 
     // MARK: device list
@@ -107,6 +234,13 @@ actor SimulatorStreamer {
         let fresh = await Task.detached(priority: .utility) { Self.bootedDevices() }.value
         listedOnce = true
         guard fresh != devices else { return }
+        let gone = Set(devices.map(\.udid)).subtracting(fresh.map(\.udid))
+        for udid in gone {
+            videoSessions[udid]?.stop()
+            videoSessions[udid] = nil
+            videoUnavailable.remove(udid)   // a reboot may bring the display port back
+            await SimulatorInput.shared.forget(udid: udid)
+        }
         devices = fresh
         guard broadcast else { return }
         for send in listeners.values { send(.simulators(items: fresh)) }
@@ -145,7 +279,7 @@ actor SimulatorStreamer {
     private var failures: [String: Int] = [:]
 
     private func runFrameLoop(udid: String) async {
-        while !Task.isCancelled, let active = viewers[udid], !active.isEmpty {
+        while !Task.isCancelled, let active = viewers[udid]?.filter({ !$0.value.video }), !active.isEmpty {
             let started = Date()
             let interval = active.values.map(\.interval).min() ?? (1 / Self.defaultFPS)
             let maxPixelSize = active.values.map(\.maxPixelSize).max() ?? 1000
@@ -171,7 +305,7 @@ actor SimulatorStreamer {
             return
         }
         failures[udid] = 0
-        guard let active = viewers[udid], !active.isEmpty else { return }
+        guard let active = viewers[udid]?.filter({ !$0.value.video }), !active.isEmpty else { return }
 
         if raw == lastRaw[udid] {
             // Unchanged screen: a heartbeat every couple of seconds keeps "Live" honest without traffic.

@@ -372,8 +372,37 @@ public struct SimulatorInfo: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-/// One frame of a simulator live view. `jpegBase64 == nil` is a heartbeat: the screen has not
-/// changed since the previous frame, so nothing was re-sent.
+/// One H.264 access unit of a simulator live view (AVCC layout: 4-byte length-prefixed NAL units, as
+/// VideoToolbox emits them). Key frames carry the SPS/PPS a decoder needs to start; a viewer joining
+/// mid-stream waits for the next one. `width`/`height` are the coded size.
+public struct SimulatorVideoFrame: Codable, Equatable, Sendable {
+    public var udid: String
+    public var seq: Int
+    public var width: Int
+    public var height: Int
+    public var keyframe: Bool
+    public var spsBase64: String?
+    public var ppsBase64: String?
+    public var dataBase64: String
+    /// Presentation time in milliseconds since the stream started.
+    public var ptsMillis: Int
+
+    public init(udid: String, seq: Int, width: Int, height: Int, keyframe: Bool, spsBase64: String?, ppsBase64: String?, dataBase64: String, ptsMillis: Int) {
+        self.udid = udid
+        self.seq = seq
+        self.width = width
+        self.height = height
+        self.keyframe = keyframe
+        self.spsBase64 = spsBase64
+        self.ppsBase64 = ppsBase64
+        self.dataBase64 = dataBase64
+        self.ptsMillis = ptsMillis
+    }
+}
+
+/// One JPEG frame of a simulator live view (the fallback when the Mac cannot stream video).
+/// `jpegBase64 == nil` is a heartbeat: the screen has not changed since the previous frame, so
+/// nothing was re-sent.
 public struct SimulatorFrame: Codable, Equatable, Sendable {
     public var udid: String
     public var seq: Int
@@ -398,9 +427,9 @@ public struct SimulatorFrame: Codable, Equatable, Sendable {
 public enum SimulatorInputEvent: Codable, Equatable, Sendable {
     /// Finger down and up at one point; `holdSeconds` > ~0.5 is a long press.
     case tap(x: Double, y: Double, holdSeconds: Double? = nil)
-    /// One finger dragged along a path: the first sample is touch-down, the last touch-up, and each
-    /// sample's `dt` is the pause (seconds) before it. Swipes, scrolls and drags all travel this way.
-    case touch(path: [SimulatorTouchSample])
+    /// One finger tracked live: `began` puts it down, `moved` drags it, `ended` lifts it. Sent as the
+    /// phone's gesture progresses, so swipes and scrolls happen under the finger rather than after it.
+    case touch(phase: SimulatorTouchPhase, x: Double, y: Double)
     /// Text entered into the focused field (pasted via the simulator pasteboard; newlines press Return).
     case text(text: String)
     /// A single named key of the hardware keyboard.
@@ -409,17 +438,8 @@ public enum SimulatorInputEvent: Codable, Equatable, Sendable {
     case button(button: SimulatorHardwareButton)
 }
 
-public struct SimulatorTouchSample: Codable, Equatable, Sendable {
-    public var x: Double
-    public var y: Double
-    /// Seconds since the previous sample (0 for the first).
-    public var dt: Double
-
-    public init(x: Double, y: Double, dt: Double) {
-        self.x = x
-        self.y = y
-        self.dt = dt
-    }
+public enum SimulatorTouchPhase: String, Codable, Sendable {
+    case began, moved, ended
 }
 
 public enum SimulatorKey: String, Codable, CaseIterable, Sendable {

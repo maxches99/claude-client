@@ -506,6 +506,8 @@ final class AppModel {
             simulatorFeed.devices = items
         case .simulatorFrame(let frame):
             simulatorFeed.receive(frame)
+        case .simulatorVideo(let frame):
+            simulatorFeed.receiveVideo(frame)
         case .simulatorInputFailed(let udid, let message):
             if udid == simulatorFeed.watching { simulatorFeed.inputError = (message, Date()) }
         case .pong:
@@ -601,7 +603,8 @@ final class AppModel {
     private func sendSimulatorStream(_ udid: String, enabled: Bool) {
         connection.send(.simulatorStream(udid: udid, enabled: enabled,
                                          maxPixelSize: enabled ? SimulatorFeed.maxPixelSize : nil,
-                                         fps: enabled ? simulatorFeed.requestedFPS : nil))
+                                         fps: enabled ? SimulatorFeed.fps : nil,
+                                         codec: enabled ? "h264" : nil))
     }
 
     /// Send a touch / key / button to the simulator being watched.
@@ -611,27 +614,4 @@ final class AppModel {
         connection.send(.simulatorInput(udid: udid, event: event))
     }
 
-    private var simulatorCalmDown: Task<Void, Never>?
-
-    /// A finger is on (or just left) the simulator screen: ask for faster frames while it is, and
-    /// fall back to the idle rate a couple of seconds after it leaves.
-    func setSimulatorInteracting(_ active: Bool) {
-        simulatorCalmDown?.cancel()
-        simulatorCalmDown = nil
-        if active {
-            setSimulatorFPS(SimulatorFeed.interactiveFPS)
-        } else {
-            simulatorCalmDown = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
-                guard !Task.isCancelled else { return }
-                self?.setSimulatorFPS(SimulatorFeed.fps)
-            }
-        }
-    }
-
-    private func setSimulatorFPS(_ fps: Double) {
-        guard simulatorFeed.requestedFPS != fps, let udid = simulatorFeed.watching else { return }
-        simulatorFeed.requestedFPS = fps
-        sendSimulatorStream(udid, enabled: true)
-    }
 }

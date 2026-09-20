@@ -49,8 +49,10 @@ public enum ClientMessage: Codable, Sendable {
     /// Booted iOS Simulators on the Mac (also pushed as `simulators` whenever the set changes).
     case listSimulators
     /// Start / stop receiving live frames of a booted simulator. `maxPixelSize` bounds the frame's
-    /// longer side, `fps` the capture rate (capped by the daemon). Frames stop when the phone disconnects.
-    case simulatorStream(udid: String, enabled: Bool, maxPixelSize: Int?, fps: Double?)
+    /// longer side, `fps` the capture rate (capped by the daemon). `codec: "h264"` asks for a video
+    /// stream (`simulatorVideo`); without it, or when the Mac cannot read the simulator's framebuffer,
+    /// JPEG `simulatorFrame`s come instead. Frames stop when the phone disconnects.
+    case simulatorStream(udid: String, enabled: Bool, maxPixelSize: Int?, fps: Double?, codec: String? = nil)
     /// Inject a touch / key / button into a booted simulator. Failures come back as `simulatorInputFailed`.
     case simulatorInput(udid: String, event: SimulatorInputEvent)
     /// Register (or, with `pushToken == nil`, drop) this phone's Live Activity for a session. When the
@@ -86,6 +88,7 @@ public enum ServerMessage: Codable, Sendable {
     case usage(sessionId: String, data: JSONValue?, error: String?)
     case simulators(items: [SimulatorInfo])
     case simulatorFrame(frame: SimulatorFrame)
+    case simulatorVideo(frame: SimulatorVideoFrame)
     /// A `simulatorInput` the Mac could not deliver (device gone, SimulatorKit missing, …).
     case simulatorInputFailed(udid: String, message: String)
     case pong

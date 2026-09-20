@@ -54,6 +54,18 @@ if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--sim-input" {
     }
 }
 
+// Developer check of the framebuffer video path: `ccremote --sim-video <udid> 10 [/tmp/out.h264]`.
+if CommandLine.arguments.count >= 4, CommandLine.arguments[1] == "--sim-video" {
+    do {
+        try await probeSimulatorVideo(udid: CommandLine.arguments[2], seconds: Double(CommandLine.arguments[3]) ?? 5,
+                                      output: CommandLine.arguments.count > 4 ? CommandLine.arguments[4] : nil, log: log)
+        exit(0)
+    } catch {
+        log("\(error.localizedDescription)")
+        exit(1)
+    }
+}
+
 let arguments: DaemonArguments
 do {
     arguments = try DaemonArguments.parse(Array(CommandLine.arguments.dropFirst()))

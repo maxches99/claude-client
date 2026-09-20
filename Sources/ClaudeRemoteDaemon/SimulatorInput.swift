@@ -7,10 +7,9 @@ import ObjCExceptionGuard
 ///
 /// `simctl` has no input commands, so this goes the way Simulator.app, idb and Claude Desktop's own
 /// helper do: Apple's private SimulatorKit builds Indigo HID messages (`IndigoHIDMessageFor…`) and
-/// `SimDeviceLegacyHIDClient` posts them to the device over its HID mach port. Everything is loaded
-/// with `dlopen` and messaged through the Objective-C runtime, so nothing links against the private
-/// frameworks and a Mac without Xcode just reports "SimulatorKit unavailable". Touch coordinates are
-/// unit ratios of the screen (top-left origin), which is what the wire format wants anyway.
+/// `SimDeviceLegacyHIDClient` posts them to the device over its HID mach port (see
+/// `SimulatorFrameworks`). Touch coordinates are unit ratios of the screen (top-left origin), which
+/// is what the wire format wants anyway.
 actor SimulatorInput {
     static let shared = SimulatorInput()
 
@@ -18,20 +17,14 @@ actor SimulatorInput {
     nonisolated(unsafe) static var log: @Sendable (String) -> Void = { _ in }
 
     enum Failure: LocalizedError {
-        case xcodeMissing
-        case symbol(String)
         case classMissing(String)
-        case notBooted(String)
         case client(String)
         case send(String)
         case noPasteboard
 
         var errorDescription: String? {
             switch self {
-            case .xcodeMissing: return "Xcode's SimulatorKit was not found on the Mac"
-            case .symbol(let name): return "SimulatorKit has no \(name)"
-            case .classMissing(let name): return "CoreSimulator has no \(name)"
-            case .notBooted(let udid): return "Simulator \(udid.prefix(8)) is not booted"
+            case .classMissing(let name): return "SimulatorKit has no \(name)"
             case .client(let why): return "Could not open the simulator's HID port: \(why)"
             case .send(let why): return "The simulator rejected the input: \(why)"
             case .noPasteboard: return "Text needs the simulator pasteboard, which this runtime has none of (watchOS?)"
@@ -39,13 +32,13 @@ actor SimulatorInput {
         }
     }
 
-    private var kit: Kit?
+    private var builders: Builders?
     private var clients: [String: HIDClient] = [:]
 
     // MARK: events
 
     func perform(_ event: SimulatorInputEvent, udid: String) async throws {
-        let kit = try loadKit()
+        let kit = try loadBuilders()
         let client = try hidClient(udid: udid, kit: kit)
         do {
             switch event {
@@ -53,14 +46,9 @@ actor SimulatorInput {
                 try await client.send(kit.touch(x: x, y: y, down: true))
                 try await sleep(min(max(hold ?? 0.06, 0.03), 5))
                 try await client.send(kit.touch(x: x, y: y, down: false))
-            case .touch(let path):
-                guard let first = path.first, let last = path.last else { return }
-                try await client.send(kit.touch(x: first.x, y: first.y, down: true))
-                for sample in path.dropFirst() {
-                    try await sleep(min(max(sample.dt, 0), 1))
-                    try await client.send(kit.touch(x: sample.x, y: sample.y, down: true))
-                }
-                try await client.send(kit.touch(x: last.x, y: last.y, down: false))
+            case .touch(let phase, let x, let y):
+                // A finger tracked live from the phone: down / still down at a new point / up.
+                try await client.send(kit.touch(x: x, y: y, down: phase != .ended))
             case .text(let text):
                 try await type(text, udid: udid, client: client, kit: kit)
             case .key(let key):
@@ -88,7 +76,7 @@ actor SimulatorInput {
     /// lines. Typing by key code would be the obvious route, but HID codes go through the guest's
     /// active hardware-keyboard layout (a Russian layout turns "Hello" into "Руддщ"), while ⌘V works
     /// under any layout, handles emoji, and iOS takes a hardware-keyboard paste without a prompt.
-    private func type(_ text: String, udid: String, client: HIDClient, kit: Kit) async throws {
+    private func type(_ text: String, udid: String, client: HIDClient, kit: Builders) async throws {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         for (index, line) in lines.enumerated() {
             if !line.isEmpty {
@@ -102,7 +90,7 @@ actor SimulatorInput {
         }
     }
 
-    private func press(_ usage: UInt32, client: HIDClient, kit: Kit) async throws {
+    private func press(_ usage: UInt32, client: HIDClient, kit: Builders) async throws {
         try await client.send(kit.key(usage, down: true))
         try await sleep(0.012)
         try await client.send(kit.key(usage, down: false))
@@ -115,84 +103,40 @@ actor SimulatorInput {
 
     // MARK: SimulatorKit
 
-    private func loadKit() throws -> Kit {
-        if let kit { return kit }
-        let loaded = try Kit()
-        kit = loaded
-        Self.log("simulator: SimulatorKit loaded from \(loaded.developerDir)")
+    private func loadBuilders() throws -> Builders {
+        if let builders { return builders }
+        let loaded = try Builders()
+        builders = loaded
+        Self.log("simulator: SimulatorKit loaded from \((try? SimulatorFrameworks.shared.developerDir) ?? "?")")
         return loaded
     }
 
-    private func hidClient(udid: String, kit: Kit) throws -> HIDClient {
+    private func hidClient(udid: String, kit: Builders) throws -> HIDClient {
         if let client = clients[udid] { return client }
-        let client = try HIDClient(device: kit.device(udid: udid))
+        let client = try HIDClient(device: SimulatorFrameworks.shared.device(udid: udid))
         clients[udid] = client
         Self.log("simulator: HID client opened for \(udid.prefix(8))")
         return client
     }
 
-    /// The private frameworks: CoreSimulator (device lookup) and SimulatorKit (message builders).
-    private final class Kit {
+    /// SimulatorKit's Indigo message builders.
+    private final class Builders {
         private typealias ButtonFn = @convention(c) (Int32, Int32, Int32) -> UnsafeMutableRawPointer
         private typealias KeyboardFn = @convention(c) (Int32, Int32) -> UnsafeMutableRawPointer
         /// `IndigoHIDMessageForMouseNSEvent(CGPoint *, CGPoint *, IndigoHIDTarget, NSEventType, NSSize, IndigoHIDEdge)` —
         /// divides the point by the size to get the contact's ratio, so a unit size passes ratios through.
         private typealias MouseFn = @convention(c) (UnsafeMutablePointer<CGPoint>?, UnsafeMutablePointer<CGPoint>?, UInt32, UInt, CGSize, UInt32) -> UnsafeMutableRawPointer
 
-        let developerDir: String
         private let button: ButtonFn
         private let keyboard: KeyboardFn
         private let mouse: MouseFn
-        private let serviceContext: NSObject
 
         init() throws {
-            developerDir = Self.findDeveloperDir()
-            let core = "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/CoreSimulator"
-            let kit = developerDir + "/Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit"
-            guard FileManager.default.fileExists(atPath: kit), dlopen(core, RTLD_NOW) != nil,
-                  let handle = dlopen(kit, RTLD_NOW) else { throw Failure.xcodeMissing }
-            func symbol(_ name: String) throws -> UnsafeMutableRawPointer {
-                guard let p = dlsym(handle, name) else { throw Failure.symbol(name) }
-                return p
-            }
-            button = unsafeBitCast(try symbol("IndigoHIDMessageForButton"), to: ButtonFn.self)
-            keyboard = unsafeBitCast(try symbol("IndigoHIDMessageForKeyboardArbitrary"), to: KeyboardFn.self)
-            mouse = unsafeBitCast(try symbol("IndigoHIDMessageForMouseNSEvent"), to: MouseFn.self)
-
-            guard let contextClass = NSClassFromString("SimServiceContext") else { throw Failure.classMissing("SimServiceContext") }
-            // The `error:` out-params are passed as nil: `perform` boxes Swift pointers, and the failures
-            // these calls can report ("no such developer dir") are already covered by the checks above.
-            guard let context = (contextClass as AnyObject).perform(NSSelectorFromString("sharedServiceContextForDeveloperDir:error:"),
-                                                                   with: developerDir as NSString, with: nil)?.takeUnretainedValue() as? NSObject else {
-                throw Failure.client("no SimServiceContext for \(developerDir)")
-            }
-            serviceContext = context
+            let frameworks = SimulatorFrameworks.shared
+            button = unsafeBitCast(try frameworks.symbol("IndigoHIDMessageForButton"), to: ButtonFn.self)
+            keyboard = unsafeBitCast(try frameworks.symbol("IndigoHIDMessageForKeyboardArbitrary"), to: KeyboardFn.self)
+            mouse = unsafeBitCast(try frameworks.symbol("IndigoHIDMessageForMouseNSEvent"), to: MouseFn.self)
         }
-
-        /// `DEVELOPER_DIR`, else `xcode-select -p`, else the default Xcode.
-        private static func findDeveloperDir() -> String {
-            if let env = ProcessInfo.processInfo.environment["DEVELOPER_DIR"], !env.isEmpty { return env }
-            if let out = try? SimulatorStreamer.run(["xcode-select", "-p"], viaXcrun: false, timeout: 5),
-               let path = String(data: out, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty {
-                return path
-            }
-            return "/Applications/Xcode.app/Contents/Developer"
-        }
-
-        /// The `SimDevice` for a udid from the default device set (the one `simctl` lists).
-        func device(udid: String) throws -> AnyObject {
-            guard let set = serviceContext.perform(NSSelectorFromString("defaultDeviceSetWithError:"), with: nil)?.takeUnretainedValue() as? NSObject else {
-                throw Failure.client("no default device set")
-            }
-            let devices = set.perform(NSSelectorFromString("devices"))?.takeUnretainedValue() as? [NSObject] ?? []
-            let wanted = udid.uppercased()
-            guard let device = devices.first(where: { ($0.perform(NSSelectorFromString("UDID"))?.takeUnretainedValue() as? UUID)?.uuidString.uppercased() == wanted }) else {
-                throw Failure.notBooted(udid)
-            }
-            return device
-        }
-
-        // MARK: messages
 
         /// The digitizer service target the touch builder addresses.
         private static let touchTarget: UInt32 = 0x32
@@ -245,7 +189,6 @@ actor SimulatorInput {
         private static func wrap(_ message: UnsafeMutableRawPointer) -> Data {
             Data(bytesNoCopy: message, count: malloc_size(message), deallocator: .free)
         }
-
     }
 
     /// One `SimDeviceLegacyHIDClient`. Looked up by name and messaged through an informal protocol so
@@ -320,9 +263,7 @@ private extension SimulatorKey {
         }
     }
 }
-#endif
 
-#if os(macOS)
 /// `ccremote --sim-input UDID JSON`: exercise the HID path from a terminal without a phone.
 public func injectSimulatorInput(_ event: SimulatorInputEvent, udid: String, log: @escaping @Sendable (String) -> Void) async throws {
     SimulatorInput.log = log

@@ -10,8 +10,8 @@ struct SimulatorView: View {
     @State private var selected: String?
     /// Ticks so the "Live" indicator and fps readout stay current between frames.
     @State private var now = Date()
-    /// The finger currently on the screen: where it has been and since when.
-    @State private var stroke: [(point: CGPoint, at: Date)] = []
+    /// The finger currently on the simulator's screen: where the last `moved` went and when.
+    @State private var touch: (point: CGPoint, sentAt: Date)?
     /// Brief ring where the last tap landed.
     @State private var tapMark: (point: CGPoint, id: UUID)?
     @State private var showKeyboard = false
@@ -94,16 +94,21 @@ struct SimulatorView: View {
     private var screen: some View {
         GeometryReader { geo in
             ZStack {
-                if let frame = feed.frame {
-                    Image(uiImage: frame.image)
-                        .resizable()
-                        .aspectRatio(CGFloat(max(frame.width, 1)) / CGFloat(max(frame.height, 1)), contentMode: .fit)
-                        .clipShape(RoundedRectangle(cornerRadius: 22))
-                        .overlay { touchSurface }
-                        .padding(6)
-                        .background(Color.black, in: RoundedRectangle(cornerRadius: 28))
-                        .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(CDS.border))
-                        .opacity(feed.isAlive(now: now) ? 1 : 0.6)
+                if let size = feed.pictureSize {
+                    Group {
+                        if feed.videoSize != nil {
+                            SimulatorVideoView(player: feed.player)
+                        } else if let frame = feed.frame {
+                            Image(uiImage: frame.image).resizable()
+                        }
+                    }
+                    .aspectRatio(max(size.width, 1) / max(size.height, 1), contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 22))
+                    .overlay { touchSurface }
+                    .padding(6)
+                    .background(Color.black, in: RoundedRectangle(cornerRadius: 28))
+                    .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(CDS.border))
+                    .opacity(feed.isAlive(now: now) ? 1 : 0.6)
                 } else {
                     VStack(spacing: 10) {
                         ProgressView().tint(CDS.textMuted)
@@ -120,6 +125,8 @@ struct SimulatorView: View {
     }
 
     /// Sits exactly over the picture, so gesture locations are fractions of the simulator screen.
+    /// The finger is forwarded live — down on first contact, moves as it goes, up on release — so
+    /// scrolls and drags happen under it; a quick down/up is simply a tap on the other side.
     private var touchSurface: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
@@ -138,47 +145,36 @@ struct SimulatorView: View {
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { value in
-                        if stroke.isEmpty { model.setSimulatorInteracting(true) }
-                        stroke.append((value.location, Date()))
+                        if touch == nil {
+                            forward(.began, value.location, in: geo.size)
+                            showTapMark(at: value.location)
+                        } else if let touch, Date().timeIntervalSince(touch.sentAt) >= 1 / 40 || hypot(value.location.x - touch.point.x, value.location.y - touch.point.y) >= 6 {
+                            forward(.moved, value.location, in: geo.size)
+                        }
                     }
                     .onEnded { value in
-                        stroke.append((value.location, Date()))
-                        finishStroke(in: geo.size)
+                        if touch == nil { forward(.began, value.location, in: geo.size) }
+                        forward(.ended, value.location, in: geo.size)
+                        touch = nil
                     }
             )
         }
     }
 
-    /// Tap, long press or a drag path — decided when the finger lifts, then sent as one event.
-    private func finishStroke(in size: CGSize) {
-        defer { stroke = []; model.setSimulatorInteracting(false) }
-        guard size.width > 0, size.height > 0, let first = stroke.first, let last = stroke.last else { return }
-        let unit = { (p: CGPoint) in (x: Double(min(max(p.x / size.width, 0), 1)), y: Double(min(max(p.y / size.height, 0), 1))) }
-        let travelled = stroke.map { hypot($0.point.x - first.point.x, $0.point.y - first.point.y) }.max() ?? 0
-        let duration = last.at.timeIntervalSince(first.at)
-        if travelled < 10 {
-            let p = unit(first.point)
-            model.sendSimulatorInput(.tap(x: p.x, y: p.y, holdSeconds: duration > 0.35 ? duration : nil))
-            withAnimation(.easeOut(duration: 0.15)) { tapMark = (first.point, UUID()) }
-            let marked = tapMark?.id
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 350_000_000)
-                if tapMark?.id == marked { withAnimation(.easeIn(duration: 0.2)) { tapMark = nil } }
-            }
-            return
+    private func forward(_ phase: SimulatorTouchPhase, _ point: CGPoint, in size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        let x = Double(min(max(point.x / size.width, 0), 1)), y = Double(min(max(point.y / size.height, 0), 1))
+        model.sendSimulatorInput(.touch(phase: phase, x: x, y: y))
+        touch = (point, Date())
+    }
+
+    private func showTapMark(at point: CGPoint) {
+        withAnimation(.easeOut(duration: 0.15)) { tapMark = (point, UUID()) }
+        let marked = tapMark?.id
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            if tapMark?.id == marked { withAnimation(.easeIn(duration: 0.2)) { tapMark = nil } }
         }
-        // Thin a long drag to ~48 samples (keeping both ends) so a scroll does not become hundreds of messages.
-        let step = max(1, Int((Double(stroke.count) / 48).rounded(.up)))
-        var kept = stride(from: 0, to: stroke.count, by: step).map { stroke[$0] }
-        if kept.last?.at != last.at { kept.append(last) }
-        var previous = first.at
-        let path = kept.map { sample -> SimulatorTouchSample in
-            let p = unit(sample.point)
-            let dt = sample.at.timeIntervalSince(previous)
-            previous = sample.at
-            return SimulatorTouchSample(x: p.x, y: p.y, dt: max(dt, 0))
-        }
-        model.sendSimulatorInput(.touch(path: path))
     }
 
     private var controls: some View {
@@ -258,12 +254,12 @@ struct SimulatorView: View {
 
     private var statusText: String {
         if let error = feed.inputError, now.timeIntervalSince(error.at) < 6 { return error.message }
-        guard feed.frame != nil else { return "Waiting for the first frame" }
+        guard feed.pictureSize != nil else { return "Waiting for the first frame" }
         guard feed.isAlive(now: now) else { return "No signal from the Mac" }
         let fps = feed.measuredFPS
         var parts = ["Live"]
         parts.append(fps >= 0.5 ? String(format: "%.0f fps", fps) : "screen is static")
-        if let frame = feed.frame, frame.width > 0 { parts.append("\(frame.width)×\(frame.height)") }
+        if let size = feed.pictureSize { parts.append("\(Int(size.width))×\(Int(size.height))" + (feed.videoSize != nil ? " video" : "")) }
         return parts.joined(separator: " · ")
     }
 
