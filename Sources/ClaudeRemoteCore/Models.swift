@@ -391,3 +391,41 @@ public struct SimulatorFrame: Codable, Equatable, Sendable {
         self.capturedAt = capturedAt
     }
 }
+
+/// Input injected into a booted simulator from the phone. Points are unit coordinates of the
+/// simulator screen — `0…1` from the top-left, the same for every frame size — so the phone never
+/// needs to know the device's point size or scale.
+public enum SimulatorInputEvent: Codable, Equatable, Sendable {
+    /// Finger down and up at one point; `holdSeconds` > ~0.5 is a long press.
+    case tap(x: Double, y: Double, holdSeconds: Double? = nil)
+    /// One finger dragged along a path: the first sample is touch-down, the last touch-up, and each
+    /// sample's `dt` is the pause (seconds) before it. Swipes, scrolls and drags all travel this way.
+    case touch(path: [SimulatorTouchSample])
+    /// Text entered into the focused field (pasted via the simulator pasteboard; newlines press Return).
+    case text(text: String)
+    /// A single named key of the hardware keyboard.
+    case key(key: SimulatorKey)
+    /// A hardware button press.
+    case button(button: SimulatorHardwareButton)
+}
+
+public struct SimulatorTouchSample: Codable, Equatable, Sendable {
+    public var x: Double
+    public var y: Double
+    /// Seconds since the previous sample (0 for the first).
+    public var dt: Double
+
+    public init(x: Double, y: Double, dt: Double) {
+        self.x = x
+        self.y = y
+        self.dt = dt
+    }
+}
+
+public enum SimulatorKey: String, Codable, CaseIterable, Sendable {
+    case `return`, backspace, delete, tab, escape, space, up, down, left, right
+}
+
+public enum SimulatorHardwareButton: String, Codable, CaseIterable, Sendable {
+    case home, lock, siri
+}

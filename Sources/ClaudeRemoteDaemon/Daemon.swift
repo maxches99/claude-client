@@ -177,6 +177,7 @@ public final class Daemon: @unchecked Sendable {
         }
         manager = SessionManager(cli: cli, codex: codex.map { CodexBackend(cli: $0, log: log) }, notifier: notifier, livePusher: livePusher, log: log)
         SimulatorStreamer.log = log
+        SimulatorInput.log = log
 
         let addresses = NetworkInfo.lanAddresses()
         _status = DaemonStatus(paired: registry.all, addresses: addresses,

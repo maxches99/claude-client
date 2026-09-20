@@ -51,6 +51,8 @@ public enum ClientMessage: Codable, Sendable {
     /// Start / stop receiving live frames of a booted simulator. `maxPixelSize` bounds the frame's
     /// longer side, `fps` the capture rate (capped by the daemon). Frames stop when the phone disconnects.
     case simulatorStream(udid: String, enabled: Bool, maxPixelSize: Int?, fps: Double?)
+    /// Inject a touch / key / button into a booted simulator. Failures come back as `simulatorInputFailed`.
+    case simulatorInput(udid: String, event: SimulatorInputEvent)
     /// Register (or, with `pushToken == nil`, drop) this phone's Live Activity for a session. When the
     /// Mac has APNs configured it pushes `SessionActivityState` updates to the token, so the activity
     /// keeps moving while the app is in the background. `approvalNeedsApp` mirrors the phone's Face ID
@@ -84,6 +86,8 @@ public enum ServerMessage: Codable, Sendable {
     case usage(sessionId: String, data: JSONValue?, error: String?)
     case simulators(items: [SimulatorInfo])
     case simulatorFrame(frame: SimulatorFrame)
+    /// A `simulatorInput` the Mac could not deliver (device gone, SimulatorKit missing, …).
+    case simulatorInputFailed(udid: String, message: String)
     case pong
 }
 

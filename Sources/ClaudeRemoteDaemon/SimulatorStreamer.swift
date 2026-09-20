@@ -23,7 +23,7 @@ actor SimulatorStreamer {
         var interval: TimeInterval
     }
 
-    private static let maxFPS = 4.0
+    private static let maxFPS = 8.0
     private static let defaultFPS = 3.0
     private static let heartbeatInterval: TimeInterval = 2
     private static let listInterval: TimeInterval = 4
@@ -218,20 +218,41 @@ actor SimulatorStreamer {
 
     // MARK: simctl
 
-    enum RunError: Error { case timeout, exit(Int32) }
+    enum RunError: LocalizedError {
+        case timeout, exit(Int32)
+        var errorDescription: String? {
+            switch self {
+            case .timeout: return "simctl timed out"
+            case .exit(let code): return "simctl failed (exit \(code))"
+            }
+        }
+    }
 
-    /// Runs `xcrun simctl …`. stdin is /dev/null (a child inheriting the terminal gets SIGTTIN'd
-    /// under launchd); stdout is drained before waiting so a big output cannot deadlock the pipe.
-    nonisolated private static func run(_ args: [String], timeout: TimeInterval) throws -> Data {
+    /// Runs `xcrun simctl …` (or, with `viaXcrun: false`, `/usr/bin/<args[0]> …`). stdin is /dev/null unless
+    /// `input` is given (a child inheriting the terminal gets SIGTTIN'd under launchd); stdout is drained
+    /// before waiting so a big output cannot deadlock the pipe.
+    nonisolated static func run(_ args: [String], viaXcrun: Bool = true, input: Data? = nil, timeout: TimeInterval) throws -> Data {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        p.arguments = ["simctl"] + args
-        p.environment = ClaudeCLI.childEnvironment()
-        p.standardInput = FileHandle.nullDevice
+        if viaXcrun {
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+            p.arguments = ["simctl"] + args
+        } else {
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/" + args[0])
+            p.arguments = Array(args.dropFirst())
+        }
+        var env = ClaudeCLI.childEnvironment()
+        if env["LANG"] == nil { env["LANG"] = "en_US.UTF-8" }   // `simctl pbcopy` mangles UTF-8 stdin without a locale
+        p.environment = env
+        let stdin = input.map { _ in Pipe() }
+        p.standardInput = stdin ?? FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         let out = Pipe()
         p.standardOutput = out
         try p.run()
+        if let stdin, let input {
+            stdin.fileHandleForWriting.write(input)
+            try? stdin.fileHandleForWriting.close()
+        }
         let watchdog = DispatchWorkItem { if p.isRunning { p.terminate() } }
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: watchdog)
         let data = out.fileHandleForReading.readDataToEndOfFile()

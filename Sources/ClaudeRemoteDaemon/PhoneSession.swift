@@ -193,6 +193,13 @@ final class PhoneSession: @unchecked Sendable {
                 } else {
                     await SimulatorStreamer.shared.unwatch(udid: udid, id: id)
                 }
+            case .simulatorInput(let udid, let event):
+                do {
+                    try await SimulatorInput.shared.perform(event, udid: udid)
+                } catch {
+                    log("simulator: input to \(udid.prefix(8)) failed: \(error.localizedDescription)")
+                    send(.simulatorInputFailed(udid: udid, message: error.localizedDescription))
+                }
             }
         } catch {
             send(.error(message: "\(error)", sessionId: message.sessionId))

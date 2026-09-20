@@ -41,6 +41,19 @@ func usage() -> Never {
     FileHandle.standardError.write(Data("[\(ts)] \(line)\n".utf8))
 }
 
+// Developer check of the simulator input path: `ccremote --sim-input <udid> '{"tap":{"x":0.5,"y":0.5}}'`.
+if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--sim-input" {
+    let udid = CommandLine.arguments[2]
+    do {
+        let event = try ProtocolCoding.decode(SimulatorInputEvent.self, from: CommandLine.arguments[3])
+        try await injectSimulatorInput(event, udid: udid, log: log)
+        exit(0)
+    } catch {
+        log("\(error.localizedDescription)")
+        exit(1)
+    }
+}
+
 let arguments: DaemonArguments
 do {
     arguments = try DaemonArguments.parse(Array(CommandLine.arguments.dropFirst()))

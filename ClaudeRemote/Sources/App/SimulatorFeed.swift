@@ -17,6 +17,8 @@ final class SimulatorFeed {
     /// Longer side of requested frames, in pixels — plenty for a phone screen, ~80 KB a frame.
     static let maxPixelSize = 1000
     static let fps = 3.0
+    /// Capture rate asked for while a finger is on the screen, so taps show their effect sooner.
+    static let interactiveFPS = 8.0
     /// No frame or heartbeat for this long means the stream is stale.
     static let staleAfter: TimeInterval = 6
 
@@ -26,6 +28,10 @@ final class SimulatorFeed {
     /// Last time the daemon confirmed the stream is alive (a frame or a heartbeat).
     private(set) var lastSignalAt: Date?
     private var arrivals: [Date] = []
+    /// The rate currently requested from the Mac (`fps` or `interactiveFPS`).
+    var requestedFPS = SimulatorFeed.fps
+    /// The Mac could not deliver our last input; shown in the status line for a few seconds.
+    var inputError: (message: String, at: Date)?
 
     var device: SimulatorInfo? { devices.first { $0.udid == watching } }
 
@@ -52,6 +58,8 @@ final class SimulatorFeed {
         frame = nil
         arrivals = []
         lastSignalAt = nil
+        requestedFPS = Self.fps
+        inputError = nil
     }
 
     func receive(_ incoming: SimulatorFrame) {

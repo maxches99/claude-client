@@ -17,7 +17,9 @@ let package = Package(
         .target(name: "ClaudeCodeHost", dependencies: ["ClaudeRemoteCore"]),
         // Mac-only: the daemon itself — WebSocket server + Bonjour, relay dial-out, pairing,
         // phone tracking. Hosted by the `ccremote` CLI and by the ClaudeRemote Host menu-bar app.
-        .target(name: "ClaudeRemoteDaemon", dependencies: ["ClaudeCodeHost", "ClaudeRemoteCore"]),
+        .target(name: "ClaudeRemoteDaemon", dependencies: ["ClaudeCodeHost", "ClaudeRemoteCore", "ObjCExceptionGuard"]),
+        // Mac-only: catches NSExceptions raised inside Apple's private simulator frameworks (Swift can't).
+        .target(name: "ObjCExceptionGuard"),
         // The CLI front-end: parses flags, runs a Daemon, prints the pairing QR.
         .executableTarget(name: "ccremote", dependencies: ["ClaudeRemoteDaemon", "ClaudeCodeHost", "ClaudeRemoteCore"]),
         .testTarget(name: "ClaudeRemoteCoreTests", dependencies: ["ClaudeRemoteCore"]),
