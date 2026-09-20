@@ -8,6 +8,10 @@ extension SettingsDictionary {
         "CODE_SIGN_STYLE": "Automatic",
         "GENERATE_INFOPLIST_FILE": "NO",
         "ENABLE_USER_SCRIPT_SANDBOXING": "NO",
+        // Every Info.plist reads its version from these two; a release build overrides them from the git
+        // tag (scripts/build-mac-app.sh / build-ios-ipa.sh honour MARKETING_VERSION and BUILD_NUMBER).
+        "MARKETING_VERSION": "1.0",
+        "CURRENT_PROJECT_VERSION": "1",
     ]
 }
 

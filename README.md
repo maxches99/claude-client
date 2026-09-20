@@ -43,12 +43,21 @@ relay), the pairing QR, and the Claude CLI login. The first launch opens a pairi
 big QR to scan.
 
 ```bash
+brew install --cask maxches99/tap/claude-remote-host   # later: brew upgrade
+```
+
+The cask points at the newest [GitHub Release](https://github.com/maxches99/claude-client/releases) and
+clears the quarantine flag itself, so the ad-hoc-signed app opens without the Gatekeeper dance. Without
+Homebrew: download `ClaudeRemote-Host.zip` from the release, unzip, run
+`xattr -dr com.apple.quarantine "ClaudeRemote Host.app"`, drag to Applications. Or build it yourself:
+
+```bash
 scripts/build-mac-app.sh --install      # builds dist/ClaudeRemote Host.app (+ zip), installs, launches
 ```
 
-Or `tuist generate` (`brew install tuist`) and run the `ClaudeRemoteHost` scheme from Xcode. To put it
-on **another Mac**: copy `dist/ClaudeRemote-Host.zip` over, unzip, drag to Applications, open. The build is ad-hoc signed unless you export `TEAM_ID` (see the script),
-so Gatekeeper may ask once — right-click → Open, or allow it under System Settings › Privacy & Security.
+Or `tuist generate` (`brew install tuist`) and run the `ClaudeRemoteHost` scheme from Xcode. The build is
+ad-hoc signed unless you export `TEAM_ID` (see the script); one side effect of that is macOS forgetting
+per-app permissions (notifications, local network, Automation) after an update — it asks again.
 The app installs nothing else: no LaunchAgent, no scripts; "Open at login" is a normal Login Item.
 
 From the menu-bar panel:
@@ -90,11 +99,30 @@ says "Not logged in", click **Log in…** — or run it yourself:
 
 ### iPhone
 
-`cp Tuist/team.xcconfig.example Tuist/team.xcconfig`, put your Apple team ID in it (once — the file is
-untracked), then `tuist generate` opens `ClaudeRemote.xcworkspace` with the team already set; run the
-`ClaudeRemote` scheme on the phone. On first
-launch scan the QR from the Mac (menu-bar panel or pairing window), or pick the Mac from the Bonjour
-list and enter the token.
+No App Store build yet (no paid developer account), so the app is sideloaded and re-signed with your
+own Apple ID. Two ways:
+
+**SideStore / AltStore (updates by themselves).** Install [SideStore](https://sidestore.io) (refreshes
+the 7-day signature on the phone itself, no computer afterwards) or [AltStore](https://altstore.io)
+(AltServer on the Mac does the refreshing over Wi-Fi — the Mac running the host is a natural fit). Then
+add this source and install ClaudeRemote from it:
+
+```
+https://github.com/maxches99/claude-client/releases/latest/download/altstore.json
+```
+
+The URL always redirects to the newest release, so new versions show up under Updates. A free Personal
+Team allows 3 sideloaded apps at once (the store itself is one) and 10 App IDs a week — the app plus
+its widget are two; the Watch app is not in the .ipa (sideloaders can't install watchOS apps).
+[Sideloadly](https://sideloadly.io) with `ClaudeRemote.ipa` from the release works too, no source needed.
+
+**Xcode.** `cp Tuist/team.xcconfig.example Tuist/team.xcconfig`, put your Apple team ID in it (once — the
+file is untracked), then `tuist generate` opens `ClaudeRemote.xcworkspace` with the team already set;
+run the `ClaudeRemote` scheme on the phone. With a free team the build expires after 7 days; run again.
+This is the only way to get the Watch app on.
+
+On first launch scan the QR from the Mac (menu-bar panel or pairing window), or pick the Mac from the
+Bonjour list and enter the token.
 
 ## Sessions
 
@@ -404,6 +432,25 @@ Sessions are indexed in Spotlight by title and project; a hit opens the session.
 `.github/workflows/ci.yml` runs on every push and pull request: `swift build` + `swift test` for the
 package, then `tuist generate` and unsigned builds of the iOS app (with the Watch app and widgets)
 and the Mac host app, on the newest Xcode the runner has.
+
+## Releases
+
+```bash
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+`.github/workflows/release.yml` takes it from there: the version comes from the tag (every Info.plist
+reads `$(MARKETING_VERSION)`; the build number is the run number), `scripts/build-mac-app.sh` makes the
+universal ad-hoc-signed Mac zip, `scripts/build-ios-ipa.sh` the unsigned `.ipa` (Watch app stripped,
+entitlements kept), `scripts/release/altstore-source.sh` the `altstore.json`, and everything lands in a
+GitHub Release with `SHA256SUMS`. A second job renders `scripts/release/cask.sh` into
+`Casks/claude-remote-host.rb` in [maxches99/homebrew-tap](https://github.com/maxches99/homebrew-tap) and
+pushes it with the `TAP_GITHUB_TOKEN` secret (a fine-grained PAT with write access to that repo only).
+
+Keep tags above the versions people already have installed: the first one should be `v1.0.1` or higher,
+because dev builds from Xcode report `1.0` and AltStore only offers updates that compare newer. When an
+Apple developer account shows up, the same workflow grows `TEAM_ID` + `notarytool` for the Mac and
+TestFlight for the phone; the Homebrew and AltStore channels keep working as they are.
 
 ## Protocol drift
 

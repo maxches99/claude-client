@@ -7,6 +7,9 @@
 # Signing: ad-hoc by default ("sign to run locally"). For a build that other Macs accept without
 # the right-click → Open dance, export TEAM_ID=XXXXXXXXXX (your Apple Developer team) and, if you
 # have one, SIGN_IDENTITY="Developer ID Application" — then notarize the zip with `xcrun notarytool`.
+#
+# Version: MARKETING_VERSION=1.2.3 BUILD_NUMBER=45 override the defaults from the Tuist manifest
+# (the release workflow sets them from the git tag and the run number).
 set -e
 cd "$(dirname "$0")/.."
 
@@ -26,6 +29,10 @@ DIST="dist"
 
 tuist generate --no-open >/dev/null
 
+VERSION_SETTINGS=""
+[ -n "$MARKETING_VERSION" ] && VERSION_SETTINGS="MARKETING_VERSION=$MARKETING_VERSION"
+[ -n "$BUILD_NUMBER" ] && VERSION_SETTINGS="$VERSION_SETTINGS CURRENT_PROJECT_VERSION=$BUILD_NUMBER"
+
 SIGNING=""
 if [ -n "$TEAM_ID" ]; then
     SIGNING="DEVELOPMENT_TEAM=$TEAM_ID CODE_SIGN_IDENTITY=${SIGN_IDENTITY:-Apple Development} CODE_SIGN_STYLE=Manual"
@@ -34,12 +41,13 @@ fi
 # Universal binary, so the same zip runs on Apple silicon and Intel Macs.
 # shellcheck disable=SC2086
 xcodebuild -workspace ClaudeRemote.xcworkspace -scheme ClaudeRemoteHost -configuration Release \
-    -derivedDataPath "$DERIVED" -quiet ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO $SIGNING build
+    -derivedDataPath "$DERIVED" -quiet ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO $VERSION_SETTINGS $SIGNING build
 
 APP="$DERIVED/Build/Products/Release/$APP_NAME.app"
 [ -d "$APP" ] || { echo "build did not produce $APP" >&2; exit 1; }
 
-rm -rf "$DIST"
+# Only our own outputs go: build-ios-ipa.sh drops its .ipa into the same dist/.
+rm -rf "$DIST/$APP_NAME.app" "$DIST/ClaudeRemote-Host.zip"
 mkdir -p "$DIST"
 cp -R "$APP" "$DIST/"
 ditto -c -k --keepParent "$DIST/$APP_NAME.app" "$DIST/ClaudeRemote-Host.zip"
