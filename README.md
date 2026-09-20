@@ -1,5 +1,7 @@
 # ClaudeRemote
 
+[![CI](https://github.com/maxches99/claude-client/actions/workflows/ci.yml/badge.svg)](https://github.com/maxches99/claude-client/actions/workflows/ci.yml)
+
 Drive the Claude Code — and Codex — sessions on your Mac from your iPhone. Sessions keep running
 on the Mac — the phone is a remote: read the transcript live, send prompts, approve or deny tool
 permissions, interrupt, switch model / permission mode, and start or resume sessions.
@@ -342,6 +344,23 @@ Running a second daemon for development next to the Host app? Use another port *
 `CCREMOTE_CLAUDE_PATH` / `CCREMOTE_CODEX_PATH` also override the binaries. Other files in the support dir: `token`,
 `tls-identity.p12` (+ pem), `relay-room`, `devices.json` (paired phones), `pairing-qr.png`.
 
+## Sessions: rename, pin, archive, search
+
+Long-press a session (or swipe): **Rename…** writes the title to the session on the Mac (Claude: a
+`custom-title` entry in the transcript, the same thing `/rename` does; Codex: `thread/name/set`),
+**Pin** keeps it at the top, **Archive** hides it (the list menu shows archived ones again). Pins and
+archives are the phone's own, per Mac. The search field also searches **inside every transcript on
+the Mac** (Claude projects and Codex rollouts): hits show a snippet, and opening one lands in the
+session with find-in-transcript already on that word.
+
+## Shortcuts, Siri, Spotlight
+
+App Intents: **Ask the agent** (a question → a quick tool-less chat on the Mac → the reply comes back
+into the shortcut, so "Ask Claude …" works from Siri and Shortcuts), **Pending approvals** (count +
+which), **Approve pending** / **Deny pending** (Approve needs the app when Face ID is required),
+**Send to session** (a prompt into an existing session) and **Open session** (a session picker).
+Sessions are indexed in Spotlight by title and project; a hit opens the session.
+
 ## Reconnects, offline, widget
 
 * A reconnecting phone asks for the events it missed (`open … since <seq>`): the Mac numbers every
@@ -379,6 +398,12 @@ Running a second daemon for development next to the Host app? Use another port *
   it in the clear), so run the relay on a host you control. A mesh VPN avoids this entirely.
 * Anything the phone approves runs on the Mac with your user's permissions — same as approving it in
   Claude Desktop. Prefer a private transport (VPN, or your own relay) over exposing the daemon.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push and pull request: `swift build` + `swift test` for the
+package, then `tuist generate` and unsigned builds of the iOS app (with the Watch app and widgets)
+and the Mac host app, on the newest Xcode the runner has.
 
 ## Protocol drift
 

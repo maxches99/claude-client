@@ -240,6 +240,11 @@ public actor CodexBackend {
         return Set(ids).subtracting(hostedThreadIds())
     }
 
+    public func rename(threadId: String, name: String) async throws {
+        let server = try await ensureRunning()
+        _ = try await server.request("thread/name/set", .object(["threadId": .string(threadId), "name": .string(name)]), timeout: 30)
+    }
+
     /// Starts the server ahead of use — in shared mode the Codex app needs it up to connect.
     public func warmUp() async {
         _ = try? await ensureRunning()

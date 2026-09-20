@@ -108,3 +108,23 @@ public struct PullRequestInfo: Codable, Equatable, Sendable {
         return .success
     }
 }
+
+/// A transcript that mentions a search query, with the line it was found on.
+public struct SessionSearchHit: Codable, Equatable, Identifiable, Sendable {
+    public var sessionId: String
+    public var title: String
+    public var cwd: String
+    public var snippet: String
+    public var updatedAt: Date
+    public var agent: AgentKind
+    public var id: String { sessionId }
+
+    public init(sessionId: String, title: String, cwd: String, snippet: String, updatedAt: Date, agent: AgentKind = .claude) {
+        self.sessionId = sessionId
+        self.title = title
+        self.cwd = cwd
+        self.snippet = snippet
+        self.updatedAt = updatedAt
+        self.agent = agent
+    }
+}

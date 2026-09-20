@@ -103,6 +103,7 @@ final class AppModel {
         macs = saved.macs
         activeMacId = saved.activeId ?? saved.macs.first?.id
         loadCachedSessions()
+        loadSessionFlags()
         if let mac = activeMac { connection.connect(mac) }
     }
 
@@ -153,7 +154,115 @@ final class AppModel {
         activeMacId = id
         persistMacs()
         loadCachedSessions()
+        loadSessionFlags()
         connection.connect(mac)
+    }
+
+    // MARK: shortcuts (App Intents)
+
+    private var createdSessionWaiter: CheckedContinuation<String, Error>?
+    private var replyWaiters: [String: CheckedContinuation<String, Error>] = [:]
+    /// Sessions created for a shortcut are not pushed onto a navigation stack.
+    private var quietCreate = false
+
+    /// Waits for the Mac connection (it reconnects on its own), up to `timeout`.
+    func ensureConnected(timeout: TimeInterval = 15) async throws {
+        if isConnected { return }
+        if let mac = activeMac, connection.status == .disconnected { connection.connect(mac) }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !isConnected, Date() < deadline { try? await Task.sleep(nanoseconds: 200_000_000) }
+        guard isConnected else { throw IntentFailure.notConnected }
+    }
+
+    /// Runs one tool-less chat turn on the Mac and returns the reply's text.
+    func askChat(_ question: String, agent: AgentKind, timeout: TimeInterval = 25) async throws -> String {
+        try await ensureConnected()
+        let sessionId: String = try await withTimeout(timeout) { [self] in
+            try await withCheckedThrowingContinuation { continuation in
+                createdSessionWaiter = continuation
+                quietCreate = true
+                create(.chat(agent: agent))
+            }
+        }
+        let reply: String = try await withTimeout(timeout) { [self] in
+            try await withCheckedThrowingContinuation { continuation in
+                replyWaiters[sessionId] = continuation
+                prompt(sessionId, text: question)
+            }
+        }
+        return reply
+    }
+
+    private func withTimeout<T: Sendable>(_ seconds: TimeInterval, _ work: @escaping @MainActor () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { @MainActor in try await work() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw IntentFailure.timeout
+            }
+            let first = try await group.next()!
+            group.cancelAll()
+            return first
+        }
+    }
+
+    // MARK: session management (rename / pin / archive / search)
+
+    func renameSession(_ sessionId: String, title: String) {
+        connection.send(.renameSession(sessionId: sessionId, title: title))
+        if let i = sessions.firstIndex(where: { $0.id == sessionId }) { sessions[i].title = title }
+    }
+
+    /// Pinned and archived sessions are the phone's own bookkeeping, kept per Mac.
+    var pinnedSessions: Set<String> = []
+    var archivedSessions: Set<String> = []
+
+    private func sessionFlagsKey(_ kind: String) -> String { "ccremote.\(kind).\(activeMacId ?? "-")" }
+
+    private func loadSessionFlags() {
+        pinnedSessions = Set(UserDefaults.standard.stringArray(forKey: sessionFlagsKey("pinned")) ?? [])
+        archivedSessions = Set(UserDefaults.standard.stringArray(forKey: sessionFlagsKey("archived")) ?? [])
+    }
+
+    func setPinned(_ sessionId: String, _ pinned: Bool) {
+        if pinned { pinnedSessions.insert(sessionId) } else { pinnedSessions.remove(sessionId) }
+        UserDefaults.standard.set(Array(pinnedSessions), forKey: sessionFlagsKey("pinned"))
+    }
+
+    func setArchived(_ sessionId: String, _ archived: Bool) {
+        if archived { archivedSessions.insert(sessionId); pinnedSessions.remove(sessionId) } else { archivedSessions.remove(sessionId) }
+        UserDefaults.standard.set(Array(archivedSessions), forKey: sessionFlagsKey("archived"))
+        UserDefaults.standard.set(Array(pinnedSessions), forKey: sessionFlagsKey("pinned"))
+    }
+
+    struct SessionSearch: Equatable {
+        let query: String
+        let hits: [SessionSearchHit]
+        let error: String?
+    }
+    var sessionSearch: SessionSearch?
+    var sessionSearchInFlight = false
+
+    func searchSessions(_ query: String) {
+        sessionSearchInFlight = true
+        connection.send(.searchSessions(query: query))
+    }
+
+    /// A find-in-transcript the chat should open with once it appears (from a search hit).
+    var pendingFind: [String: String] = [:]
+
+    // MARK: Spotlight
+
+    private var spotlightTask: Task<Void, Never>?
+
+    private func scheduleSpotlightUpdate() {
+        guard spotlightTask == nil else { return }
+        spotlightTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard let self else { return }
+            self.spotlightTask = nil
+            SpotlightIndex.update(self.sessions, hostName: self.activeMac?.displayName ?? "Mac")
+        }
     }
 
     // MARK: home-screen widget
@@ -663,6 +772,7 @@ final class AppModel {
             showingCachedSessions = false
             scheduleCacheSave()
             scheduleWidgetUpdate()
+            scheduleSpotlightUpdate()
         case .projects(let items):
             projects = items
         case .history(let sessionId, let entries):
@@ -673,7 +783,11 @@ final class AppModel {
             remember(sessionId, entries: entries, replace: true)
             if awaitingCreatedSession {
                 awaitingCreatedSession = false
-                present(sessionId, kind: awaitingKind)
+                if let waiter = createdSessionWaiter {
+                    createdSessionWaiter = nil
+                    waiter.resume(returning: sessionId)
+                }
+                if quietCreate { quietCreate = false } else { present(sessionId, kind: awaitingKind) }
             }
         case .catchUp(let sessionId, let entries, let seq):
             guard transcripts[sessionId] != nil else { return }
@@ -689,6 +803,10 @@ final class AppModel {
             if let seq { lastSeq[sessionId] = seq }
             transcripts[sessionId]?.apply(payload)
             if payload["type"]?.string != "stream_event" { remember(sessionId, entries: [payload], replace: false) }
+            if payload["type"]?.string == "result", let waiter = replyWaiters.removeValue(forKey: sessionId) {
+                let text = TranscriptExport.lastReply(items: transcripts[sessionId]?.items ?? [])
+                waiter.resume(returning: text.isEmpty ? (payload["result"]?.string ?? "") : text)
+            }
             if payload["type"]?.string != "stream_event" {
                 activityTrackers[sessionId, default: ActivityTracker()].apply(payload)
                 syncActivity(sessionId)
@@ -766,6 +884,9 @@ final class AppModel {
             if done { run.done = true; run.exitCode = exitCode }
         case .pullRequest(let sessionId, let info, let error):
             pullRequests[sessionId] = PullRequestState(info: info, error: error, fetchedAt: Date(), loading: false)
+        case .sessionSearchResults(let query, let hits, let error):
+            sessionSearchInFlight = false
+            sessionSearch = SessionSearch(query: query, hits: hits, error: error)
         case .simulators(let items):
             simulatorFeed.devices = items
         case .simulatorFrame(let frame):

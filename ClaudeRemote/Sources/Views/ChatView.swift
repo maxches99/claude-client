@@ -172,6 +172,7 @@ struct ChatView: View {
         }
         .onAppear {
             model.openIfNeeded(sessionId)
+            if let q = model.pendingFind.removeValue(forKey: sessionId) { findQuery = q; openFind() }
             if !isChat, model.gitStatuses[sessionId] != nil || model.pullRequests[sessionId] != nil { model.requestPullRequest(sessionId) }
         }
         .onDisappear { if handsFree { handsFree = false; model.narrator.stop() } }

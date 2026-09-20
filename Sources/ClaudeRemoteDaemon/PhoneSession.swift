@@ -267,6 +267,10 @@ final class PhoneSession: @unchecked Sendable {
                 } catch {
                     send(.pullRequest(sessionId: sessionId, info: nil, error: "\(error)"))
                 }
+            case .renameSession(let sessionId, let title):
+                try await manager.renameSession(sessionId: sessionId, title: title)
+            case .searchSessions(let query):
+                send(.sessionSearchResults(query: query, hits: await manager.searchSessions(query: query), error: nil))
             case .liveActivity(let sessionId, let pushToken, let approvalNeedsApp):
                 await manager.registerLiveActivity(sessionId: sessionId, phone: id, token: pushToken, approvalNeedsApp: approvalNeedsApp)
             case .listSimulators:
@@ -318,7 +322,7 @@ extension ClientMessage {
         case .open(let id, _), .fork(let id), .prompt(let id, _, _, _), .permission(let id, _, _, _, _, _), .dequeue(let id, _), .interrupt(let id), .gitDiff(let id, _, _),
              .gitStatus(let id), .gitAction(let id, _), .liveActivity(let id, _, _),
              .listFiles(let id, _), .getUsage(let id), .listDirectory(let id, _), .searchProject(let id, _), .listCommands(let id),
-             .runCommand(let id, _, _), .cancelCommand(let id, _), .pullRequest(let id),
+             .runCommand(let id, _, _), .cancelCommand(let id, _), .pullRequest(let id), .renameSession(let id, _),
              .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id):
             return id
         default:

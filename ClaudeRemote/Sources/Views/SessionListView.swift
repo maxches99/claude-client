@@ -15,6 +15,10 @@ struct SessionListView: View {
     @State private var search = ""
     @State private var collapsedProjects: Set<String> = []
     @State private var newSessionCwd: String?
+    @State private var showArchived = false
+    @State private var renaming: SessionSummary?
+    @State private var renameText = ""
+    @State private var searchTask: Task<Void, Never>?
 
     private var isChats: Bool { scope == .chats }
 
@@ -39,10 +43,54 @@ struct SessionListView: View {
 
     private var filtered: [SessionSummary] {
         let wanted: SessionKind = isChats ? .chat : .agent
-        let scoped = model.sessions.filter { $0.kind == wanted }
+        let scoped = model.sessions.filter { $0.kind == wanted && (showArchived || !model.archivedSessions.contains($0.id)) }
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return scoped }
         return scoped.filter { $0.title.lowercased().contains(q) || $0.projectName.lowercased().contains(q) }
+    }
+
+    private var pinned: [SessionSummary] { filtered.filter { model.pinnedSessions.contains($0.id) } }
+    private var archivedCount: Int {
+        let wanted: SessionKind = isChats ? .chat : .agent
+        return model.sessions.filter { $0.kind == wanted && model.archivedSessions.contains($0.id) }.count
+    }
+
+    /// Transcript hits from the Mac for the current query (only sessions of this tab).
+    @ViewBuilder private var transcriptHits: some View {
+        let q = search.trimmingCharacters(in: .whitespaces)
+        if q.count >= 2 {
+            let wanted: SessionKind = isChats ? .chat : .agent
+            let result = model.sessionSearch
+            Section {
+                if model.sessionSearchInFlight, result?.query != q {
+                    HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Searching transcripts…").font(CDS.caption).foregroundStyle(CDS.textMuted) }
+                        .listRowBackground(CDS.surface0)
+                } else if let result, result.query == q {
+                    let hits = result.hits.filter { hit in (model.summary(for: hit.sessionId)?.kind ?? .agent) == wanted }
+                    if hits.isEmpty {
+                        Text("No transcript mentions it.").font(CDS.caption).foregroundStyle(CDS.textMuted).listRowBackground(CDS.surface0)
+                    }
+                    ForEach(hits) { hit in
+                        ZStack {
+                            NavigationLink(value: hit.sessionId) { EmptyView() }.opacity(0)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(hit.title).font(CDS.body).foregroundStyle(CDS.textPrimary).lineLimit(1)
+                                Text(hit.snippet).font(CDS.caption).foregroundStyle(CDS.textSecondary).lineLimit(2)
+                                HStack(spacing: 5) {
+                                    Text((hit.cwd as NSString).lastPathComponent)
+                                    Text("·")
+                                    Text(RelativeTime.string(hit.updatedAt))
+                                }
+                                .font(CDS.caption).foregroundStyle(CDS.textMuted)
+                            }
+                        }
+                        .listRowBackground(CDS.surface0)
+                        .listRowSeparator(.hidden)
+                        .simultaneousGesture(TapGesture().onEnded { model.pendingFind[hit.sessionId] = q })
+                    }
+                }
+            } header: { sectionHeader("In transcripts") }
+        }
     }
 
     var body: some View {
@@ -83,6 +131,11 @@ struct SessionListView: View {
                         .listRowBackground(CDS.surface0)
                         .listRowSeparator(.hidden)
                     }
+                    if !pinned.isEmpty {
+                        Section {
+                            ForEach(pinned) { session in row(session) }
+                        } header: { sectionHeader("Pinned") }
+                    }
                     ForEach(projectGroups) { group in
                         Section {
                             if !isCollapsed(group) {
@@ -91,11 +144,22 @@ struct SessionListView: View {
                         } header: { projectHeader(group) }
                     }
                 }
+                transcriptHits
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
-            .searchable(text: $search, prompt: isChats ? "Search chats" : "Search sessions")
+            .searchable(text: $search, prompt: isChats ? "Search chats" : "Search sessions and transcripts")
+            .onChange(of: search) { _, q in
+                searchTask?.cancel()
+                let trimmed = q.trimmingCharacters(in: .whitespaces)
+                guard trimmed.count >= 2, model.isConnected else { return }
+                searchTask = Task {
+                    try? await Task.sleep(nanoseconds: 450_000_000)
+                    guard !Task.isCancelled else { return }
+                    model.searchSessions(trimmed)
+                }
+            }
             .refreshable { model.refresh() }
             .overlay {
                 if filtered.isEmpty, model.isConnected {
@@ -120,6 +184,9 @@ struct SessionListView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
+                    if archivedCount > 0 || showArchived {
+                        Toggle(isOn: $showArchived) { Label("Show archived (\(archivedCount))", systemImage: "archivebox") }
+                    }
                     Button("Settings", systemImage: "gearshape") { showSettings = true }
                     Divider()
                     Button("Add Mac…", systemImage: "plus") { showAddMac = true }
@@ -147,6 +214,17 @@ struct SessionListView: View {
         }
         .sheet(isPresented: $showAddMac) { PairingView() }
         .sheet(isPresented: $showSimulator) { SimulatorView() }
+        .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Title", text: $renameText)
+            Button("Save") {
+                if let s = renaming { model.renameSession(s.id, title: renameText) }
+                renaming = nil
+            }
+            .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
+            Button("Cancel", role: .cancel) { renaming = nil }
+        } message: {
+            Text("The title is saved with the session on the Mac.")
+        }
         .onAppear {
             if model.isConnected { model.refresh() }
             if collapsedProjects.isEmpty { collapsedProjects = Self.loadCollapsed() }
@@ -270,10 +348,15 @@ struct SessionListView: View {
                     .frame(width: 8)
                     .padding(.top, 7)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(session.title)
-                        .font(CDS.body)
-                        .foregroundStyle(CDS.textPrimary)
-                        .lineLimit(2)
+                    HStack(spacing: 4) {
+                        if model.pinnedSessions.contains(session.id) {
+                            Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(CDS.textMuted)
+                        }
+                        Text(session.title)
+                            .font(CDS.body)
+                            .foregroundStyle(CDS.textPrimary)
+                            .lineLimit(2)
+                    }
                     HStack(spacing: 5) {
                         if session.kind == .chat {
                             Text(session.agent.label).foregroundStyle(session.agent.tint).lineLimit(1)
@@ -299,6 +382,32 @@ struct SessionListView: View {
         }
         .listRowBackground(CDS.surface0)
         .listRowSeparator(.hidden)
+        .contextMenu {
+            Button("Rename…", systemImage: "pencil") { renameText = session.title; renaming = session }
+                .disabled(!model.isConnected)
+            if model.pinnedSessions.contains(session.id) {
+                Button("Unpin", systemImage: "pin.slash") { model.setPinned(session.id, false) }
+            } else {
+                Button("Pin", systemImage: "pin") { model.setPinned(session.id, true) }
+            }
+            if model.archivedSessions.contains(session.id) {
+                Button("Unarchive", systemImage: "tray.and.arrow.up") { model.setArchived(session.id, false) }
+            } else {
+                Button("Archive", systemImage: "archivebox") { model.setArchived(session.id, true) }
+            }
+        }
+        .swipeActions(edge: .leading) {
+            Button { model.setPinned(session.id, !model.pinnedSessions.contains(session.id)) } label: {
+                Label(model.pinnedSessions.contains(session.id) ? "Unpin" : "Pin", systemImage: "pin")
+            }
+            .tint(CDS.accent)
+        }
+        .swipeActions(edge: .trailing) {
+            Button { model.setArchived(session.id, !model.archivedSessions.contains(session.id)) } label: {
+                Label(model.archivedSessions.contains(session.id) ? "Unarchive" : "Archive", systemImage: "archivebox")
+            }
+            .tint(CDS.textMuted)
+        }
     }
 }
 

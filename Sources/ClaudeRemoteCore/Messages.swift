@@ -64,6 +64,10 @@ public enum ClientMessage: Codable, Sendable {
     case cancelCommand(sessionId: String, runId: String)
     /// The pull request of the session's current branch (via `gh`); answered with `pullRequest`.
     case pullRequest(sessionId: String)
+    /// Give a session a title (Claude: a `custom-title` entry in its transcript; Codex: `thread/name/set`).
+    case renameSession(sessionId: String, title: String)
+    /// Full-text search over every transcript on the Mac; answered with `sessionSearchResults`.
+    case searchSessions(query: String)
     /// iOS Simulators on the Mac, booted or not (also pushed as `simulators` whenever the set changes).
     case listSimulators
     /// Boot / shut down a simulator, launch or quit an app in it, open a URL; answered with `simulatorActionResult`.
@@ -120,6 +124,7 @@ public enum ServerMessage: Codable, Sendable {
     /// A slice of a running command's output (stdout and stderr interleaved). `done` closes the run.
     case commandOutput(sessionId: String, runId: String, chunk: String, done: Bool, exitCode: Int32?)
     case pullRequest(sessionId: String, info: PullRequestInfo?, error: String?)
+    case sessionSearchResults(query: String, hits: [SessionSearchHit], error: String?)
     case simulators(items: [SimulatorInfo])
     case simulatorActionResult(udid: String, action: SimulatorAction, error: String?)
     case simulatorApps(udid: String, items: [SimulatorApp], error: String?)

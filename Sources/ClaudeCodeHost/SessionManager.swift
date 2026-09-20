@@ -1305,6 +1305,93 @@ public actor SessionManager {
         return output + text
     }
 
+    // MARK: rename / search across sessions
+
+    /// Titles a session. Claude keeps titles as `custom-title` lines in the transcript (the same
+    /// entry `/rename` writes); Codex threads are named through the app-server.
+    public func renameSession(sessionId: String, title: String) async throws {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw GitError.refused("The title is empty.") }
+        if let codex, isCodexThread(sessionId) {
+            try await codex.rename(threadId: sessionId, name: trimmed)
+            hosted[sessionId]?.title = trimmed
+            watchedCodex[sessionId]?.title = trimmed
+            await codex.invalidateThreadList()
+            await refreshSources()
+            broadcast(.sessions(items: listSessions()))
+            return
+        }
+        guard let stored = store.session(id: sessionId) else { throw ManagerError.unknownSession(sessionId) }
+        // `type` first: the store recognises title lines by their prefix, like the CLI writes them.
+        let titleJSON = JSONValue.string(trimmed).serializedString()
+        let line = Data(("{\"type\":\"custom-title\",\"customTitle\":\(titleJSON),\"sessionId\":\"\(sessionId)\"}\n").utf8)
+        guard let handle = FileHandle(forWritingAtPath: stored.path) else { throw ManagerError.unknownSession(sessionId) }
+        defer { try? handle.close() }
+        _ = try handle.seekToEnd()
+        handle.write(line)
+        hosted[sessionId]?.title = trimmed
+        log("[\(sessionId.prefix(8))] renamed")
+        broadcast(.sessions(items: listSessions()))
+    }
+
+    /// Transcripts mentioning `query` (case-insensitive), newest first, with the line it appears on.
+    /// A `grep -l` pass over the transcript folders finds the files; the snippet comes from the first hit.
+    public func searchSessions(query: String) async -> [SessionSearchHit] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 2 else { return [] }
+        let stored = store.allSessions()
+        let byPath = Dictionary(stored.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
+        let codexById = Dictionary(codexThreads.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let roots = [NSHomeDirectory() + "/.claude/projects", NSHomeDirectory() + "/.codex/sessions"]
+        return await Task.detached(priority: .utility) { [self] in
+            let r = self.runTool("/usr/bin/grep", ["-rlIiF", "--include=*.jsonl", "--exclude-dir=subagents", "-e", q] + roots, timeout: 30)
+            var hits: [SessionSearchHit] = []
+            for file in r.out.split(separator: "\n").map(String.init).prefix(60) {
+                let name = (file as NSString).lastPathComponent
+                let isCodex = file.contains("/.codex/")
+                let sessionId: String
+                if isCodex {
+                    // rollout-<timestamp>-<uuid>.jsonl
+                    guard let uuid = name.dropLast(6).split(separator: "-").suffix(5).joined(separator: "-") as String?, uuid.count == 36 else { continue }
+                    sessionId = uuid
+                } else {
+                    sessionId = String(name.dropLast(6))
+                }
+                let snippet = SessionManager.snippet(inFile: file, query: q)
+                let mtime = (try? FileManager.default.attributesOfItem(atPath: file)[.modificationDate] as? Date) ?? .distantPast
+                if isCodex {
+                    let t = codexById[sessionId]
+                    hits.append(SessionSearchHit(sessionId: sessionId, title: t?.title ?? "Codex session", cwd: t?.cwd ?? "", snippet: snippet,
+                                                 updatedAt: t?.updatedAt ?? mtime, agent: .codex))
+                } else if let s = byPath[file] {
+                    hits.append(SessionSearchHit(sessionId: sessionId, title: s.title, cwd: s.cwd, snippet: snippet, updatedAt: s.updatedAt))
+                }
+            }
+            return hits.sorted { $0.updatedAt > $1.updatedAt }
+        }.value
+    }
+
+    /// ±90 characters around the first occurrence in the file, JSON escapes undone.
+    nonisolated static func snippet(inFile path: String, query: String) -> String {
+        let r = FileHandle(forReadingAtPath: path)
+        defer { try? r?.close() }
+        guard let data = r?.readData(ofLength: 8 * 1024 * 1024), let text = String(data: data, encoding: .utf8),
+              let range = text.range(of: query, options: [.caseInsensitive]) else { return "" }
+        let start = text.index(range.lowerBound, offsetBy: -90, limitedBy: text.startIndex) ?? text.startIndex
+        let end = text.index(range.upperBound, offsetBy: 90, limitedBy: text.endIndex) ?? text.endIndex
+        var s = String(text[start..<end])
+        s = s.replacingOccurrences(of: "\\n", with: " ").replacingOccurrences(of: "\\\"", with: "\"")
+        // Cut at the JSON field boundaries around the match when they fall inside the window.
+        if let q = s.range(of: "\",\"", options: .backwards, range: s.startIndex..<(s.range(of: query, options: .caseInsensitive)?.lowerBound ?? s.endIndex)) {
+            s = String(s[q.upperBound...])
+            if let colon = s.firstIndex(of: ":"), s.distance(from: s.startIndex, to: colon) < 24 { s = String(s[s.index(after: colon)...]) }
+        }
+        if let q = s.range(of: "\",\"", range: (s.range(of: query, options: .caseInsensitive)?.upperBound ?? s.startIndex)..<s.endIndex) {
+            s = String(s[..<q.lowerBound])
+        }
+        return "…" + s.trimmingCharacters(in: CharacterSet(charactersIn: "\" {}[]")) + "…"
+    }
+
     // MARK: project browser
 
     public enum ProjectError: Error, CustomStringConvertible {

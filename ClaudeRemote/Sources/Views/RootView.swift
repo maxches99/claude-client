@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreSpotlight
 import ClaudeRemoteCore
 
 /// The two halves of the app: work sessions in a project, and tool-less quick chats.
@@ -64,6 +65,10 @@ struct RootView: View {
             // Going from split view to a phone layout leaves one path per tab; nothing to carry over.
             // The other way, the current chat is already on the tab's path and simply lands in the detail column.
             if old != new { columns = .all }
+        }
+        .onContinueUserActivity(CSSearchableItemActionType) { activity in
+            // A session found in Spotlight.
+            if let id = SpotlightIndex.sessionId(from: activity) { model.openDeepLink(sessionId: id) }
         }
         .onOpenURL { url in
             // ccremote://session/<id> — a Live Activity tap; go straight to that session.
