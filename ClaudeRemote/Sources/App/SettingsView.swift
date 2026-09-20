@@ -47,6 +47,13 @@ struct SettingsView: View {
                          ? "Approving a tool runs it on your Mac — Face ID adds a check before each Allow. App lock asks for Face ID when you reopen the app."
                          : "Face ID / passcode isn't set up on this device, so these checks are skipped.")
                 }
+                Section {
+                    Toggle("Live Activity for busy sessions", isOn: $model.liveActivitiesEnabled)
+                } header: {
+                    Text("Lock screen & Dynamic Island")
+                } footer: {
+                    Text(liveActivityFooter)
+                }
                 if let host = model.connection.host {
                     Section("Connected Mac") {
                         LabeledContent("Host", value: host.hostName)
@@ -59,6 +66,18 @@ struct SettingsView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .sheet(isPresented: $showAddMac) { PairingView() }
         }
+    }
+
+    private var liveActivityFooter: String {
+        var text = "A working session shows what it's doing, with a turn timer; when it stops to ask, Allow and Deny are right there."
+        if !LiveActivityController.isSupported {
+            text += " Live Activities are off for this app in iOS Settings."
+        } else if model.connection.host?.livePush == true {
+            text += " The Mac pushes updates, so it keeps moving while the app is in the background."
+        } else if model.connection.host != nil {
+            text += " Updates arrive while the app is open; set an APNs key in the Mac app's Settings to keep them coming in the background."
+        }
+        return text
     }
 
     /// Routes plus when we last reached it: "192.168.1.40:7811 + relay · 2 hr. ago".

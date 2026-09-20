@@ -35,6 +35,11 @@ final class ImageCache {
         inflight.remove(key)
     }
 
+    /// Forgets a failure so the next lookup asks the Mac again.
+    func retry(key: String) {
+        failures.remove(key)
+    }
+
     /// Drops everything — used when switching Macs, where the same path can name a different file.
     func reset() {
         images = [:]

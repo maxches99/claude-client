@@ -58,6 +58,26 @@ struct SettingsWindow: View {
             }
 
             Section {
+                LabeledContent("APNs key (.p8)") {
+                    HStack {
+                        TextField("", text: optional($draft.apnsKeyPath), prompt: Text("~/Keys/AuthKey_ABC123.p8"))
+                            .font(.system(.body, design: .monospaced))
+                            .multilineTextAlignment(.trailing)
+                        Button("Choose…") { chooseKey() }
+                    }
+                }
+                TextField("Key ID", text: optional($draft.apnsKeyId), prompt: Text("ABC123DEFG"))
+                TextField("Team ID", text: optional($draft.apnsTeamId), prompt: Text("1A2B3C4D5E"))
+                TextField("App bundle id", text: optional($draft.apnsBundleId), prompt: Text("dev.maxches.ClaudeRemote"))
+                Toggle("Sandbox gateway (builds from Xcode; off for TestFlight / App Store)", isOn: $draft.apnsSandbox)
+            } header: {
+                Text("Live Activity push")
+            } footer: {
+                Text("Keeps the phone's Live Activity / Dynamic Island updating while the app is in the background. Needs an APNs auth key from the Apple Developer portal (Keys → +, enable APNs). Without it the activity updates only while the app is open.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
                 LabeledContent("claude binary") {
                     HStack {
                         TextField("", text: optional($draft.claudePath), prompt: Text("auto — Claude Desktop's bundled CLI, else PATH"))
@@ -92,7 +112,7 @@ struct SettingsWindow: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 700)
+        .frame(width: 560, height: 760)
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Text(isDirty ? "Applying restarts the host; sessions started from the phone stop (they can be resumed)." : " ")
@@ -123,6 +143,20 @@ struct SettingsWindow: View {
 
     private func chooseClaude() {
         chooseBinary(named: "claude") { draft.claudePath = $0 }
+    }
+
+    private func chooseKey() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Pick the APNs auth key (AuthKey_XXXXXXXXXX.p8)"
+        if panel.runModal() == .OK, let url = panel.url {
+            draft.apnsKeyPath = url.path
+            // Apple names the file after the key id — save the typing.
+            let name = url.deletingPathExtension().lastPathComponent
+            if name.hasPrefix("AuthKey_"), (draft.apnsKeyId ?? "").isEmpty { draft.apnsKeyId = String(name.dropFirst("AuthKey_".count)) }
+        }
     }
 
     private func chooseBinary(named name: String, _ set: (String) -> Void) {

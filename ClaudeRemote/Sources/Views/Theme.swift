@@ -261,12 +261,14 @@ struct ShimmerText: View {
             .font(CDS.bodyMedium)
             .foregroundStyle(CDS.textMuted)
             .overlay {
+                // The mask must cover the whole label; masking the narrow gradient alone centres the
+                // glyphs on it and draws a shifted ghost of the text.
                 GeometryReader { geo in
                     LinearGradient(colors: [.clear, CDS.textPrimary.opacity(0.9), .clear], startPoint: .leading, endPoint: .trailing)
                         .frame(width: geo.size.width * 0.6)
                         .offset(x: phase * geo.size.width)
-                        .mask(Text(text).font(CDS.bodyMedium))
                 }
+                .mask(Text(text).font(CDS.bodyMedium))
             }
             .onAppear {
                 withAnimation(.linear(duration: 1.6).repeatForever(autoreverses: false)) { phase = 1.2 }

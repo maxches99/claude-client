@@ -166,7 +166,16 @@ public final class Daemon: @unchecked Sendable {
         let notifierConfig = config.notifierConfig
         notifier = notifierConfig.isEnabled ? Notifier(config: notifierConfig, log: log) : nil
         registry = DeviceRegistry(directory: supportDirectory)
-        manager = SessionManager(cli: cli, codex: codex.map { CodexBackend(cli: $0, log: log) }, notifier: notifier, log: log)
+        var livePusher: LiveActivityPusher?
+        if let pushConfig = config.livePushConfig {
+            do {
+                livePusher = try LiveActivityPusher(config: pushConfig, log: log)
+                log("live activity push: on (\(pushConfig.sandbox ? "sandbox" : "production"), key \(pushConfig.keyId))")
+            } catch {
+                log("live activity push: off — cannot load APNs key \(pushConfig.keyPath): \(error)")
+            }
+        }
+        manager = SessionManager(cli: cli, codex: codex.map { CodexBackend(cli: $0, log: log) }, notifier: notifier, livePusher: livePusher, log: log)
         SimulatorStreamer.log = log
 
         let addresses = NetworkInfo.lanAddresses()

@@ -1,4 +1,14 @@
 import SwiftUI
+#if targetEnvironment(macCatalyst)
+/// VisionKit's scanner doesn't exist on Mac Catalyst — the Mac pairs by the pasted link or the form instead.
+struct QRScannerView: View {
+    var onScan: (String) -> Void
+    var body: some View {
+        ContentUnavailableView("No camera scanner on Mac", systemImage: "link",
+                               description: Text("Use “Copy link” in the Host app's menu and paste it below, or pick the Mac from the list."))
+    }
+}
+#else
 import VisionKit
 
 /// Camera QR scanner (VisionKit). Unavailable in the simulator; the pairing form still works.
@@ -38,3 +48,4 @@ struct QRScannerView: UIViewControllerRepresentable {
         }
     }
 }
+#endif

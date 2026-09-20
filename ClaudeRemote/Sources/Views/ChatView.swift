@@ -15,7 +15,15 @@ struct ChatView: View {
     @State private var presentedPermission: PermissionRequest?
     @State private var showSimulator = false
     @State private var showLimits = false
+    @State private var showGit = false
+    @State private var showFind = false
+    @State private var findQuery = ""
+    @State private var findIndex = 0
+    /// The block the find bar wants on screen; `scrollPosition` (unlike `scrollTo`) lays lazy rows out
+    /// on the way there instead of landing in unmeasured space.
+    @State private var findTarget: String?
     @FocusState private var composerFocused: Bool
+    @FocusState private var findFocused: Bool
 
     private var transcript: Transcript { model.transcripts[sessionId] ?? Transcript() }
     private var state: SessionState? { model.states[sessionId] }
@@ -34,6 +42,7 @@ struct ChatView: View {
             if let error = model.errorBanner {
                 CDSBanner(kind: .danger, text: error, systemImage: "exclamationmark.triangle.fill") { model.errorBanner = nil }
             }
+            if showFind { findBar }
             transcriptView
             ComposerDock(
                 draft: $draft,
@@ -61,12 +70,30 @@ struct ChatView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 SimulatorToolbarButton(isPresented: $showSimulator)
             }
+            if !isChat {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showGit = true } label: {
+                        Image(systemName: "arrow.triangle.branch").foregroundStyle(CDS.textSecondary)
+                    }
+                    .accessibilityLabel("Git")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     if !usageSummary.isEmpty {
                         Section("Usage") { Label(usageSummary, systemImage: "dollarsign.circle") }
                     }
                     Button("Plan limits…", systemImage: "gauge.with.dots.needle.67percent") { showLimits = true }
+                    Button("Find in transcript", systemImage: "magnifyingglass") { openFind() }
+                    Section {
+                        ShareLink(item: exportDocument, preview: SharePreview(summary?.title ?? "Transcript", image: Image(systemName: "doc.text"))) {
+                            Label("Share transcript…", systemImage: "square.and.arrow.up")
+                        }
+                        Button("Copy last reply", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = TranscriptExport.lastReply(items: transcript.items)
+                        }
+                        .disabled(TranscriptExport.lastReply(items: transcript.items).isEmpty)
+                    }
                     Button("Reload transcript", systemImage: "arrow.clockwise") { model.open(sessionId) }
                     if !isChat {
                         Button("Continue a copy on the phone", systemImage: "arrow.triangle.branch") { model.fork(sessionId) }
@@ -88,6 +115,7 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showSimulator) { SimulatorView() }
         .sheet(isPresented: $showLimits) { LimitsView(sessionId: sessionId) }
+        .sheet(isPresented: $showGit) { GitView(sessionId: sessionId) }
         .onChange(of: pending?.id) {
             // The inline card is the prompt; a stale details sheet just goes away.
             if pending == nil { presentedPermission = nil }
@@ -151,6 +179,89 @@ struct ChatView: View {
         n >= 1000 ? String(format: "%.1fk", Double(n) / 1000) : "\(n)"
     }
 
+    // MARK: find
+
+    private var findMatches: [TranscriptMatch] { TranscriptSearch.matches(in: blocks, query: findQuery) }
+    private var currentMatch: TranscriptMatch? {
+        let m = findMatches
+        guard !m.isEmpty else { return nil }
+        return m[min(findIndex, m.count - 1)]
+    }
+
+    private func openFind() {
+        withAnimation(.easeInOut(duration: 0.15)) { showFind = true }
+        findFocused = true
+    }
+
+    private func closeFind() {
+        withAnimation(.easeInOut(duration: 0.15)) { showFind = false }
+        findQuery = ""
+        findIndex = 0
+        findFocused = false
+    }
+
+    private func stepFind(_ delta: Int) {
+        let count = findMatches.count
+        guard count > 0 else { return }
+        findIndex = ((findIndex + delta) % count + count) % count
+    }
+
+    private var findBar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.system(size: 13)).foregroundStyle(CDS.textMuted)
+                TextField("Find in transcript", text: $findQuery)
+                    .font(CDS.body).foregroundStyle(CDS.textPrimary)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .focused($findFocused)
+                    .onSubmit { stepFind(1) }
+                if !findQuery.isEmpty {
+                    Text(findMatches.isEmpty ? "0" : "\(min(findIndex, findMatches.count - 1) + 1)/\(findMatches.count)")
+                        .font(.caption.monospacedDigit()).foregroundStyle(CDS.textMuted)
+                    Button { findQuery = "" } label: {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 14)).foregroundStyle(CDS.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10).frame(height: 34)
+            .background(CDS.surface2, in: RoundedRectangle(cornerRadius: CDS.radius))
+            .overlay(RoundedRectangle(cornerRadius: CDS.radius).strokeBorder(findFocused ? CDS.borderStrong : CDS.border))
+            Button { stepFind(-1) } label: { Image(systemName: "chevron.up") }
+                .disabled(findMatches.isEmpty)
+            Button { stepFind(1) } label: { Image(systemName: "chevron.down") }
+                .disabled(findMatches.isEmpty)
+            Button("Done") { closeFind() }.font(CDS.bodyMedium)
+        }
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(CDS.textSecondary)
+        .padding(.horizontal, CDS.gutter).padding(.vertical, 8)
+        .background(CDS.surface0)
+        .overlay(alignment: .bottom) { Divider().overlay(CDS.border) }
+        .onChange(of: findQuery) { findIndex = 0 }
+    }
+
+    /// Unfolds the group / step a match lives in so the row is actually on screen after the scroll.
+    private func reveal(_ match: TranscriptMatch) {
+        guard let stepId = match.stepId else { return }
+        expandedGroups.insert(match.blockId)
+        expandedSteps.insert(stepId)
+    }
+
+    // MARK: export
+
+    /// Lazily rendered Markdown of the whole transcript, handed to the share sheet as a `.md` file.
+    private var exportDocument: TranscriptDocument {
+        var parts: [String] = []
+        if let project = summary?.projectName, !project.isEmpty, !isChat { parts.append(project) }
+        parts.append(isChat ? "Chat with \(agentName)" : agentName)
+        if let modelId = state?.model ?? transcript.model { parts.append(model.modelLabel(modelId, agent: agent)) }
+        parts.append(Date().formatted(date: .abbreviated, time: .shortened))
+        let options = TranscriptExport.Options(title: summary?.title ?? "Session", subtitle: parts.joined(separator: " · "), agentName: agentName)
+        return TranscriptDocument(items: transcript.items, options: options)
+    }
+
     // MARK: transcript
 
     private var transcriptView: some View {
@@ -158,16 +269,32 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     ForEach(blocks) { block in
-                        blockView(block).id(block.id)
+                        blockView(block)
+                            .id(block.id)
+                            .overlay {
+                                if showFind, currentMatch?.blockId == block.id {
+                                    RoundedRectangle(cornerRadius: CDS.radius + 2)
+                                        .strokeBorder(CDS.brand.opacity(0.7), lineWidth: 1.5)
+                                        .padding(-6)
+                                        .allowsHitTesting(false)
+                                }
+                            }
                     }
                     if isRunning, !lastBlockIsStreamingText {
-                        WorkingStatusRow(status: liveStatus)
+                        WorkingStatusRow(startedAt: transcript.turnStartedAt, outputTokens: transcript.turnOutputTokens, phase: livePhase)
+                            .id("status")
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
+                .scrollTargetLayout()
                 .padding(.horizontal, CDS.gutter).padding(.top, 12).padding(.bottom, 8)
             }
-            .defaultScrollAnchor(.bottom)
+            // Write-only from our side: if the scroll view could write the top row back into the binding,
+            // every drag inside a tall row would re-apply "row at top" and snap the transcript in place.
+            .scrollPosition(id: Binding(get: { findTarget }, set: { _ in }), anchor: .top)
+            // Bottom-anchored so new rows keep the latest reply in view — except while finding: the anchor
+            // also re-pins the bottom whenever a lazy row gets measured, which would drag every jump back down.
+            .defaultScrollAnchor(showFind ? .top : .bottom)
             .scrollDismissesKeyboard(.interactively)
             .overlay(alignment: .bottom) {
                 LinearGradient(colors: [CDS.surface0.opacity(0), CDS.surface0], startPoint: .top, endPoint: .bottom)
@@ -195,13 +322,32 @@ struct ChatView: View {
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 scrollToEnd(proxy)
             }
+            .onChange(of: currentMatch) { _, match in
+                guard let match else { return }
+                reveal(match)
+                Task { @MainActor in
+                    // Let the unfolded rows exist before asking the scroll view to go there; a second
+                    // pass settles the offset once the group's real height is known. The nil in between
+                    // needs its own frame, or SwiftUI sees id → id and does nothing.
+                    for delay in [0.05, 0.45] {
+                        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        guard currentMatch == match else { return }
+                        findTarget = nil
+                        try? await Task.sleep(nanoseconds: 40_000_000)
+                        guard currentMatch == match else { return }
+                        findTarget = match.blockId
+                    }
+                }
+            }
         }
     }
 
     /// Anchors on the last row rather than a trailing spacer: inside a `LazyVStack` the spacer can
     /// be placed before the rows above it are measured, which leaves the view scrolled past the end.
     private func scrollToEnd(_ proxy: ScrollViewProxy) {
-        if let last = blocks.last?.id {
+        if isRunning, !lastBlockIsStreamingText {
+            proxy.scrollTo("status", anchor: .bottom)
+        } else if let last = blocks.last?.id {
             proxy.scrollTo(last, anchor: .bottom)
         } else {
             proxy.scrollTo("bottom", anchor: .bottom)
@@ -214,10 +360,12 @@ struct ChatView: View {
         case .user(let item):
             if case .user(let text, let images) = item.kind {
                 UserMessageView(text: text, images: images, keyPrefix: item.id)
+                    .contextMenu { messageMenu(text) }
             }
         case .assistant(let item):
             if case .assistantText(let text, let streaming) = item.kind {
                 AssistantMessageView(text: text, streaming: streaming)
+                    .contextMenu { messageMenu(text) }
             }
         case .activity(let group):
             ActivityGroupView(group: group, expandedGroups: $expandedGroups, expandedSteps: $expandedSteps)
@@ -231,6 +379,17 @@ struct ChatView: View {
                     .font(CDS.caption).foregroundStyle(CDS.danger)
                     .padding(.horizontal, 4)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func messageMenu(_ text: String) -> some View {
+        Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }
+        ShareLink(item: text) { Label("Share…", systemImage: "square.and.arrow.up") }
+        Button("Quote in reply", systemImage: "text.quote") {
+            let quoted = text.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
+            draft = draft.isEmpty ? quoted + "\n\n" : draft + "\n\n" + quoted + "\n\n"
+            composerFocused = true
         }
     }
 
@@ -253,9 +412,9 @@ struct ChatView: View {
         return false
     }
 
-    private var liveStatus: String {
+    private var livePhase: String {
         if state?.status == .awaitingPermission { return "Waiting for approval…" }
-        if case .activity(let group)? = blocks.last, group.isLive { return group.liveStatus }
+        if case .activity(let group)? = blocks.last, group.isLive { return group.phase }
         return "Working…"
     }
 
@@ -264,7 +423,7 @@ struct ChatView: View {
         guard let last = transcript.items.last else { return "" }
         switch last.kind {
         case .assistantText(let t, _), .thinking(let t, _): return "\(transcript.items.count):\(last.id):\(t.count)"
-        default: return "\(transcript.items.count):\(last.id)"
+        default: return "\(transcript.items.count):\(last.id):\(isRunning)"
         }
     }
 
@@ -311,6 +470,9 @@ struct ComposerDock: View {
     @State private var showFileImporter = false
     @State private var showMacPicker = false
     @State private var recorder = VoiceRecorder()
+    @State private var dictation = Dictation()
+    /// The draft as it was when dictation started; live results are appended after it.
+    @State private var dictationBase = ""
     @State private var attachError: String?
     @State private var fileSearchTask: Task<Void, Never>?
 
@@ -363,6 +525,7 @@ struct ComposerDock: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
             if hasAttachments || recorder.isRecording { attachmentStrip }
+            if dictation.isListening { dictationStrip }
             TextField(isDesktop ? "Message this session" : "Message \(agent.label)", text: $draft, axis: .vertical)
                 .lineLimit(1...8)
                 .textFieldStyle(.plain)
@@ -375,6 +538,8 @@ struct ComposerDock: View {
                 if canAttach {
                     if recorder.isRecording {
                         recordingControls
+                    } else if dictation.isListening {
+                        dictationControls
                     } else {
                         attachButton
                         micButton
@@ -424,6 +589,19 @@ struct ComposerDock: View {
         .overlay(RoundedRectangle(cornerRadius: CDS.radiusComposer).strokeBorder(focused.wrappedValue ? CDS.borderStrong : CDS.border))
         .shadow(color: .black.opacity(0.05), radius: 8, y: 2)
         .onChange(of: pickerItems) { _, items in loadPicked(items) }
+        .onChange(of: dictation.text) { _, text in
+            guard dictation.isListening || !text.isEmpty else { return }
+            let sep = dictationBase.isEmpty || dictationBase.hasSuffix("\n") || dictationBase.hasSuffix(" ") ? "" : " "
+            draft = dictationBase + (text.isEmpty ? "" : sep + text)
+        }
+        .onChange(of: dictation.failure) { _, failure in
+            switch failure {
+            case .microphone: attachError = "Microphone access is off. Enable it in Settings to dictate."
+            case .speech: attachError = "Speech recognition is off. Enable it in Settings to dictate."
+            case .unavailable: attachError = "Speech recognition isn't available right now."
+            case nil: break
+            }
+        }
         .photosPicker(isPresented: $showPhotoPicker, selection: $pickerItems, maxSelectionCount: 4,
                       matching: .any(of: [.images, .videos]))
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item],
@@ -433,7 +611,7 @@ struct ComposerDock: View {
                 if !macFiles.contains(path) { macFiles.append(path) }
             }
         }
-        .alert("Can't attach", isPresented: Binding(get: { attachError != nil }, set: { if !$0 { attachError = nil } })) {
+        .alert("Can't do that", isPresented: Binding(get: { attachError != nil }, set: { if !$0 { attachError = nil } })) {
             Button("OK", role: .cancel) { attachError = nil }
         } message: { Text(attachError ?? "") }
     }
@@ -455,18 +633,65 @@ struct ComposerDock: View {
         .accessibilityLabel("Attach a photo, video, or file")
     }
 
+    /// Tap dictates straight into the draft; hold for the older voice-memo attachment.
     private var micButton: some View {
-        Button {
-            Task { await startRecording() }
+        Menu {
+            Button("Dictate", systemImage: "waveform") { Task { await startDictation() } }
+            Button("Record a voice memo", systemImage: "mic") { Task { await startRecording() } }
         } label: {
             Image(systemName: "mic")
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(CDS.textSecondary)
                 .frame(width: 32, height: 32)
                 .background(CDS.fillControl, in: Circle())
+        } primaryAction: {
+            Task { await startDictation() }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Record a voice memo")
+        .accessibilityLabel("Dictate (hold for a voice memo)")
+    }
+
+    /// While dictating the mic becomes a live meter with cancel / done.
+    private var dictationControls: some View {
+        HStack(spacing: 6) {
+            Button { dictation.cancel(); draft = dictationBase } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(CDS.textSecondary)
+                    .frame(width: 32, height: 32)
+                    .background(CDS.fillControl, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Cancel dictation")
+
+            LevelMeter(level: dictation.level)
+                .padding(.horizontal, 10).frame(height: 32)
+                .background(CDS.fillControl, in: Capsule())
+
+            Button { dictation.stop(); focused.wrappedValue = true } label: {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(CDS.onPrimary)
+                    .frame(width: 32, height: 32)
+                    .background(CDS.fillPrimary, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Finish dictation")
+        }
+    }
+
+    private var dictationStrip: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "waveform").font(.system(size: 12, weight: .medium)).foregroundStyle(agent.tint)
+            ShimmerText(text: dictation.text.isEmpty ? "Listening…" : "Dictating…")
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 6)
+    }
+
+    private func startDictation() async {
+        guard !recorder.isRecording else { return }
+        dictationBase = draft
+        _ = await dictation.start()
     }
 
     /// The mic swaps for a live timer + cancel/stop while recording.
@@ -721,6 +946,7 @@ struct ComposerDock: View {
     }
 
     private func startRecording() async {
+        if dictation.isListening { dictation.stop() }
         let ok = await recorder.start()
         if !ok { attachError = "Microphone access is off. Enable it in Settings to record voice memos." }
     }
@@ -944,5 +1170,48 @@ struct MacFilePicker: View {
             .toolbarBackground(CDS.surface0, for: .navigationBar)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
+    }
+}
+
+/// The transcript as a shareable Markdown file, rendered only when the share sheet actually asks for it.
+struct TranscriptDocument: Transferable {
+    let items: [TranscriptItem]
+    let options: TranscriptExport.Options
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: UTType(filenameExtension: "md") ?? .plainText) { doc in
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ccremote-export", isDirectory: true)
+                .appendingPathComponent(TranscriptExport.fileName(for: doc.options.title))
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try TranscriptExport.markdown(items: doc.items, options: doc.options).write(to: url, atomically: true, encoding: .utf8)
+            return SentTransferredFile(url)
+        }
+        ProxyRepresentation { doc in TranscriptExport.markdown(items: doc.items, options: doc.options) }
+    }
+}
+
+/// A row of bars that follow the microphone level while dictating.
+struct LevelMeter: View {
+    let level: Float
+    private let bars = 9
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(0..<bars, id: \.self) { i in
+                Capsule()
+                    .fill(CDS.textSecondary)
+                    .frame(width: 3, height: height(for: i))
+            }
+        }
+        .animation(.easeOut(duration: 0.08), value: level)
+        .accessibilityHidden(true)
+    }
+
+    private func height(for i: Int) -> CGFloat {
+        // Centre bars react most, edges least — reads like a waveform rather than a VU strip.
+        let centre = Double(bars - 1) / 2
+        let weight = 1 - abs(Double(i) - centre) / (centre + 1)
+        return 4 + CGFloat(Double(level) * weight) * 14
     }
 }

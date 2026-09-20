@@ -1,13 +1,18 @@
 import Foundation
 import Observation
+import UIKit
 import ClaudeRemoteCore
 
 @MainActor
 @Observable
 final class AppModel {
+    /// The one model the app runs; Live Activity intents (performed in this process) reach it here.
+    static private(set) weak var shared: AppModel?
+
     let connection = HostConnection()
     let imageCache = ImageCache()
     let simulatorFeed = SimulatorFeed()
+    let liveActivities = LiveActivityController()
 
     /// Every Mac this phone has paired with; `activeMacId` is the one the app is connected to.
     private(set) var macs: [PairingInfo] = []
@@ -40,7 +45,14 @@ final class AppModel {
     // MARK: Face ID / biometrics
     /// Require Face ID before approving a tool (each Allow runs code on the Mac). Default on.
     var requireBiometricsForApproval: Bool {
-        didSet { UserDefaults.standard.set(requireBiometricsForApproval, forKey: "ccremote.faceid.approval") }
+        didSet {
+            UserDefaults.standard.set(requireBiometricsForApproval, forKey: "ccremote.faceid.approval")
+            // The activity's Allow button depends on this; tell the Mac and refresh what's showing.
+            for id in liveActivities.activeSessionIds {
+                registerActivityToken(id, token: liveActivities.pushToken(for: id))
+                syncActivity(id)
+            }
+        }
     }
     /// Require Face ID to open the app (after it goes to the background). Default off.
     var lockAppWithBiometrics: Bool {
@@ -48,6 +60,13 @@ final class AppModel {
     }
     /// The app is currently covered by the lock screen.
     var locked = false
+    /// Show busy sessions as Live Activities (lock screen / Dynamic Island). Default on.
+    var liveActivitiesEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(liveActivitiesEnabled, forKey: "ccremote.liveactivities")
+            if !liveActivitiesEnabled { liveActivities.endAll() } else { for id in states.keys { syncActivity(id) } }
+        }
+    }
 
     private var awaitingCreatedSession = false
     /// Which tab the session being created belongs to.
@@ -57,7 +76,14 @@ final class AppModel {
         let defaults = UserDefaults.standard
         requireBiometricsForApproval = defaults.object(forKey: "ccremote.faceid.approval") as? Bool ?? true
         lockAppWithBiometrics = defaults.bool(forKey: "ccremote.faceid.applock")
+        liveActivitiesEnabled = defaults.object(forKey: "ccremote.liveactivities") as? Bool ?? true
         locked = lockAppWithBiometrics
+        AppModel.shared = self
+        liveActivities.onPushToken = { [weak self] sessionId, token in self?.registerActivityToken(sessionId, token: token) }
+        liveActivities.adoptExisting()
+        LiveActivityDecisions.shared.handler = { sessionId, requestId, allow in
+            await AppModel.shared?.decideFromActivity(sessionId: sessionId, requestId: requestId, allow: allow)
+        }
         connection.onMessage = { [weak self] message in self?.handle(message) }
         connection.onLearnedFingerprint = { [weak self] fp in
             self?.updateActiveMac { if $0.fingerprint == nil { $0.fingerprint = fp } }
@@ -140,6 +166,16 @@ final class AppModel {
         chatPath = []
         awaitingCreatedSession = false
         requestedFiles = []
+        remoteFiles = [:]
+        remoteFileErrors = [:]
+        gitDiffs = [:]
+        gitFileDiffs = [:]
+        gitStatuses = [:]
+        gitErrors = [:]
+        gitBusy = []
+        gitResults = [:]
+        activityTrackers = [:]
+        liveActivities.endAll()
         imageCache.reset()
         simulatorFeed.stopWatching()
         simulatorFeed.devices = []
@@ -207,6 +243,8 @@ final class AppModel {
 
     func prompt(_ sessionId: String, text: String, images: [InlineImage] = [], attachments: [Attachment]? = nil) {
         connection.send(.prompt(sessionId: sessionId, text: text, images: images, attachments: attachments))
+        activityTrackers[sessionId, default: ActivityTracker()].turnStartedAt = Date()
+        activityTrackers[sessionId]?.lastTool = nil
     }
 
     func decide(_ request: PermissionRequest, allow: Bool, reason: String? = nil, remember: Bool = false) {
@@ -283,8 +321,22 @@ final class AppModel {
 
     private var requestedFiles: Set<String> = []
 
-    /// Image files referenced from the transcript (SendUserFile) are fetched from the Mac on demand.
-    func requestFile(_ path: String) {
+    /// Non-image files from the Mac (SendUserFile), by path, once fetched — Markdown, text, PDF, anything
+    /// the viewer can show or the share sheet can save.
+    var remoteFiles: [String: RemoteFile] = [:]
+    var remoteFileErrors: [String: String] = [:]
+
+    struct RemoteFile: Equatable {
+        let path: String
+        let mediaType: String
+        let data: Data
+        var name: String { (path as NSString).lastPathComponent }
+    }
+
+    /// Files referenced from the transcript (SendUserFile) are fetched from the Mac on demand; images
+    /// land in the image cache, everything else in `remoteFiles`. `force` refetches after a failure.
+    func requestFile(_ path: String, force: Bool = false) {
+        if force { requestedFiles.remove(path); remoteFileErrors[path] = nil; imageCache.retry(key: "file:\(path)") }
         guard !requestedFiles.contains(path) else { return }
         requestedFiles.insert(path)
         connection.send(.fetchFile(path: path))
@@ -295,6 +347,51 @@ final class AppModel {
 
     func requestGitDiff(_ sessionId: String) {
         connection.send(.gitDiff(sessionId: sessionId))
+    }
+
+    // MARK: git
+
+    /// Per-file diffs keyed by `GitFileKey`, for the Git screen's file view.
+    var gitFileDiffs: [GitFileKey: String] = [:]
+    var gitStatuses: [String: GitStatus] = [:]
+    var gitErrors: [String: String] = [:]
+    /// Sessions with a git action in flight (one at a time per repo).
+    var gitBusy: Set<String> = []
+    /// Outcome of the last git action per session, shown as a banner on the Git screen.
+    var gitResults: [String: GitResult] = [:]
+
+    struct GitFileKey: Hashable {
+        let sessionId: String
+        let path: String
+        let staged: Bool
+    }
+
+    struct GitResult: Equatable {
+        let action: GitAction
+        let output: String
+        let error: String?
+        let at: Date
+    }
+
+    func requestGitStatus(_ sessionId: String) {
+        connection.send(.gitStatus(sessionId: sessionId))
+    }
+
+    /// The file diff last asked for; the reply carries the path but not which side, so it lands here.
+    private var pendingFileDiff: GitFileKey?
+
+    func requestGitFileDiff(_ sessionId: String, path: String, staged: Bool) {
+        let key = GitFileKey(sessionId: sessionId, path: path, staged: staged)
+        gitFileDiffs[key] = nil
+        pendingFileDiff = key
+        connection.send(.gitDiff(sessionId: sessionId, path: path, staged: staged))
+    }
+
+    func runGit(_ sessionId: String, _ action: GitAction) {
+        guard !gitBusy.contains(sessionId) else { return }
+        gitBusy.insert(sessionId)
+        gitResults[sessionId] = nil
+        connection.send(.gitAction(sessionId: sessionId, action: action))
     }
 
     /// Latest file-search results for the composer's "@" mention picker.
@@ -326,6 +423,7 @@ final class AppModel {
             // Re-attach to everything we were looking at before the reconnect.
             for id in openSessionIds { connection.send(.open(sessionId: id)) }
             if let udid = simulatorFeed.watching { sendSimulatorStream(udid, enabled: true) }
+            for id in liveActivities.activeSessionIds { registerActivityToken(id, token: liveActivities.pushToken(for: id)) }
         case .error(let text, _):
             errorBanner = text
         case .sessions(let items):
@@ -343,27 +441,62 @@ final class AppModel {
         case .event(let sessionId, let payload):
             guard transcripts[sessionId] != nil else { return }
             transcripts[sessionId]?.apply(payload)
+            if payload["type"]?.string != "stream_event" {
+                activityTrackers[sessionId, default: ActivityTracker()].apply(payload)
+                syncActivity(sessionId)
+            }
         case .permissionRequest(let request):
             if !permissions.contains(where: { $0.id == request.id }) { permissions.append(request) }
-        case .permissionResolved(_, let requestId):
+            syncActivity(request.sessionId)
+        case .permissionResolved(let sessionId, let requestId):
             permissions.removeAll { $0.id == requestId }
+            syncActivity(sessionId)
         case .state(let state):
+            let wasRunning = states[state.id]?.status == .running || states[state.id]?.status == .awaitingPermission
             states[state.id] = state
             for p in state.pendingPermissions where !permissions.contains(where: { $0.id == p.id }) { permissions.append(p) }
             if let idx = sessions.firstIndex(where: { $0.id == state.id }) {
                 sessions[idx].status = state.status
                 sessions[idx].origin = state.origin
             }
+            // A turn we didn't start from this phone (another device, the Watch) still gets a timer.
+            if state.status == .running, !wasRunning, activityTrackers[state.id]?.turnStartedAt == nil {
+                activityTrackers[state.id, default: ActivityTracker()].turnStartedAt = Date()
+            }
+            if state.status != .running, state.status != .awaitingPermission { activityTrackers[state.id]?.turnStartedAt = nil }
+            syncActivity(state.id)
         case .models(let agent, let items):
             if agent == .codex { codexModels = items }
-        case .file(let path, _, let base64, let error):
+        case .file(let path, let mediaType, let base64, let error):
+            let type = mediaType ?? "application/octet-stream"
             if let base64, error == nil {
-                imageCache.store(key: "file:\(path)", base64: base64)
+                if type.hasPrefix("image/") {
+                    imageCache.store(key: "file:\(path)", base64: base64)
+                } else if let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) {
+                    remoteFiles[path] = RemoteFile(path: path, mediaType: type, data: data)
+                } else {
+                    remoteFileErrors[path] = "Could not decode the file"
+                }
             } else {
                 imageCache.fail(key: "file:\(path)")
+                remoteFileErrors[path] = error ?? "Could not load from the Mac"
             }
-        case .gitDiff(let sessionId, let diff, let error):
-            gitDiffs[sessionId] = error.map { "⚠️ \($0)" } ?? diff
+        case .gitDiff(let sessionId, let diff, let error, let path):
+            if let path {
+                let key = pendingFileDiff.flatMap { $0.sessionId == sessionId && $0.path == path ? $0 : nil }
+                    ?? GitFileKey(sessionId: sessionId, path: path, staged: false)
+                gitFileDiffs[key] = error.map { "⚠️ \($0)" } ?? diff
+            } else {
+                gitDiffs[sessionId] = error.map { "⚠️ \($0)" } ?? diff
+            }
+        case .gitStatus(let sessionId, let status, let error):
+            gitStatuses[sessionId] = status
+            gitErrors[sessionId] = error
+            gitBusy.remove(sessionId)
+        case .gitResult(let sessionId, let action, let output, let error):
+            gitResults[sessionId] = GitResult(action: action, output: output, error: error, at: Date())
+            // A successful action invalidates every cached file diff for the repo.
+            if error == nil { gitFileDiffs = gitFileDiffs.filter { $0.key.sessionId != sessionId } }
         case .fileList(_, let paths):
             fileMatches = paths
         case .usage(_, let data, let error):
@@ -376,6 +509,78 @@ final class AppModel {
         case .pong:
             break
         }
+    }
+
+    // MARK: Live Activities
+
+    /// Per-session bookkeeping for the activity headline (running tool, thinking, turn start).
+    private var activityTrackers: [String: ActivityTracker] = [:]
+
+    /// Which sessions get an activity: hosted ones (they can be approved from here) and anything
+    /// currently open on screen — never a session that is merely idle on disk.
+    private func syncActivity(_ sessionId: String) {
+        guard liveActivitiesEnabled, let state = states[sessionId] else { return }
+        let onScreen = openSessionIds.contains(sessionId)
+        let busy = state.status == .running || state.status == .awaitingPermission
+        guard state.origin == .host || onScreen || liveActivities.activeSessionIds.contains(sessionId) else { return }
+        guard busy || liveActivities.activeSessionIds.contains(sessionId) else { return }
+        let summary = summary(for: sessionId)
+        let info = SessionActivityInfo(sessionId: sessionId,
+                                       title: summary?.title ?? (state.kind == .chat ? "Chat" : "Session"),
+                                       project: state.kind == .chat ? "" : (summary?.projectName ?? (state.cwd as NSString).lastPathComponent),
+                                       agent: state.agent)
+        let tracker = activityTrackers[sessionId] ?? ActivityTracker()
+        let pending = pendingPermission(for: sessionId) ?? state.pendingPermissions.first
+        let activityState = SessionActivityState.make(status: state.status, pending: pending, lastTool: tracker.lastTool,
+                                                      thinking: tracker.thinking, turnStartedAt: tracker.turnStartedAt,
+                                                      lastError: state.status == .idle ? nil : state.lastError,
+                                                      approvalNeedsApp: requireBiometricsForApproval)
+        liveActivities.sync(info, state: activityState)
+    }
+
+    private func registerActivityToken(_ sessionId: String, token: String?) {
+        connection.send(.liveActivity(sessionId: sessionId, pushToken: token, approvalNeedsApp: requireBiometricsForApproval))
+    }
+
+    /// A decision made from the Dynamic Island / lock screen. The intent may have launched the app in
+    /// the background, so wait for the connection to come up before sending.
+    func decideFromActivity(sessionId: String, requestId: String, allow: Bool) async {
+        let task = UIApplication.shared.beginBackgroundTask(withName: "ccremote.activity.decide")
+        defer { if task != .invalid { UIApplication.shared.endBackgroundTask(task) } }
+        for _ in 0..<60 where !isConnected {   // up to ~15 s
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        guard isConnected else { return }
+        // Allow arrives here only when the phone doesn't require Face ID (the widget opens the app otherwise).
+        connection.send(.permission(sessionId: sessionId, requestId: requestId, allow: allow, message: allow ? nil : "Denied from the Live Activity", remember: nil))
+        permissions.removeAll { $0.id == requestId }
+        // Give the Mac a moment to answer with the new state so the activity flips before we suspend.
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+    }
+
+    /// `ccremote://session/<id>` from a Live Activity or the Watch: open that session.
+    func openDeepLink(sessionId: String) {
+        let kind = summary(for: sessionId)?.kind ?? states[sessionId]?.kind ?? .agent
+        present(sessionId, kind: kind)
+    }
+
+    /// Keep the socket a little longer after the app leaves the foreground while an activity is
+    /// showing, so the last few updates land before iOS suspends us.
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+
+    func enteredBackground() {
+        guard !liveActivities.activeSessionIds.isEmpty, backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "ccremote.activity.linger") { [weak self] in
+            self?.endBackgroundTask()
+        }
+    }
+
+    func enteredForeground() { endBackgroundTask() }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 
     // MARK: simulator live view

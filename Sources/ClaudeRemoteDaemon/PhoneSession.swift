@@ -103,6 +103,14 @@ final class PhoneSession: @unchecked Sendable {
         Task { [weak self] in await self?.dispatch(message) }
     }
 
+    private func sendGitStatus(_ sessionId: String) async {
+        do {
+            send(.gitStatus(sessionId: sessionId, status: try await manager.gitStatus(sessionId: sessionId), error: nil))
+        } catch {
+            send(.gitStatus(sessionId: sessionId, status: nil, error: "\(error)"))
+        }
+    }
+
     private func dispatch(_ message: ClientMessage) async {
         do {
             switch message {
@@ -145,18 +153,28 @@ final class PhoneSession: @unchecked Sendable {
                 send(.sessions(items: await manager.listSessions()))
             case .fetchFile(let path):
                 do {
-                    let file = try await manager.readImage(path: path)
+                    let file = try await manager.readFile(path: path)
                     send(.file(path: path, mediaType: file.mediaType, base64: file.data.base64EncodedString(), error: nil))
                 } catch {
                     send(.file(path: path, mediaType: nil, base64: nil, error: "\(error)"))
                 }
-            case .gitDiff(let sessionId):
+            case .gitDiff(let sessionId, let path, let staged):
                 do {
-                    let diff = try await manager.gitDiff(sessionId: sessionId)
-                    send(.gitDiff(sessionId: sessionId, diff: diff, error: nil))
+                    let diff = try await manager.gitDiff(sessionId: sessionId, path: path, staged: staged ?? false)
+                    send(.gitDiff(sessionId: sessionId, diff: diff, error: nil, path: path))
                 } catch {
-                    send(.gitDiff(sessionId: sessionId, diff: "", error: "\(error)"))
+                    send(.gitDiff(sessionId: sessionId, diff: "", error: "\(error)", path: path))
                 }
+            case .gitStatus(let sessionId):
+                await sendGitStatus(sessionId)
+            case .gitAction(let sessionId, let action):
+                do {
+                    let output = try await manager.gitAction(sessionId: sessionId, action: action)
+                    send(.gitResult(sessionId: sessionId, action: action, output: output, error: nil))
+                } catch {
+                    send(.gitResult(sessionId: sessionId, action: action, output: "", error: "\(error)"))
+                }
+                await sendGitStatus(sessionId)
             case .listFiles(let sessionId, let query):
                 send(.fileList(sessionId: sessionId, paths: await manager.listFiles(sessionId: sessionId, query: query)))
             case .getUsage(let sessionId):
@@ -165,6 +183,8 @@ final class PhoneSession: @unchecked Sendable {
                 } catch {
                     send(.usage(sessionId: sessionId, data: nil, error: "\(error)"))
                 }
+            case .liveActivity(let sessionId, let pushToken, let approvalNeedsApp):
+                await manager.registerLiveActivity(sessionId: sessionId, phone: id, token: pushToken, approvalNeedsApp: approvalNeedsApp)
             case .listSimulators:
                 send(.simulators(items: await SimulatorStreamer.shared.list()))
             case .simulatorStream(let udid, let enabled, let maxPixelSize, let fps):
@@ -183,7 +203,8 @@ final class PhoneSession: @unchecked Sendable {
 extension ClientMessage {
     var sessionId: String? {
         switch self {
-        case .open(let id), .fork(let id), .prompt(let id, _, _, _), .permission(let id, _, _, _, _), .interrupt(let id), .gitDiff(let id),
+        case .open(let id), .fork(let id), .prompt(let id, _, _, _), .permission(let id, _, _, _, _), .interrupt(let id), .gitDiff(let id, _, _),
+             .gitStatus(let id), .gitAction(let id, _), .liveActivity(let id, _, _),
              .listFiles(let id, _), .getUsage(let id),
              .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id):
             return id

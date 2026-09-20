@@ -17,8 +17,8 @@ struct ClaudeRemoteApp: App {
             .animation(.easeInOut(duration: 0.2), value: model.locked)
             .onAppear { WatchBridge.shared.syncActivePairing() }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .background { model.lockOnBackground() }
-                if phase == .active { WatchBridge.shared.syncActivePairing() }
+                if phase == .background { model.lockOnBackground(); model.enteredBackground() }
+                if phase == .active { WatchBridge.shared.syncActivePairing(); model.enteredForeground() }
             }
         }
     }

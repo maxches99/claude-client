@@ -31,6 +31,16 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
     /// Also notify when a turn completes (permission-needed and errors always notify).
     public var notifyDone: Bool = true
 
+    /// APNs auth key (`AuthKey_XXXX.p8`) for pushing Live Activity updates to the phone. All three
+    /// must be set for pushes to happen; the phone still updates its own activity while it runs.
+    public var apnsKeyPath: String?
+    public var apnsKeyId: String?
+    public var apnsTeamId: String?
+    /// The iOS app's bundle id; `nil` → the default `dev.maxches.ClaudeRemote`.
+    public var apnsBundleId: String?
+    /// Push to the sandbox gateway (Xcode builds) instead of production (TestFlight / App Store).
+    public var apnsSandbox: Bool = true
+
     public init() {}
 
     // Decode with defaults so a config written by an older build still loads.
@@ -49,6 +59,11 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
         telegramToken = try c.decodeIfPresent(String.self, forKey: .telegramToken)
         telegramChat = try c.decodeIfPresent(String.self, forKey: .telegramChat)
         notifyDone = try c.decodeIfPresent(Bool.self, forKey: .notifyDone) ?? true
+        apnsKeyPath = try c.decodeIfPresent(String.self, forKey: .apnsKeyPath)
+        apnsKeyId = try c.decodeIfPresent(String.self, forKey: .apnsKeyId)
+        apnsTeamId = try c.decodeIfPresent(String.self, forKey: .apnsTeamId)
+        apnsBundleId = try c.decodeIfPresent(String.self, forKey: .apnsBundleId)
+        apnsSandbox = try c.decodeIfPresent(Bool.self, forKey: .apnsSandbox) ?? true
     }
 
     // MARK: derived
@@ -60,6 +75,14 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
                        telegramToken: telegramToken.flatMap { $0.isEmpty ? nil : $0 },
                        telegramChatID: telegramChat.flatMap { $0.isEmpty ? nil : $0 },
                        notifyDone: notifyDone)
+    }
+
+    /// `nil` unless every APNs field is filled in.
+    public var livePushConfig: LiveActivityPushConfig? {
+        guard let keyPath = apnsKeyPath, !keyPath.isEmpty, let keyId = apnsKeyId, !keyId.isEmpty,
+              let teamId = apnsTeamId, !teamId.isEmpty else { return nil }
+        let bundle = apnsBundleId.flatMap { $0.isEmpty ? nil : $0 } ?? "dev.maxches.ClaudeRemote"
+        return LiveActivityPushConfig(keyPath: keyPath, keyId: keyId, teamId: teamId, bundleId: bundle, sandbox: apnsSandbox)
     }
 
     // MARK: persistence
@@ -134,6 +157,11 @@ public struct DaemonArguments {
             case "--telegram-token": result.config.telegramToken = try value(a)
             case "--telegram-chat": result.config.telegramChat = try value(a)
             case "--no-notify-done": result.config.notifyDone = false
+            case "--apns-key": result.config.apnsKeyPath = try value(a)
+            case "--apns-key-id": result.config.apnsKeyId = try value(a)
+            case "--apns-team": result.config.apnsTeamId = try value(a)
+            case "--apns-bundle": result.config.apnsBundleId = try value(a)
+            case "--apns-production": result.config.apnsSandbox = false
             case "-h", "--help": result.help = true
             default: throw ParseError(description: "unknown option \(a)")
             }

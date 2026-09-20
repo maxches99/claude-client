@@ -70,6 +70,12 @@ public struct Transcript: Equatable, Sendable {
     public private(set) var totalCostUSD: Double = 0
     public private(set) var inputTokens: Int = 0
     public private(set) var outputTokens: Int = 0
+    /// When the latest prompt was sent and how much the assistant has produced since — the
+    /// "2m 58s · 1.9k tokens" of the status line while a turn runs.
+    public private(set) var turnStartedAt: Date?
+    public var turnOutputTokens: Int { turnOutputByMessage.values.reduce(0, +) }
+    /// message id → output tokens, so a message re-applied from disk (one entry per block) counts once.
+    private var turnOutputByMessage: [String: Int] = [:]
 
     /// message.id → number of full assistant blocks already applied (to pair with streamed blocks).
     private var appliedBlocks: [String: Int] = [:]
@@ -145,6 +151,8 @@ public struct Transcript: Equatable, Sendable {
         let text = Transcript.cleanUserText(raw)
         guard !text.isEmpty || !images.isEmpty else { return }
         upsert(TranscriptItem(id: "user:\(id)", kind: .user(text: text, images: images), timestamp: timestamp))
+        turnStartedAt = timestamp ?? Date()
+        turnOutputByMessage = [:]
     }
 
     // MARK: assistant
@@ -153,6 +161,7 @@ public struct Transcript: Equatable, Sendable {
         guard let msg = message["message"], let blocks = msg["content"]?.array else { return }
         if let m = msg["model"]?.string, !m.hasPrefix("<") { model = m }
         let messageId = msg["id"]?.string ?? message["uuid"]?.string ?? UUID().uuidString
+        if let out = msg["usage"]?["output_tokens"]?.int, out > 0 { turnOutputByMessage[messageId] = out }
         for block in blocks {
             let blockIndex = appliedBlocks[messageId, default: 0]
             appliedBlocks[messageId] = blockIndex + 1
@@ -234,6 +243,9 @@ public struct Transcript: Equatable, Sendable {
             case .thinking(let t, _): items[pos].kind = .thinking(text: t, streaming: false)
             default: break
             }
+        case "message_delta":
+            // Cumulative for the message being streamed; the full assistant message repeats the final figure.
+            if let id = streamingMessageId, let out = event["usage"]?["output_tokens"]?.int, out > 0 { turnOutputByMessage[id] = out }
         case "message_stop":
             streamingMessageId = nil
             streamingBlockItems = [:]

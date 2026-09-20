@@ -1,5 +1,6 @@
 #if os(macOS)
 import Foundation
+import UniformTypeIdentifiers
 import ClaudeRemoteCore
 
 /// Owns CLI processes and transcript watchers; fans events out to connected phones.
@@ -32,6 +33,13 @@ public actor SessionManager {
         var startedAt = Date()
         var title: String?
         var forkedFromPath: String?
+        // What the Live Activity push shows: the tool running right now, whether the model is thinking,
+        // and when the turn began — cheap to track from the stream, no transcript needed.
+        var lastTool: (name: String, line: String)?
+        var thinking = false
+        var turnStartedAt: Date?
+        var lastActivityPush = Date.distantPast
+        var activityPushTimer: Task<Void, Never>?
         /// History a Codex fork/resume came with, replayed to the next phone that opens it.
         var forkedHistory: [JSONValue]?
         var agent: AgentKind { state.agent }
@@ -84,8 +92,11 @@ public actor SessionManager {
     private let store: TranscriptStore
     private let registry: LiveSessionRegistry
     private let notifier: Notifier?
+    private let livePusher: LiveActivityPusher?
     private let log: @Sendable (String) -> Void
     private var subscribers: [UUID: Sender] = [:]
+    /// Live Activity push tokens per session, per phone. Kept while the phone is away — that's the point.
+    private var activityTokens: [String: [UUID: (token: String, approvalNeedsApp: Bool)]] = [:]
     private var hosted: [String: Hosted] = [:]
     private var watched: [String: Watched] = [:]
     private var watchedCodex: [String: WatchedCodex] = [:]
@@ -100,12 +111,13 @@ public actor SessionManager {
     private var recentCodexThreads: [CodexBackend.ThreadInfo] = []
 
     public init(cli: ClaudeCLI, codex: CodexBackend? = nil, store: TranscriptStore = TranscriptStore(), registry: LiveSessionRegistry = LiveSessionRegistry(),
-                notifier: Notifier? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) {
+                notifier: Notifier? = nil, livePusher: LiveActivityPusher? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.cli = cli
         self.codex = codex
         self.store = store
         self.registry = registry
         self.notifier = notifier
+        self.livePusher = livePusher
         self.log = log
         if let codex {
             Task { [weak self] in
@@ -142,7 +154,7 @@ public actor SessionManager {
             codexInfo = CodexInfo(path: codex.cli.path, version: cachedCodexVersion, loggedIn: await codex.loggedIn)
         }
         return HostInfo(hostName: Host.current().localizedName ?? ProcessInfo.processInfo.hostName, daemonVersion: daemonVersion,
-                        cliVersion: cachedCliVersion, cliPath: cli.path, loggedIn: cachedLoggedIn, codex: codexInfo)
+                        cliVersion: cachedCliVersion, cliPath: cli.path, loggedIn: cachedLoggedIn, codex: codexInfo, livePush: livePusher != nil)
     }
 
     public var hasCodex: Bool { codex != nil }
@@ -487,6 +499,9 @@ public actor SessionManager {
             h.title = String(text.split(separator: "\n").first ?? "").trimmingCharacters(in: .whitespaces)
             broadcast(.sessions(items: listSessions()))
         }
+        h.turnStartedAt = Date()
+        h.lastTool = nil
+        h.thinking = false
         update(h, status: .running)
     }
 
@@ -715,11 +730,10 @@ public actor SessionManager {
     // MARK: files
 
     public enum FileError: Error, CustomStringConvertible {
-        case notFound, notAnImage, tooLarge
+        case notFound, tooLarge
         public var description: String {
             switch self {
             case .notFound: return "File not found"
-            case .notAnImage: return "Only images can be fetched"
             case .tooLarge: return "File is larger than 12 MB"
             }
         }
@@ -845,9 +859,22 @@ public actor SessionManager {
         return try await probe.getUsage()
     }
 
-    public func gitDiff(sessionId: String) throws -> String {
-        guard let cwd = cwdFor(sessionId) else { throw ManagerError.unknownSession(sessionId) }
-        guard FileManager.default.fileExists(atPath: cwd) else { throw ManagerError.cwdMissing(cwd) }
+    public func gitDiff(sessionId: String, path: String? = nil, staged: Bool = false) throws -> String {
+        let cwd = try gitCwd(sessionId)
+        if let path {
+            // One file: the index side, the working-tree side, or the whole file when git doesn't know it yet.
+            let tracked = runGit(["-C", cwd, "ls-files", "--error-unmatch", "--", path]).code == 0
+            if !tracked {
+                let full = (cwd as NSString).appendingPathComponent(path)
+                guard let data = FileManager.default.contents(atPath: full) else { return "" }
+                guard let text = String(data: data.prefix(200_000), encoding: .utf8) else { return "(binary file, \(data.count) bytes)" }
+                return "--- /dev/null\n+++ b/\(path)\n" + text.split(separator: "\n", omittingEmptySubsequences: false).map { "+" + $0 }.joined(separator: "\n")
+            }
+            let args = staged ? ["diff", "--cached", "--", path] : ["diff", "--", path]
+            let r = runGit(["-C", cwd] + args)
+            if r.code != 0 { return "git failed: \(r.err.trimmingCharacters(in: .whitespacesAndNewlines))" }
+            return String(r.out.prefix(200_000))
+        }
         let status = runGit(["-C", cwd, "status", "--short", "--branch"])
         if status.code != 0 {
             return status.err.contains("not a git repository") ? "Not a git repository." : "git failed: \(status.err.trimmingCharacters(in: .whitespacesAndNewlines))"
@@ -860,11 +887,110 @@ public actor SessionManager {
         return String(out.prefix(120_000))
     }
 
+    private func gitCwd(_ sessionId: String) throws -> String {
+        guard let cwd = cwdFor(sessionId) else { throw ManagerError.unknownSession(sessionId) }
+        guard FileManager.default.fileExists(atPath: cwd) else { throw ManagerError.cwdMissing(cwd) }
+        return cwd
+    }
+
+    public enum GitError: Error, CustomStringConvertible {
+        case notARepository
+        case failed(String)
+        case refused(String)
+
+        public var description: String {
+            switch self {
+            case .notARepository: return "Not a git repository."
+            case .failed(let why): return why
+            case .refused(let why): return why
+            }
+        }
+    }
+
+    // MARK: git status / actions
+
+    /// Branch, upstream sync counts, the changed files and the local branch list — what the phone's
+    /// Git screen shows. Parsed from `status --porcelain=v2 --branch`, which is stable across git versions.
+    public func gitStatus(sessionId: String) throws -> GitStatus {
+        let cwd = try gitCwd(sessionId)
+        let r = runGit(["-C", cwd, "status", "--porcelain=v2", "--branch", "--untracked-files=all"])
+        if r.code != 0 {
+            if r.err.contains("not a git repository") { throw GitError.notARepository }
+            throw GitError.failed(r.err.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        var status = GitStatus.parse(porcelain: r.out)
+        let branches = runGit(["-C", cwd, "for-each-ref", "--format=%(refname:short)", "--sort=-committerdate", "refs/heads/"])
+        if branches.code == 0 {
+            status.branches = branches.out.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        }
+        let last = runGit(["-C", cwd, "log", "-1", "--format=%h %s"])
+        if last.code == 0 { let subject = last.out.trimmingCharacters(in: .whitespacesAndNewlines)
+            status.lastCommit = subject.isEmpty ? nil : subject
+        }
+        return status
+    }
+
+    /// Runs one git action in the repo and returns git's output. Refuses to act on a session whose
+    /// agent is mid-turn on the repo, to keep the phone from racing the agent's own edits.
+    public func gitAction(sessionId: String, action: GitAction) throws -> String {
+        let cwd = try gitCwd(sessionId)
+        if let h = hosted[sessionId], h.state.status == .running {
+            throw GitError.refused("The agent is working in this repo — wait for the turn to finish.")
+        }
+        let args: [String]
+        var timeout: TimeInterval = 20
+        switch action {
+        case .stage(let paths):
+            args = paths.isEmpty ? ["add", "-A"] : ["add", "-A", "--"] + paths
+        case .unstage(let paths):
+            args = paths.isEmpty ? ["reset", "-q"] : ["reset", "-q", "--"] + paths
+        case .discard(let paths):
+            // Tracked changes go back to the index; untracked files are removed. Two steps, so run the
+            // first here and fall through to the second below.
+            let checkout = runGit(["-C", cwd, "checkout", "-q", "--"] + (paths.isEmpty ? ["."] : paths))
+            if checkout.code != 0, !checkout.err.contains("did not match any file") {
+                throw GitError.failed(checkout.err.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            args = paths.isEmpty ? ["clean", "-fdq"] : ["clean", "-fdq", "--"] + paths
+        case .commit(let message, let all):
+            let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { throw GitError.refused("Commit message is empty.") }
+            args = (all ? ["commit", "-a"] : ["commit"]) + ["-m", trimmed]
+        case .push(let setUpstream):
+            timeout = 90
+            if setUpstream, let branch = try? gitStatus(sessionId: sessionId).branch {
+                args = ["push", "-u", "origin", branch]
+            } else {
+                args = ["push"]
+            }
+        case .pull:
+            timeout = 90
+            args = ["pull", "--ff-only"]
+        case .fetch:
+            timeout = 60
+            args = ["fetch", "--prune"]
+        case .checkout(let branch):
+            args = ["checkout", "-q", branch]
+        case .createBranch(let name):
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { throw GitError.refused("Branch name is empty.") }
+            args = ["checkout", "-q", "-b", trimmed]
+        }
+        let r = runGit(["-C", cwd] + args, timeout: timeout)
+        let output = (r.out + (r.err.isEmpty ? "" : "\n" + r.err)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if r.code != 0 { throw GitError.failed(output.isEmpty ? "git exited with status \(r.code)" : output) }
+        log("[\(sessionId.prefix(8))] git \(action.label)")
+        return output
+    }
+
     private func runGit(_ args: [String], timeout: TimeInterval = 15) -> (code: Int32, out: String, err: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         p.arguments = ["-c", "core.pager=cat"] + args
-        p.environment = ClaudeCLI.childEnvironment()
+        var env = ClaudeCLI.childEnvironment()
+        env["GIT_TERMINAL_PROMPT"] = "0"   // fail fast instead of waiting for a password nobody can type
+        env["GIT_EDITOR"] = "true"
+        p.environment = env
         p.standardInput = FileHandle.nullDevice
         let outPipe = Pipe(), errPipe = Pipe()
         p.standardOutput = outPipe; p.standardError = errPipe
@@ -879,15 +1005,35 @@ public actor SessionManager {
         return (p.terminationStatus, String(decoding: outData, as: UTF8.self), String(decoding: errData, as: UTF8.self))
     }
 
-    /// Images only, capped in size — used for files a SendUserFile tool call points at.
-    public func readImage(path: String) throws -> (mediaType: String, data: Data) {
+    /// Any file the agent handed the user (SendUserFile), capped in size. The media type comes from the
+    /// extension so the phone knows whether to render it (image, Markdown, text, PDF) or just offer it to save.
+    public func readFile(path: String) throws -> (mediaType: String, data: Data) {
         let expanded = (path as NSString).expandingTildeInPath
-        let types = ["png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp", "heic": "image/heic", "svg": "image/svg+xml"]
-        guard let mediaType = types[(expanded as NSString).pathExtension.lowercased()] else { throw FileError.notAnImage }
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: expanded), let size = (attrs[.size] as? NSNumber)?.intValue else { throw FileError.notFound }
         guard size <= 12 * 1024 * 1024 else { throw FileError.tooLarge }
         guard let data = FileManager.default.contents(atPath: expanded) else { throw FileError.notFound }
-        return (mediaType, data)
+        return (SessionManager.mediaType(forExtension: (expanded as NSString).pathExtension), data)
+    }
+
+    static func mediaType(forExtension ext: String) -> String {
+        switch ext.lowercased() {
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "heic": return "image/heic"
+        case "svg": return "image/svg+xml"
+        case "md", "markdown": return "text/markdown"
+        case "pdf": return "application/pdf"
+        case "json": return "application/json"
+        case "html", "htm": return "text/html"
+        case "csv": return "text/csv"
+        case "txt", "log", "swift", "py", "js", "ts", "rb", "go", "rs", "sh", "yml", "yaml", "toml", "xml", "diff", "patch", "c", "h", "m", "cpp", "java", "kt", "sql", "css":
+            return "text/plain"
+        default:
+            if let uti = UTType(filenameExtension: ext), let mime = uti.preferredMIMEType { return mime }
+            return "application/octet-stream"
+        }
     }
 
     public func shutdown() async {
@@ -909,9 +1055,29 @@ public actor SessionManager {
                 if let cmds = message["slash_commands"]?.array?.compactMap(\.string), !cmds.isEmpty { h.state.slashCommands = cmds }
                 broadcast(.state(state: h.state))
             }
+        case "assistant":
+            // Track the running tool / thinking for the Live Activity; a text block means the turn is
+            // back to prose, a tool_use names what runs next.
+            for block in message["message"]?["content"]?.array ?? [] {
+                switch block["type"]?.string {
+                case "tool_use":
+                    let name = block["name"]?.string ?? "tool"
+                    h.lastTool = (name, ToolSummary.line(name: name, input: block["input"] ?? .object([:])))
+                    h.thinking = false
+                case "thinking": h.thinking = true
+                case "text": h.thinking = false
+                default: break
+                }
+            }
+            if h.state.status == .running { pushActivity(sessionId, h, throttled: true) }
+        case "user":
+            // A tool result closes the running tool.
+            if message["message"]?["content"]?.array?.contains(where: { $0["type"]?.string == "tool_result" }) == true { h.lastTool = nil }
         case "result":
             let isError = message["is_error"]?.bool == true
             if isError { h.state.lastError = message["result"]?.string }
+            h.lastTool = nil
+            h.thinking = false
             update(h, status: .idle)
             broadcast(.sessions(items: listSessions()))
             if let notifier {
@@ -987,11 +1153,14 @@ public actor SessionManager {
         if status != 0, let notifier { notifier.notify(.error, body: "\(notifyName(h)) · \(h.state.lastError ?? "session exited")") }
         broadcast(.state(state: h.state))
         broadcast(.sessions(items: listSessions()))
+        pushActivity(sessionId, h, throttled: false)
+        activityTokens[sessionId] = nil
     }
 
     private func update(_ h: Hosted, status: SessionStatus) {
         h.state.status = status
         broadcast(.state(state: h.state))
+        pushActivity(h.state.id, h, throttled: false)
     }
 
     // MARK: Codex callbacks
@@ -1005,10 +1174,13 @@ public actor SessionManager {
             broadcast(.event(sessionId: threadId, payload: payload))
         case .turnStarted(let threadId):
             guard let h = hosted[threadId] else { return }
+            if h.turnStartedAt == nil { h.turnStartedAt = Date() }
             if h.state.status != .awaitingPermission { update(h, status: .running) }
         case .turnCompleted(let threadId, let isError, let summary):
             guard let h = hosted[threadId] else { return }
             if isError { h.state.lastError = summary }
+            h.lastTool = nil
+            h.thinking = false
             update(h, status: .idle)
             broadcast(.sessions(items: listSessions()))
             if let notifier {
@@ -1040,10 +1212,79 @@ public actor SessionManager {
                 h.state.status = .exited
                 h.state.lastError = error
                 broadcast(.state(state: h.state))
+                pushActivity(id, h, throttled: false)
+                activityTokens[id] = nil
             }
             if let notifier { notifier.notify(.error, body: "Codex · \(error)") }
             broadcast(.sessions(items: listSessions()))
         }
+    }
+
+    // MARK: Live Activity push
+
+    /// A phone started (token) or ended (nil) a Live Activity for a session. Tokens outlive the phone's
+    /// connection on purpose: the push is what reaches a backgrounded app.
+    public func registerLiveActivity(sessionId: String, phone: UUID, token: String?, approvalNeedsApp: Bool) {
+        if let token {
+            activityTokens[sessionId, default: [:]][phone] = (token, approvalNeedsApp)
+            if let h = hosted[sessionId] { pushActivity(sessionId, h, throttled: false) }
+        } else {
+            activityTokens[sessionId]?[phone] = nil
+        }
+    }
+
+    /// What the activity shows for a hosted session right now.
+    public func activityState(sessionId: String, approvalNeedsApp: Bool) -> SessionActivityState? {
+        guard let h = hosted[sessionId] else { return nil }
+        return activityState(h, approvalNeedsApp: approvalNeedsApp)
+    }
+
+    private func activityState(_ h: Hosted, approvalNeedsApp: Bool) -> SessionActivityState {
+        let pending = h.state.pendingPermissions.first
+        return SessionActivityState.make(status: h.state.status, pending: pending, lastTool: h.lastTool, thinking: h.thinking,
+                                         turnStartedAt: h.turnStartedAt, lastError: h.state.status == .idle ? nil : h.state.lastError,
+                                         approvalNeedsApp: approvalNeedsApp)
+    }
+
+    /// Pushes the session's activity state to every registered phone. Working-state churn (a tool per
+    /// second) is coalesced to one push every couple of seconds; approvals and endings go out at once.
+    private func pushActivity(_ sessionId: String, _ h: Hosted, throttled: Bool) {
+        guard let livePusher, let phones = activityTokens[sessionId], !phones.isEmpty else { return }
+        if throttled {
+            let elapsed = Date().timeIntervalSince(h.lastActivityPush)
+            if elapsed < 2 {
+                guard h.activityPushTimer == nil else { return }
+                h.activityPushTimer = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64((2 - elapsed) * 1_000_000_000))
+                    await self?.flushActivityPush(sessionId)
+                }
+                return
+            }
+        }
+        h.activityPushTimer?.cancel()
+        h.activityPushTimer = nil
+        h.lastActivityPush = Date()
+        for (_, phone) in phones {
+            let state = activityState(h, approvalNeedsApp: phone.approvalNeedsApp)
+            switch state.phase {
+            case .needsApproval:
+                livePusher.push(token: phone.token, event: .update, state: state,
+                                alert: ("\(notifyName(h)) needs approval", "\(state.pendingTool ?? "Tool"): \(state.detail)"))
+            case .stopped:
+                livePusher.push(token: phone.token, event: .end, state: state, dismissAfter: 5 * 60)
+            case .done, .failed:
+                // Leave the result on the lock screen for a while, then let it go.
+                livePusher.push(token: phone.token, event: .end, state: state, dismissAfter: 15 * 60)
+            case .working:
+                livePusher.push(token: phone.token, event: .update, state: state, priority: 5)
+            }
+        }
+    }
+
+    private func flushActivityPush(_ sessionId: String) {
+        guard let h = hosted[sessionId] else { return }
+        h.activityPushTimer = nil
+        pushActivity(sessionId, h, throttled: false)
     }
 
     // MARK: notifications

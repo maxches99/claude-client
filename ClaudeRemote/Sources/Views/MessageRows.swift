@@ -40,60 +40,61 @@ struct AssistantMessageView: View {
     }
 }
 
-/// Thinking + tool steps of one stretch of work. Live: rows stream in as they happen.
-/// Finished: folded under "Worked for 41s · 8 steps" until tapped.
+/// Thinking + tool steps of one stretch of work, folded under a single row the way Claude Code's
+/// desktop transcript does — "Ran 5 commands ›" once finished, "Running a command ›" while live.
+/// Tapping the row reveals the individual steps.
 struct ActivityGroupView: View {
     let group: ActivityGroup
     @Binding var expandedGroups: Set<String>
     @Binding var expandedSteps: Set<String>
 
-    private var isExpanded: Bool { group.isLive || expandedGroups.contains(group.id) }
+    private var isExpanded: Bool { expandedGroups.contains(group.id) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if !group.isLive {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        if expandedGroups.contains(group.id) { expandedGroups.remove(group.id) } else { expandedGroups.insert(group.id) }
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                            .frame(width: 18)
-                        Text(summary).font(CDS.bodyMedium).foregroundStyle(CDS.textSecondary)
-                        Text(detail).font(CDS.body).foregroundStyle(CDS.textMuted)
-                        Spacer(minLength: 0)
-                    }
-                    .foregroundStyle(CDS.textMuted)
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if isExpanded { expandedGroups.remove(group.id) } else { expandedGroups.insert(group.id) }
                 }
-                .buttonStyle(.plain)
+            } label: {
+                HStack(spacing: 6) {
+                    Text(group.title)
+                        .font(CDS.body)
+                        .foregroundStyle(CDS.textMuted)
+                        .lineLimit(1)
+                    Chevron(expanded: isExpanded)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 4).padding(.vertical, 4)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+
             if isExpanded {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(group.steps) { step in
                         stepView(step)
                     }
                 }
-                .padding(.leading, group.isLive ? 0 : 6)
+                .padding(.leading, 6)
+            } else if !collapsedImages.isEmpty {
+                // Screenshots a tool returned are the point of the step — keep them visible when folded.
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(collapsedImages, id: \.key) { InlineImagesView(images: $0.images, keyPrefix: $0.key) }
+                }
+                .padding(.horizontal, 4).padding(.top, 4)
             }
         }
     }
 
-    private var summary: String {
-        if let d = group.duration, d >= 1 { return "Worked for \(Self.format(d))" }
-        let n = group.steps.count
-        return "\(n) step\(n == 1 ? "" : "s")"
-    }
-
-    private var detail: String {
-        guard let d = group.duration, d >= 1 else { return "" }
-        let tools = group.toolCount
-        if tools == 0 { return group.hasThinking ? "· thought" : "" }
-        return "· \(tools) tool call\(tools == 1 ? "" : "s")"
+    private var collapsedImages: [(key: String, images: [InlineImage])] {
+        group.steps.compactMap { step in
+            switch step {
+            case .tool(let t) where !t.resultImages.isEmpty: return ("result:\(t.toolUseId)", t.resultImages)
+            case .orphanResult(let id, _, _, let images) where !images.isEmpty: return (id, images)
+            default: return nil
+            }
+        }
     }
 
     @ViewBuilder
@@ -116,24 +117,38 @@ struct ActivityGroupView: View {
         )
     }
 
-    static func format(_ seconds: TimeInterval) -> String {
-        let s = Int(seconds.rounded())
-        if s < 60 { return "\(s)s" }
-        if s < 3600 { return "\(s / 60)m \(s % 60)s" }
-        return "\(s / 3600)h \((s % 3600) / 60)m"
-    }
+    static func format(_ seconds: TimeInterval) -> String { ActivitySummary.format(seconds) }
 }
 
-/// Bottom-of-transcript status while the assistant works ("Thinking…", "Running Bash…").
+/// Bottom-of-transcript status while the assistant works: `✳ 2m 58s · 1.9k tokens · Running tools…`,
+/// the clock ticking from the prompt that started the turn.
 struct WorkingStatusRow: View {
-    let status: String
+    var startedAt: Date?
+    var outputTokens: Int = 0
+    let phase: String
 
     var body: some View {
-        HStack(spacing: 8) {
-            SpinningGlyph()
-            ShimmerText(text: status)
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(spacing: 8) {
+                SpinningGlyph()
+                HStack(spacing: 0) {
+                    if let prefix = prefix(at: context.date) {
+                        Text(prefix + " · ").font(CDS.bodyMedium).foregroundStyle(CDS.textMuted)
+                    }
+                    ShimmerText(text: phase)
+                }
+            }
+            .padding(.horizontal, 4)
         }
-        .padding(.horizontal, 4)
+    }
+
+    private func prefix(at now: Date) -> String? {
+        var parts: [String] = []
+        if let startedAt, now > startedAt { parts.append(ActivitySummary.format(now.timeIntervalSince(startedAt))) }
+        if outputTokens > 0 {
+            parts.append(outputTokens >= 1000 ? String(format: "%.1fk tokens", Double(outputTokens) / 1000) : "\(outputTokens) tokens")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 
@@ -289,7 +304,7 @@ struct ToolStepRow: View {
             // Files delivered to the user are worth seeing without expanding.
             if step.name == "SendUserFile", let files = step.input["files"]?.array?.compactMap(\.string), !files.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(files, id: \.self) { path in RemoteImageView(path: path) }
+                    ForEach(files, id: \.self) { path in RemoteFileView(path: path) }
                 }
                 .padding(.leading, 26).padding(.bottom, 8)
             }
@@ -516,20 +531,23 @@ struct InlineImagesView: View {
     }
 }
 
-/// An image file on the Mac, fetched through the daemon (e.g. SendUserFile deliveries).
-struct RemoteImageView: View {
+/// A file the agent handed over (SendUserFile), fetched through the daemon: images show inline, anything
+/// else is a chip that opens the viewer (Markdown / text / PDF) and can be shared or saved to Files.
+struct RemoteFileView: View {
     @Environment(AppModel.self) private var model
     let path: String
+    @State private var showViewer = false
 
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "svg"]
 
+    private var isImage: Bool { RemoteFileView.imageExtensions.contains((path as NSString).pathExtension.lowercased()) }
+
     var body: some View {
         let key = "file:\(path)"
-        let ext = (path as NSString).pathExtension.lowercased()
         VStack(alignment: .leading, spacing: 4) {
             Text(ToolSummary.shortPath(path)).font(CDS.codeSmall).foregroundStyle(CDS.textMuted).lineLimit(1).truncationMode(.middle)
-            if !RemoteImageView.imageExtensions.contains(ext) {
-                Label("Not an image — open it on the Mac", systemImage: "doc").font(CDS.caption).foregroundStyle(CDS.textMuted)
+            if !isImage {
+                fileChip
             } else if let ui = model.imageCache.images[key] {
                 Image(uiImage: ui)
                     .resizable()
@@ -544,6 +562,36 @@ struct RemoteImageView: View {
                     .onAppear { model.requestFile(path) }
             }
         }
+        .sheet(isPresented: $showViewer) { RemoteFileViewer(path: path) }
+    }
+
+    /// Name + kind, with the size once the bytes have arrived. Tapping fetches (if needed) and opens.
+    private var fileChip: some View {
+        let file = model.remoteFiles[path]
+        let error = model.remoteFileErrors[path]
+        return Button {
+            if file == nil { model.requestFile(path, force: error != nil) }
+            showViewer = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: RemoteFileViewer.symbol(for: path))
+                    .font(.system(size: 18)).foregroundStyle(CDS.textSecondary).frame(width: 28, height: 28)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text((path as NSString).lastPathComponent).font(CDS.bodyMedium).foregroundStyle(CDS.textPrimary).lineLimit(1)
+                    Text(file.map { "\(RemoteFileViewer.kindLabel(for: $0.mediaType)) · \(Media.humanSize($0.data.count))" }
+                         ?? (error ?? "Tap to open"))
+                        .font(CDS.caption).foregroundStyle(error != nil && file == nil ? CDS.danger : CDS.textMuted).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(CDS.textMuted)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .frame(maxWidth: 320, alignment: .leading)
+            .background(CDS.fillControl, in: RoundedRectangle(cornerRadius: CDS.radius))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.isConnected && file == nil)
     }
 }
 

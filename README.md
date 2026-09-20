@@ -138,11 +138,55 @@ session turns into an ordinary one the phone can resume. It cannot be driven fro
 message you send is handed to `codex queue`, so the session picks it up in the app. Closed threads
 open the normal way (resume), or "Continue a copy on the phone" forks them.
 
-## Images
+## Git from the phone
+
+The branch icon in a session opens the repo: current branch (switch or create one from the menu),
+ahead/behind counts, Pull / Push (Publish sets the upstream), staged / unstaged / untracked files with
+a per-file diff, stage / unstage / discard by swipe, and a commit box (staged only, or `commit -a`).
+Actions run `git` on the Mac in the session's directory with `GIT_TERMINAL_PROMPT=0`, so a push that
+needs a password fails fast instead of hanging — use the keychain helper or an SSH key with an agent.
+While the agent is mid-turn in that repo, actions are refused so the phone doesn't race its edits.
+
+## Find, share, dictate
+
+* **Find in transcript** (session menu) — matches prompts, replies, thinking and tool calls/results;
+  ↑/↓ walk the hits and unfold the step they live in.
+* **Share transcript…** exports the whole session as Markdown (prompts and replies in full, tool
+  work folded into `<details>` blocks); **Copy last reply** is one tap. Long-press any message for
+  Copy / Share / Quote in reply.
+* **Dictation** — tap the mic and talk; the text streams into the composer as you speak (on-device
+  recognition when the language supports it). Hold the mic for the older voice-memo attachment.
+
+## Live Activity / Dynamic Island
+
+A session started from the phone (and any session you have open) shows up as a Live Activity while it
+works: what the agent is doing right now, a turn timer, and — when it stops to ask — **Deny** and
+**Allow** right on the lock screen or in the Dynamic Island. With "Require Face ID to approve" on,
+Allow opens the app on the session instead of approving inline. A finished turn stays as "Done" for
+a quarter of an hour, then goes away. Tapping the activity deep-links into the session.
+
+iOS closes the app's socket ~30 s after it leaves the foreground, so by default the activity stops
+updating once you are elsewhere for a while. To keep it live, give the Mac an APNs auth key
+(Host app → Settings → Live Activity push; or `--apns-key … --apns-key-id … --apns-team …`): the
+daemon then pushes every state change straight to the activity, and the Deny button still goes
+through the app (iOS wakes it in the background to run the intent). The key is an `AuthKey_*.p8`
+from the developer portal (Keys → +, tick APNs); Xcode builds use the sandbox gateway (the default),
+TestFlight / App Store builds need `--apns-production`.
+
+## iPad and Mac
+
+On an iPad (and as a Mac Catalyst app) the session list is a sidebar and the chat fills the rest.
+Pair the iPad / Mac with **Paste pairing link** on the pairing screen — "Copy link" in the Host app's
+menu puts the same URL the QR carries on the clipboard. The Catalyst build has no QR scanner, Watch
+app or Live Activities.
+
+## Images and files
 
 Inline images in the transcript (pasted images, screenshots returned by tools) render in the
-chat. Files delivered by a `SendUserFile` tool call are fetched from the Mac on demand and
-shown inline when they are images (≤ 12 MB); other files show their path to open on the Mac.
+chat. Files delivered by a `SendUserFile` tool call are fetched from the Mac on demand (≤ 12 MB):
+images show inline; anything else is a chip that opens a viewer — Markdown rendered like a reply,
+text and code monospaced, PDFs paged — with Copy and a share button that hands the bytes over as a
+real file, so "Save to Files", AirDrop or "Open in…" keep the name and type.
 
 ## Simulator live view
 
@@ -185,6 +229,7 @@ ccremote [--port 7811] [--token …] [--claude /path/to/claude] [--codex /path/t
          [--rotate-token] [--print-pairing] [--quiet] [--no-tls]
          [--relay wss://vps | --no-relay] [--relay-secret S] [--room R] [--relay-fingerprint FP]
          [--ntfy TOPIC] [--telegram-token T --telegram-chat ID] [--no-notify-done]
+         [--apns-key PATH --apns-key-id ID --apns-team TEAM] [--apns-bundle ID] [--apns-production]
 ```
 
 Running a second daemon for development next to the Host app? Use another port **and** `--no-relay`

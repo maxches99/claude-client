@@ -47,9 +47,11 @@ public struct HostInfo: Codable, Equatable, Sendable {
     public var protocolVersion: Int
     /// `nil` when no Codex CLI is installed on the Mac.
     public var codex: CodexInfo?
+    /// The Mac can push Live Activity updates through APNs (a key is configured).
+    public var livePush: Bool?
 
     public init(hostName: String, daemonVersion: String, cliVersion: String?, cliPath: String, loggedIn: Bool?,
-                protocolVersion: Int = ClaudeRemoteCore.protocolVersion, codex: CodexInfo? = nil) {
+                protocolVersion: Int = ClaudeRemoteCore.protocolVersion, codex: CodexInfo? = nil, livePush: Bool? = nil) {
         self.hostName = hostName
         self.daemonVersion = daemonVersion
         self.cliVersion = cliVersion
@@ -57,6 +59,7 @@ public struct HostInfo: Codable, Equatable, Sendable {
         self.loggedIn = loggedIn
         self.protocolVersion = protocolVersion
         self.codex = codex
+        self.livePush = livePush
     }
 }
 

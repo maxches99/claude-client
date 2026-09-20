@@ -28,6 +28,9 @@ func usage() -> Never {
       --ntfy TOPIC   phone notifications via ntfy: a topic (uses ntfy.sh) or a full URL
       --telegram-token T / --telegram-chat ID   phone notifications via a Telegram bot
       --no-notify-done   only notify on permission-needed and errors, not on completed turns
+      --apns-key PATH / --apns-key-id ID / --apns-team TEAM   push Live Activity updates to the phone (APNs auth key)
+      --apns-bundle ID   the iOS app's bundle id (default dev.maxches.ClaudeRemote)
+      --apns-production  use the production APNs gateway (default: sandbox, for Xcode builds)
       --quiet        do not print the QR code
     """)
     exit(2)

@@ -19,8 +19,10 @@ final class WatchClient {
     private var transcripts: [String: Transcript] = [:]
 
     private var pairing: WatchPairing?
-    private var channel: WebSocketChannel?
-    private var routeIndex = 0
+    private var channel: WebSocketChannel?     // the winning connection once the race is decided
+    private var racers: [WebSocketChannel] = []
+    private var raceDecided = false
+    private var reconnectScheduled = false
     private var generation = 0
     private var retryDelay: TimeInterval = 1
     private let queue = DispatchQueue(label: "ccremote.watch")
@@ -33,7 +35,6 @@ final class WatchClient {
         if self.pairing == pairing, isConnected { return }
         self.pairing = pairing
         WatchStore.save(pairing)
-        routeIndex = 0
         retryDelay = 1
         connect()
     }
@@ -101,44 +102,87 @@ final class WatchClient {
         generation += 1
         let gen = generation
         status = .connecting
-        let route = routes[routeIndex % routes.count]
-        let connection = NWConnection(to: .url(route.url), using: WebSocketChannel.parameters(tls: route.tls))
-        let channel = WebSocketChannel(connection: connection, queue: queue)
-        self.channel = channel
-        channel.onState = { [weak self] state in
-            Task { @MainActor [weak self] in
-                guard let self, gen == self.generation else { return }
-                switch state {
-                case .ready:
-                    self.retryDelay = 1
-                    channel.send(text: (try? ProtocolCoding.encode(ClientMessage.hello(token: pairing.token, client: "watch"))) ?? "")
-                case .failed, .cancelled, .waiting:
-                    self.routeIndex += 1   // try the next route next time
-                    if self.status == .connected { self.status = .offline; self.updateSummary() }
-                    self.scheduleReconnect()
-                default:
-                    break
+        raceDecided = false
+        for c in racers { c.close() }
+        racers = []
+        channel = nil
+
+        // Happy-eyeballs: open every route at once and keep the first that answers with `welcome`.
+        // Direct wins on the same Wi-Fi as the Mac; the relay wins on cellular / away from home — so the
+        // Watch no longer waits out one route's timeout before trying the other.
+        for route in routes {
+            let connection = NWConnection(to: .url(route.url), using: WebSocketChannel.parameters(tls: route.tls))
+            let ch = WebSocketChannel(connection: connection, queue: queue)
+            racers.append(ch)
+            ch.onState = { [weak self] state in
+                Task { @MainActor [weak self] in
+                    guard let self, gen == self.generation else { return }
+                    switch state {
+                    case .ready:
+                        ch.send(text: (try? ProtocolCoding.encode(ClientMessage.hello(token: pairing.token, client: "watch"))) ?? "")
+                    case .failed, .cancelled:
+                        if self.channel === ch {                 // the winning connection dropped
+                            self.channel = nil
+                            self.status = .offline; self.updateSummary()
+                            self.scheduleReconnect()
+                        } else {                                  // a losing racer gave up
+                            self.racers.removeAll { $0 === ch }
+                            if !self.raceDecided, self.racers.isEmpty { self.scheduleReconnect() }
+                        }
+                    case .waiting:
+                        // On the Watch the radio is often asleep, so a fresh connection sits in `.waiting`
+                        // for a moment before it can reach the network. Keep racers waiting — NWConnection
+                        // turns `.waiting` into `.ready` once the route comes up (or `.failed` at the 10s
+                        // connectionTimeout). Only a live connection dropping to `.waiting` is a real drop.
+                        if self.channel === ch {
+                            self.channel = nil
+                            self.status = .offline; self.updateSummary()
+                            self.scheduleReconnect()
+                        }
+                    default:
+                        break
+                    }
                 }
             }
-        }
-        channel.onText = { [weak self] text in
-            guard let message = try? ProtocolCoding.decode(ServerMessage.self, from: text) else { return }
-            Task { @MainActor [weak self] in
-                guard let self, gen == self.generation else { return }
-                self.handle(message)
+            ch.onText = { [weak self] text in
+                guard let message = try? ProtocolCoding.decode(ServerMessage.self, from: text) else { return }
+                Task { @MainActor [weak self] in
+                    guard let self, gen == self.generation else { return }
+                    if !self.raceDecided {                        // first route to answer wins the race
+                        self.raceDecided = true
+                        self.retryDelay = 1
+                        self.channel = ch
+                        for other in self.racers where other !== ch { other.close() }
+                        self.racers = [ch]
+                    }
+                    guard self.channel === ch else { return }     // ignore late frames from losing racers
+                    self.handle(message)
+                }
             }
+            ch.start()
         }
-        channel.start()
+
+        // Watchdog: if no route comes up, tear the race down and back off before trying again.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            guard let self, gen == self.generation, !self.raceDecided else { return }
+            for c in self.racers { c.close() }
+            self.racers = []
+            self.scheduleReconnect()
+        }
     }
 
     private func scheduleReconnect() {
-        guard pairing != nil else { return }
+        guard pairing != nil, !reconnectScheduled else { return }
+        reconnectScheduled = true
         let delay = retryDelay
         retryDelay = min(retryDelay * 2, 15)
         let gen = generation
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard let self, gen == self.generation, self.pairing != nil else { return }
+            guard let self, self.pairing != nil else { return }
+            self.reconnectScheduled = false
+            guard gen == self.generation else { return }   // a newer race already started
             self.connect()
         }
     }

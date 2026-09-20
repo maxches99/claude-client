@@ -56,6 +56,17 @@ struct PairingView: View {
                     } label: {
                         Label("Scan QR code", systemImage: "qrcode.viewfinder")
                     }
+                    // The Host app's "Copy link" puts the same ccremote:// URL the QR carries on the clipboard —
+                    // the way to pair an iPad or Mac that has no camera pointed at the screen.
+                    Button {
+                        if let text = UIPasteboard.general.string, let info = PairingInfo.parse(pairURL: text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                            pair(info)
+                        } else {
+                            scanError = "The clipboard doesn't hold a ccremote pairing link."
+                        }
+                    } label: {
+                        Label("Paste pairing link", systemImage: "doc.on.clipboard")
+                    }
                     if let scanError { Text(scanError).font(.footnote).foregroundStyle(.red) }
                 }
                 Section {

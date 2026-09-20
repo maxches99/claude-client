@@ -72,4 +72,71 @@ final class TranscriptLayoutTests: XCTestCase {
         XCTAssertEqual(blocks.count, 2)
         guard case .turnError = blocks[1] else { return XCTFail("\(blocks)") }
     }
+
+    func testFinishedGroupTitlesReadLikeTheDesktopTranscript() {
+        let blocks = TranscriptLayout.blocks(for: transcript().items, sessionRunning: false)
+        guard case .activity(let group) = blocks[1] else { return XCTFail("\(blocks)") }
+        XCTAssertEqual(group.title, "Ran a command, read a file")
+
+        func step(_ name: String, _ input: String) -> ToolStep {
+            ToolStep(id: name, toolUseId: name, name: name, input: json(input), partialInput: "", running: false,
+                     resultText: "", isError: false, resultImages: [], startedAt: nil)
+        }
+        XCTAssertEqual(ActivitySummary.finished([step("Bash", #"{"command":"ls"}"#), step("Bash", #"{"command":"pwd"}"#)]), "Ran 2 commands")
+        XCTAssertEqual(ActivitySummary.finished([step("Bash", #"{"command":"ls","description":"list the sources."}"#)]), "List the sources",
+                       "a lone described command reads as its description")
+        XCTAssertEqual(ActivitySummary.finished([
+            step("Bash", "{}"), step("Edit", #"{"file_path":"/a.swift"}"#), step("Grep", "{}"),
+            step("Bash", #"{"command":"cat /Users/me/.claude/projects/x/memory/notes.md"}"#), step("Bash", "{}"),
+        ]), "Recalled a memory, ran 2 commands, edited a file, searched the codebase",
+                       "phrases come in a fixed order, and `cat` of a memory file counts as recalling it")
+        XCTAssertEqual(ActivitySummary.finished([step("mcp__Figma__get_metadata", "{}")]), "Used get_metadata")
+    }
+
+    func testLiveGroupTitleNamesTheCurrentStep() {
+        var t = Transcript()
+        t.apply(json(#"{"type":"user","uuid":"u1","message":{"role":"user","content":"go"}}"#))
+        t.apply(json(#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}"#))
+        guard case .activity(let running)? = TranscriptLayout.blocks(for: t.items, sessionRunning: true).last else { return XCTFail() }
+        XCTAssertEqual(running.title, "Running a command")
+        XCTAssertEqual(running.phase, "Running tools…")
+
+        t.apply(json(#"{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"toolu_2","name":"Read","input":{"file_path":"/a"}}]}}"#))
+        guard case .activity(let two)? = TranscriptLayout.blocks(for: t.items, sessionRunning: true).last else { return XCTFail() }
+        XCTAssertEqual(two.title, "Running 2 tools".replacingOccurrences(of: "tools", with: "commands"),
+                       "parallel calls are counted by the first one's kind")
+
+        t.apply(json(#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}}"#))
+        t.apply(json(#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"ok"}]}}"#))
+        t.apply(json(#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m2"}}}"#))
+        t.apply(json(#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}}"#))
+        guard case .activity(let thinking)? = TranscriptLayout.blocks(for: t.items, sessionRunning: true).last else { return XCTFail() }
+        XCTAssertEqual(thinking.title, "Thinking…")
+        XCTAssertEqual(thinking.phase, "Thinking…")
+
+        t.apply(json(#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"#))
+        guard case .activity(let idle)? = TranscriptLayout.blocks(for: t.items, sessionRunning: true).last else { return XCTFail() }
+        XCTAssertEqual(idle.title, "Ran a command, read a file", "between steps the live row shows what is done so far")
+        XCTAssertEqual(idle.phase, "Working…")
+    }
+
+    func testTurnClockAndTokensResetOnEachPrompt() {
+        var t = Transcript()
+        t.apply(json(#"{"type":"user","uuid":"u1","timestamp":"2026-09-19T10:00:00.000Z","message":{"role":"user","content":"go"}}"#))
+        XCTAssertEqual(t.turnStartedAt, Transcript.parseDate("2026-09-19T10:00:00.000Z"))
+        t.apply(json(#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1"}}}"#))
+        t.apply(json(#"{"type":"stream_event","event":{"type":"message_delta","delta":{},"usage":{"output_tokens":120}}}"#))
+        XCTAssertEqual(t.turnOutputTokens, 120)
+        // The full message repeats the final count for the same id — not double-counted.
+        t.apply(json(#"{"type":"assistant","message":{"id":"m1","usage":{"output_tokens":150},"content":[{"type":"text","text":"a"}]}}"#))
+        t.apply(json(#"{"type":"assistant","message":{"id":"m1","usage":{"output_tokens":150},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}"#))
+        XCTAssertEqual(t.turnOutputTokens, 150)
+        t.apply(json(#"{"type":"assistant","message":{"id":"m2","usage":{"output_tokens":50},"content":[{"type":"text","text":"b"}]}}"#))
+        XCTAssertEqual(t.turnOutputTokens, 200)
+        // Tool results are user messages too, but not prompts.
+        t.apply(json(#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#))
+        XCTAssertEqual(t.turnOutputTokens, 200)
+        t.apply(json(#"{"type":"user","uuid":"u2","message":{"role":"user","content":"again"}}"#))
+        XCTAssertEqual(t.turnOutputTokens, 0)
+    }
 }

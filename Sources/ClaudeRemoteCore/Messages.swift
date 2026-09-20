@@ -31,10 +31,16 @@ public enum ClientMessage: Codable, Sendable {
     case listModels(agent: AgentKind)
     /// Stop the daemon's CLI process for this session (transcript stays on disk).
     case close(sessionId: String)
-    /// Read an image file from the Mac (e.g. one referenced by a SendUserFile tool call).
+    /// Read a file from the Mac (one referenced by a SendUserFile tool call): images, Markdown, text,
+    /// PDF — anything up to 12 MB; the reply carries its media type.
     case fetchFile(path: String)
     /// Ask for the session repo's uncommitted changes (git status + diff) to review before approving.
-    case gitDiff(sessionId: String)
+    /// With `path`, only that file's diff (`staged` picks the index side); untracked files are shown whole.
+    case gitDiff(sessionId: String, path: String? = nil, staged: Bool? = nil)
+    /// Ask for the repo's branch / sync state and changed files; answered with `gitStatus`.
+    case gitStatus(sessionId: String)
+    /// Run a git action in the session repo; answered with `gitResult` followed by a fresh `gitStatus`.
+    case gitAction(sessionId: String, action: GitAction)
     /// Fuzzy-search files under the session's cwd for the composer's "@" mention picker. Empty query
     /// returns a first page of files.
     case listFiles(sessionId: String, query: String)
@@ -45,6 +51,11 @@ public enum ClientMessage: Codable, Sendable {
     /// Start / stop receiving live frames of a booted simulator. `maxPixelSize` bounds the frame's
     /// longer side, `fps` the capture rate (capped by the daemon). Frames stop when the phone disconnects.
     case simulatorStream(udid: String, enabled: Bool, maxPixelSize: Int?, fps: Double?)
+    /// Register (or, with `pushToken == nil`, drop) this phone's Live Activity for a session. When the
+    /// Mac has APNs configured it pushes `SessionActivityState` updates to the token, so the activity
+    /// keeps moving while the app is in the background. `approvalNeedsApp` mirrors the phone's Face ID
+    /// setting into the pushed state.
+    case liveActivity(sessionId: String, pushToken: String?, approvalNeedsApp: Bool)
     case ping
 }
 
@@ -63,7 +74,10 @@ public enum ServerMessage: Codable, Sendable {
     case state(state: SessionState)
     case models(agent: AgentKind, items: [ModelOption])
     case file(path: String, mediaType: String?, base64: String?, error: String?)
-    case gitDiff(sessionId: String, diff: String, error: String?)
+    case gitDiff(sessionId: String, diff: String, error: String?, path: String? = nil)
+    case gitStatus(sessionId: String, status: GitStatus?, error: String?)
+    /// Output of a `gitAction` (stdout+stderr, trimmed); `error` when git failed or the action was refused.
+    case gitResult(sessionId: String, action: GitAction, output: String, error: String?)
     /// Files matching a `listFiles` query, as paths relative to the session's cwd.
     case fileList(sessionId: String, paths: [String])
     /// The `/usage` payload (raw, as the CLI returns it) or an error when limits are unavailable.
