@@ -1,6 +1,5 @@
 #if os(macOS) || os(Linux)
 import Foundation
-import Network
 import ClaudeRemoteCore
 
 /// One `codex app-server` process speaking JSON-RPC over stdio — the channel the Codex desktop
@@ -168,8 +167,7 @@ public final class CodexAppServer: @unchecked Sendable {
             log?("attaching to the codex app-server already on 127.0.0.1:\(port)")
         }
         let url = URL(string: "ws://127.0.0.1:\(port)")!
-        let connection = NWConnection(to: .url(url), using: WebSocketChannel.parameters(tls: .none))
-        let channel = WebSocketChannel(connection: connection, queue: wsQueue)
+        let channel = WebSocketChannel.connect(url: url, tls: .none, queue: wsQueue)
         let gate = ConnectGate()
         channel.onState = { [weak self] state in
             switch state {
@@ -237,7 +235,9 @@ public final class CodexAppServer: @unchecked Sendable {
         guard sock >= 0 else { return false }
         defer { close(sock) }
         var addr = sockaddr_in()
+        #if canImport(Darwin)
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = port.bigEndian
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")

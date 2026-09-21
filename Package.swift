@@ -14,22 +14,26 @@ let package = Package(
         // Linux only: the daemon's WebSocket transport. Apple platforms use Network.framework
         // and never link this (see the platform condition below).
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.75.0"),
+        // Linux only: CryptoKit's API for the end-to-end link (Apple platforms use CryptoKit itself).
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
     ],
     targets: [
         // Shared between the Mac daemon and the iOS app: wire protocol, JSON, transcript reducer.
-        .target(name: "ClaudeRemoteCore"),
-        // Mac/Linux: drives `claude` CLI processes over stream-json, indexes ~/.claude.
-        .target(name: "ClaudeCodeHost", dependencies: ["ClaudeRemoteCore"]),
-        // Mac/Linux: the daemon itself — WebSocket server (+ Bonjour on macOS), relay dial-out,
-        // pairing, phone tracking. Hosted by the `ccremote` CLI and by the ClaudeRemote Host menu-bar app.
-        // SwiftNIO is the Linux transport; Apple platforms use Network.framework and never link it.
-        .target(name: "ClaudeRemoteDaemon", dependencies: [
-            "ClaudeCodeHost", "ClaudeRemoteCore",
-            .target(name: "ObjCExceptionGuard", condition: .when(platforms: [.macOS])),
+        // On Linux it also carries the SwiftNIO WebSocket transport and swift-crypto (CryptoKit's API).
+        .target(name: "ClaudeRemoteCore", dependencies: [
+            .product(name: "Crypto", package: "swift-crypto", condition: .when(platforms: [.linux])),
             .product(name: "NIOCore", package: "swift-nio", condition: .when(platforms: [.linux])),
             .product(name: "NIOPosix", package: "swift-nio", condition: .when(platforms: [.linux])),
             .product(name: "NIOHTTP1", package: "swift-nio", condition: .when(platforms: [.linux])),
             .product(name: "NIOWebSocket", package: "swift-nio", condition: .when(platforms: [.linux])),
+        ]),
+        // Mac/Linux: drives `claude` CLI processes over stream-json, indexes ~/.claude.
+        .target(name: "ClaudeCodeHost", dependencies: ["ClaudeRemoteCore"]),
+        // Mac/Linux: the daemon itself — WebSocket server (+ Bonjour on macOS), relay dial-out,
+        // pairing, phone tracking. Hosted by the `ccremote` CLI and by the ClaudeRemote Host menu-bar app.
+        .target(name: "ClaudeRemoteDaemon", dependencies: [
+            "ClaudeCodeHost", "ClaudeRemoteCore",
+            .target(name: "ObjCExceptionGuard", condition: .when(platforms: [.macOS])),
         ]),
         // Mac-only: catches NSExceptions raised inside Apple's private simulator frameworks (Swift can't).
         .target(name: "ObjCExceptionGuard"),

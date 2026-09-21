@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 
 /// End-to-end encryption for a phone ↔ Mac link that crosses something untrusted (the relay).
 ///
@@ -36,9 +40,8 @@ public final class E2ELink: @unchecked Sendable {
     public init(token: String, role: Role) {
         self.token = token
         self.role = role
-        var bytes = [UInt8](repeating: 0, count: 16)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        nonce = Data(bytes)
+        var generator = SystemRandomNumberGenerator()   // the system CSPRNG on every platform
+        nonce = Data((0..<16).map { _ in UInt8.random(in: 0...255, using: &generator) })
     }
 
     public var isEstablished: Bool { lock.withLock { key != nil } }

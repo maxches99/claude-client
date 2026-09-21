@@ -1,6 +1,8 @@
 #if os(macOS) || os(Linux)
 import Foundation
+#if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
+#endif
 import ClaudeRemoteCore
 
 /// Owns CLI processes and transcript watchers; fans events out to connected phones.
@@ -1685,7 +1687,9 @@ public actor SessionManager {
         case "txt", "log", "swift", "py", "js", "ts", "rb", "go", "rs", "sh", "yml", "yaml", "toml", "xml", "diff", "patch", "c", "h", "m", "cpp", "java", "kt", "sql", "css":
             return "text/plain"
         default:
+            #if canImport(UniformTypeIdentifiers)
             if let uti = UTType(filenameExtension: ext), let mime = uti.preferredMIMEType { return mime }
+            #endif
             return "application/octet-stream"
         }
     }

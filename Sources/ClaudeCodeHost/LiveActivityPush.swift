@@ -1,6 +1,13 @@
-#if os(macOS)
+#if os(macOS) || os(Linux)
 import Foundation
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Pushes Live Activity updates to phones through APNs (token-based auth with a `.p8` key), so the
 /// Dynamic Island keeps moving after iOS has cut the app's socket. Optional: without a key the phone

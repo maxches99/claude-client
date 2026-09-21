@@ -4,11 +4,10 @@ import NIOCore
 import NIOPosix
 import NIOHTTP1
 import NIOWebSocket
-import ClaudeRemoteCore
 
-// The Linux transport. Apple platforms use Network.framework (ClaudeRemoteCore/WebSocketChannel.swift);
-// this file gives the daemon the same `WebSocketChannel` surface on top of SwiftNIO so PhoneSession,
-// RelayClient and WebSocketServer compile unchanged. Plain ws:// only: a relay on the same box
+// The Linux transport. Apple platforms use Network.framework (WebSocketChannel.swift); this file
+// gives the daemon and the host library the same `WebSocketChannel` surface on top of SwiftNIO so
+// PhoneSession, RelayClient, WebSocketServer and CodexAppServer compile unchanged. Plain ws:// only: a relay on the same box
 // (or behind a mesh VPN) needs no TLS, and the daemon's own listener is meant for the LAN.
 
 /// TLS role for a WebSocket channel. Only `.none` is available on Linux; the other cases exist so
@@ -45,8 +44,8 @@ public enum WebSocketChannelState: CustomStringConvertible {
     }
 }
 
-struct WebSocketTransportError: Error, CustomStringConvertible {
-    let description: String
+public struct WebSocketTransportError: Error, CustomStringConvertible {
+    public let description: String
 }
 
 /// One WebSocket connection speaking text frames — accepted by `NIOWebSocketListener` or dialed
@@ -75,6 +74,15 @@ public final class WebSocketChannel: @unchecked Sendable {
     public var onState: (@Sendable (WebSocketChannelState) -> Void)? {
         get { lock.withLock { _onState } }
         set { lock.withLock { _onState = newValue } }
+    }
+
+    private var _secure: E2ELink?
+    /// End-to-end encryption once its handshake is done: outgoing text is sealed, incoming frames
+    /// are opened before `onText` sees them (a frame that fails to authenticate closes the link).
+    /// Handshake frames themselves travel in the clear, before this is set.
+    public var secure: E2ELink? {
+        get { lock.withLock { _secure } }
+        set { lock.withLock { _secure = newValue } }
     }
 
     /// Wraps a channel the listener has already upgraded to WebSocket.
@@ -110,9 +118,14 @@ public final class WebSocketChannel: @unchecked Sendable {
 
     public func send(text: String, completion: (@Sendable (Error?) -> Void)? = nil) {
         guard let channel = lock.withLock({ channel }) else { completion?(WebSocketTransportError(description: "not connected")); return }
+        var payload = text
+        if let secure, secure.isEstablished {
+            guard let sealed = try? secure.seal(text) else { return }
+            payload = sealed
+        }
         channel.eventLoop.execute {
-            var buffer = channel.allocator.buffer(capacity: text.utf8.count)
-            buffer.writeString(text)
+            var buffer = channel.allocator.buffer(capacity: payload.utf8.count)
+            buffer.writeString(payload)
             let frame = WebSocketFrame(fin: true, opcode: .text, maskKey: self.maskKey, data: buffer)
             channel.writeAndFlush(frame).whenComplete { result in
                 if case .failure(let error) = result { completion?(error) } else { completion?(nil) }
@@ -192,7 +205,16 @@ public final class WebSocketChannel: @unchecked Sendable {
     }
 
     fileprivate func deliver(_ text: String) {
-        onText?(text)
+        if let secure, secure.isEstablished {
+            guard let plain = try? secure.open(text) else {
+                // Tampered, replayed or from the wrong key: the link is not ours any more.
+                lock.withLock { channel }?.close(promise: nil)
+                return
+            }
+            onText?(plain)
+        } else {
+            onText?(text)
+        }
     }
 
     fileprivate func upgraded(_ channel: Channel) {
@@ -313,11 +335,13 @@ private final class FrameHandler: ChannelInboundHandler {
 }
 
 /// Accepts WebSocket connections on a TCP port and hands each upgraded channel to `accept`.
-final class NIOWebSocketListener: @unchecked Sendable {
+public final class NIOWebSocketListener: @unchecked Sendable {
     private var serverChannel: Channel?
 
+    public init() {}
+
     /// Binds and upgrades; `accept` is called on the event loop for every phone.
-    func start(host: String, port: UInt16, accept: @escaping @Sendable (WebSocketChannel, String) -> Void) -> EventLoopFuture<UInt16> {
+    public func start(host: String, port: UInt16, accept: @escaping @Sendable (WebSocketChannel, String) -> Void) -> EventLoopFuture<UInt16> {
         let upgrader = NIOWebSocketServerUpgrader(
             maxFrameSize: WebSocketChannel.maxFrameSize,
             shouldUpgrade: { channel, _ in channel.eventLoop.makeSucceededFuture(HTTPHeaders()) },
@@ -342,7 +366,7 @@ final class NIOWebSocketListener: @unchecked Sendable {
         }
     }
 
-    func stop() {
+    public func stop() {
         serverChannel?.close(promise: nil)
         serverChannel = nil
     }

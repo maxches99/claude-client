@@ -49,6 +49,7 @@ func usage() -> Never {
     FileHandle.standardError.write(Data("[\(ts)] \(line)\n".utf8))
 }
 
+#if os(macOS)
 // Developer check of the simulator input path: `ccremote --sim-input <udid> '{"tap":{"x":0.5,"y":0.5}}'`.
 if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--sim-input" {
     let udid = CommandLine.arguments[2]
@@ -87,6 +88,7 @@ if CommandLine.arguments.count == 2, ["--install-hook", "--uninstall-hook"].cont
         exit(1)
     }
 }
+#endif
 
 let arguments: DaemonArguments
 do {

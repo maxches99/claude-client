@@ -359,8 +359,10 @@ public final class Daemon: @unchecked Sendable {
         stopRelay()
         server?.stop()
         server = nil
+        #if os(macOS)
         hooks?.stop()
         hooks = nil
+        #endif
         await manager.shutdown()
         update { s in
             s.listener = .stopped
