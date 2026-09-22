@@ -61,6 +61,17 @@ struct SettingsView: View {
                 } footer: {
                     Text(liveActivityFooter)
                 }
+                if !model.shares.isEmpty {
+                    Section {
+                        NavigationLink {
+                            SharedLinksView()
+                        } label: {
+                            LabeledContent("Shared links", value: "\(model.shares.filter { !$0.isExpired }.count) active")
+                        }
+                    } footer: {
+                        Text("Links to transcripts this phone published. Revoking one deletes the page from the relay.")
+                    }
+                }
                 if let host = model.connection.host {
                     Section("Connected Mac") {
                         LabeledContent("Host", value: host.hostName)

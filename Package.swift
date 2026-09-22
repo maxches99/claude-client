@@ -14,7 +14,9 @@ let package = Package(
         // Shared between the Mac daemon and the iOS app: wire protocol, JSON, transcript reducer.
         .target(name: "ClaudeRemoteCore"),
         // Mac-only: drives `claude` CLI processes over stream-json, indexes ~/.claude.
-        .target(name: "ClaudeCodeHost", dependencies: ["ClaudeRemoteCore"]),
+        .target(name: "ClaudeCodeHost", dependencies: ["ClaudeRemoteCore", "CPTY"]),
+        // The fork-to-exec part of starting a shell in a pseudo-terminal (terminals from the phone).
+        .target(name: "CPTY"),
         // Mac-only: the daemon itself — WebSocket server + Bonjour, relay dial-out, pairing,
         // phone tracking. Hosted by the `ccremote` CLI and by the ClaudeRemote Host menu-bar app.
         .target(name: "ClaudeRemoteDaemon", dependencies: ["ClaudeCodeHost", "ClaudeRemoteCore", "ObjCExceptionGuard"]),

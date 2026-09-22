@@ -22,6 +22,8 @@ struct SessionListView: View {
     @State private var showInbox = false
     @State private var showTasks = false
     @State private var showProcesses = false
+    @State private var showDigest = false
+    @State private var showTerminals = false
 
     private var isChats: Bool { scope == .chats }
     /// One list across every paired Mac (only worth it when there is more than one).
@@ -143,6 +145,14 @@ struct SessionListView: View {
                         } header: { sectionHeader("Recent") }
                     }
                 } else {
+                    if !model.digests.isEmpty {
+                        Section {
+                            DigestCard(isPresented: $showDigest)
+                                .listRowBackground(CDS.surface0)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 6, leading: CDS.gutter, bottom: 2, trailing: CDS.gutter))
+                        }
+                    }
                     Section {
                         Button { newSessionCwd = nil; showNewSession = true } label: {
                             newRowLabel("New session", systemImage: "plus")
@@ -207,9 +217,20 @@ struct SessionListView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Approvals inbox", systemImage: "tray.full") { showInbox = true }
+                    if model.supportsMacTools {
+                        Button("Catch up…", systemImage: "sun.horizon") {
+                            // Since the phone last looked, or the last day when it never has.
+                            let since = model.activeMacId.flatMap { model.lastSeen($0) } ?? Date().addingTimeInterval(-86_400)
+                            model.requestDigest(since: min(since, Date().addingTimeInterval(-3600)))
+                            showDigest = true
+                        }
+                    }
                     if !isChats, model.supportsQueue {
                         Button("Task queue…", systemImage: "list.bullet.rectangle") { showTasks = true }
                         Button("Background processes…", systemImage: "bolt.horizontal") { showProcesses = true }
+                    }
+                    if !isChats, model.supportsMacTools {
+                        Button("Terminals…", systemImage: "apple.terminal") { showTerminals = true }
                     }
                     Divider()
                     Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
@@ -252,6 +273,8 @@ struct SessionListView: View {
         .sheet(isPresented: $showInbox) { ApprovalsInboxView() }
         .sheet(isPresented: $showTasks) { TasksView() }
         .sheet(isPresented: $showProcesses) { ProcessesView(sessionId: nil) }
+        .sheet(isPresented: $showDigest) { DigestView() }
+        .sheet(isPresented: $showTerminals) { TerminalsView(sessionId: nil) }
         .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Title", text: $renameText)
             Button("Save") {

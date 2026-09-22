@@ -20,13 +20,17 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$DOMAIN" ] || { echo "--domain is required" >&2; exit 2; }
+# Re-running on a box that already has a relay keeps its secret: a new one would cut off every Mac.
+if [ -z "$SECRET" ] && [ -f /etc/ccremote-relay.env ]; then
+  SECRET="$(sed -n 's/^CCRELAY_SECRET=//p' /etc/ccremote-relay.env | head -1)"
+fi
 [ -n "$SECRET" ] || SECRET="$(openssl rand -hex 16)"
 command -v node >/dev/null || { echo "Node.js 18+ is required (install it first)" >&2; exit 1; }
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
 id "$SVCUSER" >/dev/null 2>&1 || useradd --system --home "$DIR" --shell /usr/sbin/nologin "$SVCUSER"
 mkdir -p "$DIR"
-install -m 0644 "$SRC/relay.mjs" "$SRC/package.json" "$SRC/package-lock.json" "$DIR/"
+install -m 0644 "$SRC/relay.mjs" "$SRC/share.mjs" "$SRC/package.json" "$SRC/package-lock.json" "$DIR/"
 ( cd "$DIR" && npm ci --omit=dev --no-audit --no-fund )
 chown -R "$SVCUSER":"$SVCUSER" "$DIR"
 
@@ -34,6 +38,7 @@ install -m 0600 /dev/stdin /etc/ccremote-relay.env <<ENV
 CCRELAY_SECRET=$SECRET
 CCRELAY_PORT=$PORT
 CCRELAY_HOST=127.0.0.1
+CCRELAY_DATA=/var/lib/ccremote-relay
 ENV
 
 install -m 0644 /dev/stdin /etc/systemd/system/ccremote-relay.service <<UNIT
@@ -47,6 +52,9 @@ WorkingDirectory=$DIR
 ExecStart=/usr/bin/env node relay.mjs --port \${CCRELAY_PORT} --host \${CCRELAY_HOST}
 Restart=always
 User=$SVCUSER
+# Share links (sealed pages) survive restarts here; systemd creates it writable for the service.
+StateDirectory=ccremote-relay
+StateDirectoryMode=0700
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -57,7 +65,8 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now ccremote-relay
+systemctl enable ccremote-relay
+systemctl restart ccremote-relay
 sleep 1
 systemctl --no-pager --lines=5 status ccremote-relay || true
 

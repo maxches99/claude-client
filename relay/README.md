@@ -79,6 +79,17 @@ the **relay** route. The app tries direct first, then falls back to the relay â€
 works at home and away. `--room` defaults to a stable per-Mac id (stored in the support dir); pass it
 explicitly to run several Macs through one relay.
 
+## Share links
+
+The same process hosts transcript links (`share.mjs`). The Mac posts `POST /share` with its room and
+secret (`X-Relay-Room` / `X-Relay-Secret` headers) and a body of `{iv, ct, ttl}` â€” a page the phone has
+already encrypted; the relay answers `{id, expiresAt}`. People open `/s/<id>#<key>`: the viewer fetches
+`/s/<id>/data`, decrypts it in the browser with the key from the fragment (which never reaches the
+server), and shows it in a sandboxed frame under a strict CSP. `DELETE /share/<id>` revokes one. Links
+live at most seven days, 200 per Mac, 500 MB in all; with `--data DIR` (or `CCRELAY_DATA`) they survive
+restarts, otherwise they are kept in memory. `deploy.sh` sets `StateDirectory=ccremote-relay` and keeps
+the existing secret when re-run, so updating the relay does not cut off the Macs paired to it.
+
 ## WireGuard / Tailscale instead
 
 If you'd rather not run a relay, a mesh VPN needs **no relay and no app code**: put the Mac and phone

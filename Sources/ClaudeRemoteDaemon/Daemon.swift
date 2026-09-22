@@ -191,6 +191,11 @@ public final class Daemon: @unchecked Sendable {
         manager = SessionManager(cli: cli, codex: codexBackend, notifier: notifier, livePusher: livePusher,
                                  approvalLog: SessionManager.approvalLogPath(supportDirectory: supportDirectory),
                                  taskStore: SessionManager.taskStorePath(supportDirectory: supportDirectory), log: log)
+        if config.relayEnabled, let relay = config.relayURL.flatMap(URL.init(string:)), let base = ShareConfig.httpBase(fromRelay: relay),
+           let room, let secret = config.relaySecret {
+            let share = ShareConfig(endpoint: base, publicBase: base, room: room, secret: secret)
+            Task { [manager] in await manager.setShareConfig(share) }
+        }
         SimulatorStreamer.log = log
         SimulatorInput.log = log
 
