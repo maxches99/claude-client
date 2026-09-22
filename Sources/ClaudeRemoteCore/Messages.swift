@@ -83,6 +83,33 @@ public enum ClientMessage: Codable, Sendable {
     case simulatorInput(udid: String, event: SimulatorInputEvent)
     /// A full-resolution still of the simulator's screen (to attach to a prompt); answered with `simulatorScreenshot`.
     case simulatorScreenshot(udid: String)
+    /// Cut the conversation back to just before `uuid` (an entry of the transcript) and continue from
+    /// there in a new session: the entries after it are left out of the copy. Files on disk are not
+    /// touched — that is what the turn review is for. Answered with `rewound`.
+    case rewind(sessionId: String, uuid: String)
+    /// Slash commands, skills and sub-agents available in the session's project; answered with `palette`.
+    case listPalette(sessionId: String)
+    /// The repo's `git worktree list`; answered with `worktrees`.
+    case listWorktrees(sessionId: String)
+    /// Add / remove a worktree of the session's repo; answered with a fresh `worktrees`.
+    case worktreeAction(sessionId: String, action: WorktreeAction)
+    /// The Mac's task queue and its settings; answered with `tasks`. Every change to the queue is
+    /// broadcast to every phone as another `tasks`.
+    case listTasks
+    /// Put a task in the queue (it starts when a slot frees up, or at its scheduled time).
+    case addTask(task: AgentTask)
+    /// Replace a queued task (prompt, schedule, project…). Running tasks keep what they started with.
+    case updateTask(task: AgentTask)
+    case taskAction(id: String, action: TaskAction)
+    case setTaskSettings(settings: TaskQueueSettings)
+    /// Commands still running on the Mac (and the recently finished ones); answered with `processes`.
+    case listProcesses
+    /// Start a command that keeps running when the phone goes away. Output streams as `commandOutput`
+    /// frames tagged with `runId` to every phone attached to it.
+    case startProcess(sessionId: String?, runId: String, command: String, label: String?)
+    /// Start receiving a background process's output (the buffered tail first), or stop.
+    case attachProcess(runId: String, attached: Bool)
+    case killProcess(runId: String)
     /// Register (or, with `pushToken == nil`, drop) this phone's Live Activity for a session. When the
     /// Mac has APNs configured it pushes `SessionActivityState` updates to the token, so the activity
     /// keeps moving while the app is in the background. `approvalNeedsApp` mirrors the phone's Face ID
@@ -125,6 +152,14 @@ public enum ServerMessage: Codable, Sendable {
     case commandOutput(sessionId: String, runId: String, chunk: String, done: Bool, exitCode: Int32?)
     case pullRequest(sessionId: String, info: PullRequestInfo?, error: String?)
     case sessionSearchResults(query: String, hits: [SessionSearchHit], error: String?)
+    /// The rewound copy of a session: `newSessionId` is a fresh session with the history up to the
+    /// chosen point. The phone opens it; the original is left exactly as it was.
+    case rewound(sessionId: String, newSessionId: String, dropped: Int, error: String?)
+    case palette(sessionId: String, items: [PaletteItem])
+    case worktrees(sessionId: String, items: [Worktree], error: String?)
+    /// The whole queue, every time anything in it changes.
+    case tasks(items: [AgentTask], settings: TaskQueueSettings)
+    case processes(items: [BackgroundProcess])
     case simulators(items: [SimulatorInfo])
     case simulatorActionResult(udid: String, action: SimulatorAction, error: String?)
     case simulatorApps(udid: String, items: [SimulatorApp], error: String?)

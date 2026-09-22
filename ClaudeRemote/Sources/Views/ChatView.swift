@@ -17,6 +17,10 @@ struct ChatView: View {
     @State private var showGit = false
     @State private var showBrowser = false
     @State private var showCommands = false
+    @State private var showTurnChanges = false
+    @State private var showProcesses = false
+    @State private var showWorktrees = false
+    @State private var confirmRewind: String?
     /// Replies are read aloud and the mic opens for the next prompt — a conversation without looking.
     @State private var handsFree = false
     @State private var showFind = false
@@ -46,6 +50,11 @@ struct ChatView: View {
                 CDSBanner(kind: .danger, text: error, systemImage: "exclamationmark.triangle.fill") { model.errorBanner = nil }
             }
             if showFind { findBar }
+            if let notice = model.rewindNotice, notice.sessionId == sessionId {
+                CDSBanner(kind: .info,
+                          text: "Rewound: this is a copy without the last \(notice.dropped) transcript entr\(notice.dropped == 1 ? "y" : "ies"). Files on the Mac were not reverted.",
+                          systemImage: "arrow.counterclockwise") { model.rewindNotice = nil }
+            }
             transcriptView
             ComposerDock(
                 draft: $draft,
@@ -88,8 +97,13 @@ struct ChatView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    if !usageSummary.isEmpty {
-                        Section("Usage") { Label(usageSummary, systemImage: "dollarsign.circle") }
+                    if !usageSummary.isEmpty || model.contextUsage(sessionId) != nil {
+                        Section("Usage") {
+                            if !usageSummary.isEmpty { Label(usageSummary, systemImage: "dollarsign.circle") }
+                            if let context = model.contextUsage(sessionId) {
+                                Label("Context \(context.percentLabel) · \(context.label)", systemImage: "gauge.with.dots.needle.33percent")
+                            }
+                        }
                     }
                     Button("Plan limits…", systemImage: "gauge.with.dots.needle.67percent") { showLimits = true }
                     Button("Find in transcript", systemImage: "magnifyingglass") { openFind() }
@@ -97,6 +111,19 @@ struct ChatView: View {
                         Section {
                             Button("Browse files…", systemImage: "folder") { showBrowser = true }
                             Button("Run a command…", systemImage: "terminal") { showCommands = true }
+                            if model.supportsQueue {
+                                Button("Background processes…", systemImage: "bolt.horizontal") { showProcesses = true }
+                            }
+                            Button("Changes by turn…", systemImage: "arrow.uturn.backward.square") { showTurnChanges = true }
+                            if model.supportsQueue {
+                                Button("Worktrees…", systemImage: "square.split.2x1") { showWorktrees = true }
+                            }
+                        }
+                    }
+                    if !isDesktop, agent == .claude {
+                        Section {
+                            Button("Compact the conversation", systemImage: "arrow.down.right.and.arrow.up.left") { model.compact(sessionId) }
+                                .disabled(isRunning || !model.isConnected)
                         }
                     }
                     Section {
@@ -148,6 +175,22 @@ struct ChatView: View {
         .sheet(isPresented: $showGit) { GitView(sessionId: sessionId) }
         .sheet(isPresented: $showBrowser) { ProjectBrowserView(sessionId: sessionId) }
         .sheet(isPresented: $showCommands) { CommandsView(sessionId: sessionId) }
+        .sheet(isPresented: $showTurnChanges) { TurnChangesView(sessionId: sessionId) }
+        .sheet(isPresented: $showProcesses) { ProcessesView(sessionId: sessionId) }
+        .sheet(isPresented: $showWorktrees) { WorktreesView(sessionId: sessionId) }
+        .confirmationDialog("Rewind to this prompt?", isPresented: Binding(get: { confirmRewind != nil }, set: { if !$0 { confirmRewind = nil } }), titleVisibility: .visible) {
+            Button("Rewind") {
+                if let itemId = confirmRewind { model.rewind(sessionId, toItemId: itemId) }
+                confirmRewind = nil
+            }
+        } message: {
+            Text("The Mac copies the conversation up to just before that prompt into a new session and opens it. This session stays as it is, and no files are reverted — use “Changes by turn” for that.")
+        }
+        .alert("Couldn't rewind", isPresented: Binding(get: { model.rewindError != nil }, set: { if !$0 { model.rewindError = nil } })) {
+            Button("OK", role: .cancel) { model.rewindError = nil }
+        } message: {
+            Text(model.rewindError ?? "")
+        }
         .onChange(of: pending?.id) {
             // The inline card is the prompt; a stale details sheet just goes away.
             if pending == nil { presentedPermission = nil }
@@ -172,6 +215,7 @@ struct ChatView: View {
         }
         .onAppear {
             model.openIfNeeded(sessionId)
+            if !isChat, model.supportsQueue, model.palettes[sessionId] == nil { model.requestPalette(sessionId) }
             if let q = model.pendingFind.removeValue(forKey: sessionId) { findQuery = q; openFind() }
             if !isChat, model.gitStatuses[sessionId] != nil || model.pullRequests[sessionId] != nil { model.requestPullRequest(sessionId) }
         }
@@ -425,12 +469,12 @@ struct ChatView: View {
         case .user(let item):
             if case .user(let text, let images) = item.kind {
                 UserMessageView(text: text, images: images, keyPrefix: item.id)
-                    .contextMenu { messageMenu(text) }
+                    .contextMenu { messageMenu(text, itemId: item.id) }
             }
         case .assistant(let item):
             if case .assistantText(let text, let streaming) = item.kind {
                 AssistantMessageView(text: text, streaming: streaming)
-                    .contextMenu { messageMenu(text) }
+                    .contextMenu { messageMenu(text, itemId: item.id) }
             }
         case .activity(let group):
             ActivityGroupView(group: group, expandedGroups: $expandedGroups, expandedSteps: $expandedSteps, subagents: transcript.subagents)
@@ -447,8 +491,14 @@ struct ChatView: View {
         }
     }
 
+    /// Can the conversation be cut here? Only at a prompt of a Claude session the Mac still has.
+    private func canRewind(_ itemId: String) -> Bool {
+        guard !isChat, agent == .claude, model.supportsQueue, AppModel.entryUUID(forItemId: itemId) != nil else { return false }
+        return model.isConnected && !isRunning
+    }
+
     @ViewBuilder
-    private func messageMenu(_ text: String) -> some View {
+    private func messageMenu(_ text: String, itemId: String) -> some View {
         Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }
         Button("Read aloud", systemImage: "speaker.wave.2") { model.narrator.speak(text) }
         ShareLink(item: text) { Label("Share…", systemImage: "square.and.arrow.up") }
@@ -456,6 +506,9 @@ struct ChatView: View {
             let quoted = text.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
             draft = draft.isEmpty ? quoted + "\n\n" : draft + "\n\n" + quoted + "\n\n"
             composerFocused = true
+        }
+        if canRewind(itemId) {
+            Button("Rewind to here…", systemImage: "arrow.counterclockwise") { confirmRewind = itemId }
         }
     }
 
@@ -542,6 +595,7 @@ struct ComposerDock: View {
     @State private var fileSearchTask: Task<Void, Never>?
     /// Hands-free: the reply already read out, and the pause that sends what was dictated.
     @State private var spokenReplyId: String?
+    @State private var showPalette = false
     @State private var silenceTask: Task<Void, Never>?
 
     private var agent: AgentKind { state?.agent ?? summary?.agent ?? .claude }
@@ -690,6 +744,9 @@ struct ComposerDock: View {
                         micButton
                     }
                 }
+                if !isChat, model.supportsQueue, !recorder.isRecording, !dictation.isListening {
+                    paletteButton
+                }
                 // A chat has no tools, so there is nothing to approve — only the model matters.
                 // A session owned by the Mac cannot be reconfigured from here at all.
                 if isDesktop {
@@ -704,6 +761,9 @@ struct ComposerDock: View {
                     if !isChat {
                         Menu { permissionSection } label: { ComposerChipLabel(text: modeLabel, systemImage: modeIcon) }
                     }
+                }
+                if let context = model.contextUsage(sessionId), context.fraction >= 0.5 {
+                    contextChip(context)
                 }
                 Spacer(minLength: 0)
                 if isRunning, !isDesktop {   // a Desktop session can only be interrupted on the Mac
@@ -752,6 +812,13 @@ struct ComposerDock: View {
                       matching: .any(of: [.images, .videos]))
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item],
                       allowsMultipleSelection: true) { result in loadFiles(result) }
+        .sheet(isPresented: $showPalette) {
+            PaletteView(sessionId: sessionId, draft: draft) { insert in
+                let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                draft = trimmed.isEmpty ? insert : draft + (draft.hasSuffix(" ") || draft.hasSuffix("\n") ? "" : "\n\n") + insert
+                focused.wrappedValue = true
+            }
+        }
         .sheet(isPresented: $showMacPicker) {
             MacFilePicker(sessionId: sessionId) { path in
                 if !macFiles.contains(path) { macFiles.append(path) }
@@ -763,6 +830,51 @@ struct ComposerDock: View {
     }
 
     // MARK: attach controls
+
+    /// Opens the palette: the project's commands, skills and sub-agents, plus your saved prompts.
+    private var paletteButton: some View {
+        Button { showPalette = true } label: {
+            Image(systemName: "command")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(CDS.textSecondary)
+                .frame(width: 32, height: 32)
+                .background(CDS.fillControl, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.isConnected)
+        .accessibilityLabel("Commands, skills and saved prompts")
+    }
+
+    /// How full the context window is, once it is worth knowing — tap to compact.
+    private func contextChip(_ usage: ContextWindow.Usage) -> some View {
+        Menu {
+            Section("Context") { Text("\(usage.label) · \(usage.percentLabel) of the window") }
+            Button("Compact the conversation", systemImage: "arrow.down.right.and.arrow.up.left") { model.compact(sessionId) }
+                .disabled(isRunning || isDesktop || agent != .claude || !model.isConnected)
+        } label: {
+            HStack(spacing: 4) {
+                Circle()
+                    .trim(from: 0, to: usage.fraction)
+                    .stroke(contextTint(usage), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 11, height: 11)
+                    .background(Circle().stroke(CDS.border, lineWidth: 2.5).frame(width: 11, height: 11))
+                Text(usage.percentLabel)
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(usage.isTight ? contextTint(usage) : CDS.textSecondary)
+            .padding(.horizontal, 8).frame(height: 28)
+            .background(CDS.fillNeutral, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .accessibilityLabel("Context \(usage.percentLabel) full")
+    }
+
+    private func contextTint(_ usage: ContextWindow.Usage) -> Color {
+        if usage.isCritical { return CDS.dangerFill }
+        if usage.isTight { return CDS.warningFill }
+        return CDS.textSecondary
+    }
 
     private var attachButton: some View {
         Menu {
@@ -899,8 +1011,12 @@ struct ComposerDock: View {
         return String(after)
     }
 
+    /// What "/" offers: the CLI's own commands plus the project's commands and skills from `.claude`.
     private var slashCommands: [String] {
-        (state?.slashCommands ?? []).map { $0.hasPrefix("/") ? String($0.dropFirst()) : $0 }
+        let advertised = (state?.slashCommands ?? []).map { $0.hasPrefix("/") ? String($0.dropFirst()) : $0 }
+        let fromPalette = (model.palettes[sessionId] ?? []).filter { $0.kind != .agent }.map(\.name)
+        var seen = Set<String>()
+        return (fromPalette + advertised).filter { seen.insert($0).inserted }
     }
 
     private var slashMatches: [String] {

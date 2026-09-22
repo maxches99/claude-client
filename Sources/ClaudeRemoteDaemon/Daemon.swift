@@ -189,7 +189,8 @@ public final class Daemon: @unchecked Sendable {
         }
         let codexBackend = codex.map { CodexBackend(cli: $0, listenPort: config.codexPort, log: log) }
         manager = SessionManager(cli: cli, codex: codexBackend, notifier: notifier, livePusher: livePusher,
-                                 approvalLog: SessionManager.approvalLogPath(supportDirectory: supportDirectory), log: log)
+                                 approvalLog: SessionManager.approvalLogPath(supportDirectory: supportDirectory),
+                                 taskStore: SessionManager.taskStorePath(supportDirectory: supportDirectory), log: log)
         SimulatorStreamer.log = log
         SimulatorInput.log = log
 

@@ -10,7 +10,14 @@ final class AppModel {
     /// The one model the app runs; Live Activity intents (performed in this process) reach it here.
     static private(set) weak var shared: AppModel?
 
-    let connection = HostConnection()
+    /// One link per paired Mac. The active one drives the app; the others stay connected so their
+    /// sessions and pending approvals keep arriving — that is what makes one list and one approvals
+    /// inbox across every Mac possible.
+    private(set) var connections: [String: HostConnection] = [:]
+    /// Stands in for "no Mac": views read `connection.status` before anything is paired.
+    private let idleConnection = HostConnection()
+    var connection: HostConnection { activeMacId.flatMap { connections[$0] } ?? idleConnection }
+
     let imageCache = ImageCache()
     let simulatorFeed = SimulatorFeed()
     let liveActivities = LiveActivityController()
@@ -29,9 +36,23 @@ final class AppModel {
     var supportsChats: Bool { (host?.protocolVersion ?? 1) >= 2 }
     /// The Mac is paired but running an older ClaudeRemote Host than this app expects.
     var hostNeedsUpdate: Bool { host != nil && !supportsChats }
+    /// The queue, the palette, worktrees, rewind and background processes need protocol 4 — an older
+    /// daemon would answer them with "malformed message", so they stay out of the way instead.
+    var supportsQueue: Bool { (host?.protocolVersion ?? 1) >= 4 }
     /// Models Codex on the Mac can run, fetched once per connection.
     var codexModels: [ModelOption] = []
-    var sessions: [SessionSummary] = []
+    /// Sessions per Mac, so the unified list can show them all at once.
+    var sessionsByMac: [String: [SessionSummary]] = [:]
+    /// Approvals waiting per Mac — the inbox reads across every entry.
+    var permissionsByMac: [String: [PermissionRequest]] = [:]
+    /// What each Mac said about itself in `welcome`.
+    var hostByMac: [String: HostInfo] = [:]
+
+    /// The active Mac's sessions (the rest of the app is written against one Mac at a time).
+    var sessions: [SessionSummary] {
+        get { activeMacId.flatMap { sessionsByMac[$0] } ?? [] }
+        set { if let id = activeMacId { sessionsByMac[id] = newValue } }
+    }
     var projects: [ProjectInfo] = []
     var states: [String: SessionState] = [:]
     var transcripts: [String: Transcript] = [:]
@@ -44,7 +65,10 @@ final class AppModel {
     private var cache: OfflineCache? { activeMacId.map(OfflineCache.init(macId:)) }
     /// Sessions shown while disconnected come from the cache; the transcript is read-only then.
     var showingCachedSessions = false
-    var permissions: [PermissionRequest] = []
+    var permissions: [PermissionRequest] {
+        get { activeMacId.flatMap { permissionsByMac[$0] } ?? [] }
+        set { if let id = activeMacId { permissionsByMac[id] = newValue } }
+    }
     var errorBanner: String?
     /// Sessions and chats are separate tabs, each with its own navigation stack.
     var tab: AppTab = .sessions
@@ -88,6 +112,8 @@ final class AppModel {
         requireBiometricsForApproval = defaults.object(forKey: "ccremote.faceid.approval") as? Bool ?? true
         lockAppWithBiometrics = defaults.bool(forKey: "ccremote.faceid.applock")
         liveActivitiesEnabled = defaults.object(forKey: "ccremote.liveactivities") as? Bool ?? true
+        watchAllMacs = defaults.object(forKey: "ccremote.watchAllMacs") as? Bool ?? true
+        showAllMacs = defaults.bool(forKey: "ccremote.showAllMacs")
         locked = lockAppWithBiometrics
         AppModel.shared = self
         liveActivities.onPushToken = { [weak self] sessionId, token in self?.registerActivityToken(sessionId, token: token) }
@@ -95,16 +121,87 @@ final class AppModel {
         LiveActivityDecisions.shared.handler = { sessionId, requestId, allow in
             await AppModel.shared?.decideFromActivity(sessionId: sessionId, requestId: requestId, allow: allow)
         }
-        connection.onMessage = { [weak self] message in self?.handle(message) }
-        connection.onLearnedFingerprint = { [weak self] fp in
-            self?.updateActiveMac { if $0.fingerprint == nil { $0.fingerprint = fp } }
-        }
         let saved = PairedMacs.load()
         macs = saved.macs
         activeMacId = saved.activeId ?? saved.macs.first?.id
         loadCachedSessions()
         loadSessionFlags()
-        if let mac = activeMac { connection.connect(mac) }
+        syncConnections()
+    }
+
+    // MARK: connections
+
+    /// Stay connected to every paired Mac, not just the one on screen. Off, only the active Mac is
+    /// linked (and the unified list falls back to it).
+    var watchAllMacs: Bool {
+        didSet {
+            UserDefaults.standard.set(watchAllMacs, forKey: "ccremote.watchAllMacs")
+            if !watchAllMacs { showAllMacs = false }
+            syncConnections()
+        }
+    }
+
+    /// The session list shows every Mac at once.
+    var showAllMacs: Bool {
+        didSet { UserDefaults.standard.set(showAllMacs, forKey: "ccremote.showAllMacs") }
+    }
+
+    /// Opens links for the Macs we want connected and drops the ones we don't.
+    private func syncConnections() {
+        let wanted = Set(watchAllMacs ? macs.map(\.id) : [activeMacId].compactMap { $0 })
+        for (id, link) in connections where !wanted.contains(id) {
+            link.disconnect()
+            connections[id] = nil
+            sessionsByMac[id] = nil
+            permissionsByMac[id] = nil
+            hostByMac[id] = nil
+        }
+        for mac in macs where wanted.contains(mac.id) {
+            if let existing = connections[mac.id] {
+                if existing.status == .disconnected { existing.connect(mac) }
+                continue
+            }
+            let link = HostConnection()
+            let macId = mac.id
+            link.onMessage = { [weak self] message in self?.handle(message, from: macId) }
+            link.onLearnedFingerprint = { [weak self] fp in
+                self?.updateMac(macId) { if $0.fingerprint == nil { $0.fingerprint = fp } }
+            }
+            connections[macId] = link
+            link.connect(mac)
+        }
+    }
+
+    /// Reconnects one Mac after its pairing details changed.
+    private func reconnect(_ macId: String) {
+        guard let mac = macs.first(where: { $0.id == macId }) else { return }
+        connections[macId]?.disconnect()
+        connections[macId] = nil
+        syncConnections()
+        _ = mac
+    }
+
+    func link(for macId: String) -> HostConnection? { connections[macId] }
+
+    func macName(_ macId: String) -> String {
+        macs.first { $0.id == macId }?.displayName ?? "Mac"
+    }
+
+    /// Which Mac a session belongs to (the active one unless another Mac lists it).
+    func macId(forSession sessionId: String) -> String? {
+        if let active = activeMacId, sessionsByMac[active]?.contains(where: { $0.id == sessionId }) == true { return active }
+        return sessionsByMac.first { $0.value.contains { $0.id == sessionId } }?.key ?? activeMacId
+    }
+
+    private func macId(forPermission requestId: String) -> String? {
+        permissionsByMac.first { $0.value.contains { $0.id == requestId } }?.key ?? activeMacId
+    }
+
+    /// Sends on the link that owns `sessionId` — the active Mac for everything else.
+    func sendMessage(_ message: ClientMessage, session sessionId: String? = nil) {
+        let macId = sessionId.flatMap { self.macId(forSession: $0) } ?? activeMacId
+        guard let macId, let link = connections[macId] else { return }
+        link.send(message)
     }
 
     // MARK: paired Macs
@@ -124,6 +221,8 @@ final class AppModel {
                 info.room = existing.room
             }
             macs[idx] = info
+            persistMacs()
+            reconnect(info.id)
         } else {
             macs.append(info)
         }
@@ -140,22 +239,26 @@ final class AppModel {
     /// Removes a paired Mac. Forgetting the active one moves to the next, or back to pairing when none is left.
     func forget(_ id: String) {
         macs.removeAll { $0.id == id }
+        connections[id]?.disconnect()
+        connections[id] = nil
+        sessionsByMac[id] = nil
+        permissionsByMac[id] = nil
+        hostByMac[id] = nil
         guard id == activeMacId else { persistMacs(); return }
-        connection.disconnect()
         resetHostState()
         activeMacId = nil
-        if let next = macs.first { activate(next.id) } else { persistMacs() }
+        if let next = macs.first { activate(next.id) } else { persistMacs(); syncConnections() }
     }
 
     private func activate(_ id: String) {
-        guard let mac = macs.first(where: { $0.id == id }) else { return }
-        connection.disconnect()
-        resetHostState()
+        guard macs.contains(where: { $0.id == id }) else { return }
+        if activeMacId != id { resetHostState() }
         activeMacId = id
         persistMacs()
         loadCachedSessions()
         loadSessionFlags()
-        connection.connect(mac)
+        syncConnections()
+        if isConnected { refresh() }
     }
 
     // MARK: shortcuts (App Intents)
@@ -209,7 +312,7 @@ final class AppModel {
     // MARK: session management (rename / pin / archive / search)
 
     func renameSession(_ sessionId: String, title: String) {
-        connection.send(.renameSession(sessionId: sessionId, title: title))
+        sendMessage(.renameSession(sessionId: sessionId, title: title))
         if let i = sessions.firstIndex(where: { $0.id == sessionId }) { sessions[i].title = title }
     }
 
@@ -245,7 +348,7 @@ final class AppModel {
 
     func searchSessions(_ query: String) {
         sessionSearchInFlight = true
-        connection.send(.searchSessions(query: query))
+        sendMessage(.searchSessions(query: query))
     }
 
     /// A find-in-transcript the chat should open with once it appears (from a search hit).
@@ -280,7 +383,7 @@ final class AppModel {
     }
 
     private func updateWidget() {
-        let pendingIds = Set(permissions.map(\.sessionId))
+        let pendingIds = Set(permissionsByMac.values.flatMap { $0 }.map(\.sessionId))
         let rows = sessions
             .filter { $0.status != .unknown || $0.origin != .stored }
             .sorted { a, b in
@@ -294,8 +397,9 @@ final class AppModel {
             .prefix(4)
             .map { WidgetSummary.Row(id: $0.id, title: $0.title, project: $0.projectName,
                                      status: pendingIds.contains($0.id) ? .awaitingPermission : $0.status, agent: $0.agent) }
-        let pending = Set(pendingIds).union(sessions.filter { $0.status == .awaitingPermission }.map(\.id)).count
-        let running = sessions.filter { $0.status == .running }.count
+        let everySession = sessionsByMac.values.flatMap { $0 }
+        let pending = Set(pendingIds).union(everySession.filter { $0.status == .awaitingPermission }.map(\.id)).count
+        let running = everySession.filter { $0.status == .running }.count
         WidgetSummary.save(WidgetSummary(pending: pending, running: running, hostName: activeMac?.displayName ?? "",
                                          connected: isConnected, rows: Array(rows)))
         WidgetCenter.shared.reloadTimelines(ofKind: WidgetSummary.kind)
@@ -354,15 +458,20 @@ final class AppModel {
     }
 
     private func updateActiveMac(_ change: (inout PairingInfo) -> Void) {
-        guard let idx = macs.firstIndex(where: { $0.id == activeMacId }) else { return }
+        guard let id = activeMacId else { return }
+        updateMac(id, change)
+    }
+
+    private func updateMac(_ macId: String, _ change: (inout PairingInfo) -> Void) {
+        guard let idx = macs.firstIndex(where: { $0.id == macId }) else { return }
         change(&macs[idx])
         persistMacs()
     }
 
-    /// Clears everything that came from the Mac we're leaving.
+    /// Clears everything scoped to the Mac we're leaving. Per-Mac session lists and approvals stay:
+    /// their links are still up, and the unified list and the inbox read them.
     private func resetHostState() {
         codexModels = []
-        sessions = []
         projects = []
         states = [:]
         transcripts = [:]
@@ -370,7 +479,6 @@ final class AppModel {
         rawEntries = [:]
         cacheDirty = []
         showingCachedSessions = false
-        permissions = []
         errorBanner = nil
         sessionPath = []
         chatPath = []
@@ -385,6 +493,13 @@ final class AppModel {
         gitErrors = [:]
         gitBusy = []
         gitResults = [:]
+        worktrees = [:]
+        worktreeErrors = [:]
+        palettes = [:]
+        tasks = []
+        taskSettings = TaskQueueSettings()
+        backgroundProcesses = []
+        attachedProcesses = []
         activityTrackers = [:]
         liveActivities.endAll()
         imageCache.reset()
@@ -405,14 +520,14 @@ final class AppModel {
     // MARK: actions
 
     func refresh() {
-        connection.send(.listSessions)
-        connection.send(.listProjects)
+        sendMessage(.listSessions)
+        sendMessage(.listProjects)
     }
 
     func open(_ sessionId: String) {
         if transcripts[sessionId] == nil { transcripts[sessionId] = Transcript() }
         if !isConnected { _ = openFromCache(sessionId) }
-        connection.send(.open(sessionId: sessionId))
+        sendMessage(.open(sessionId: sessionId))
     }
 
     /// Attach once per visit; a reload is explicit (menu) so re-entering a chat doesn't flash.
@@ -424,13 +539,13 @@ final class AppModel {
     func fork(_ sessionId: String) {
         awaitingCreatedSession = true
         awaitingKind = summary(for: sessionId)?.kind ?? .agent
-        connection.send(.fork(sessionId: sessionId))
+        sendMessage(.fork(sessionId: sessionId))
     }
 
     func create(_ options: NewSessionOptions) {
         awaitingCreatedSession = true
         awaitingKind = options.kind
-        connection.send(.create(options: options))
+        sendMessage(.create(options: options))
     }
 
     /// Opens a session on its own tab (chats and work sessions never share a stack).
@@ -454,7 +569,7 @@ final class AppModel {
     }
 
     func prompt(_ sessionId: String, text: String, images: [InlineImage] = [], attachments: [Attachment]? = nil) {
-        connection.send(.prompt(sessionId: sessionId, text: text, images: images, attachments: attachments))
+        sendMessage(.prompt(sessionId: sessionId, text: text, images: images, attachments: attachments))
         // Mid-turn the host queues it; the turn that is running keeps its own timer.
         let status = states[sessionId]?.status
         guard status != .running, status != .awaitingPermission else { return }
@@ -483,13 +598,16 @@ final class AppModel {
     }
 
     private func sendDecision(_ request: PermissionRequest, allow: Bool, reason: String?, remember: Bool = false, updatedInput: JSONValue? = nil) {
-        connection.send(.permission(sessionId: request.sessionId, requestId: request.id, allow: allow, message: reason,
-                                    remember: remember ? true : nil, updatedInput: updatedInput))
-        permissions.removeAll { $0.id == request.id }
+        // The request may have come from another paired Mac (the inbox shows them all), so answer on
+        // the link it arrived on rather than the active one.
+        let macId = self.macId(forPermission: request.id)
+        macId.flatMap { connections[$0] }?.send(.permission(sessionId: request.sessionId, requestId: request.id, allow: allow, message: reason,
+                                                            remember: remember ? true : nil, updatedInput: updatedInput))
+        if let macId { permissionsByMac[macId]?.removeAll { $0.id == request.id } }
     }
 
     func dequeue(_ sessionId: String, promptId: String) {
-        connection.send(.dequeue(sessionId: sessionId, promptId: promptId))
+        sendMessage(.dequeue(sessionId: sessionId, promptId: promptId))
         states[sessionId]?.queued.removeAll { $0.id == promptId }
     }
 
@@ -525,28 +643,28 @@ final class AppModel {
     }
 
     func interrupt(_ sessionId: String) {
-        connection.send(.interrupt(sessionId: sessionId))
+        sendMessage(.interrupt(sessionId: sessionId))
     }
 
     func setModel(_ sessionId: String, model: String) {
-        connection.send(.setModel(sessionId: sessionId, model: model))
+        sendMessage(.setModel(sessionId: sessionId, model: model))
     }
 
     func setPermissionMode(_ sessionId: String, mode: String) {
-        connection.send(.setPermissionMode(sessionId: sessionId, mode: mode))
+        sendMessage(.setPermissionMode(sessionId: sessionId, mode: mode))
     }
 
     func setEffort(_ sessionId: String, effort: String) {
-        connection.send(.setEffort(sessionId: sessionId, effort: effort))
+        sendMessage(.setEffort(sessionId: sessionId, effort: effort))
     }
 
     func setSandbox(_ sessionId: String, mode: String) {
-        connection.send(.setSandbox(sessionId: sessionId, mode: mode))
+        sendMessage(.setSandbox(sessionId: sessionId, mode: mode))
     }
 
     func requestCodexModels() {
         guard hasCodex else { return }
-        connection.send(.listModels(agent: .codex))
+        sendMessage(.listModels(agent: .codex))
     }
 
     /// Display name for a model id: Codex models come from the Mac, Claude's from the fixed list.
@@ -560,7 +678,7 @@ final class AppModel {
     }
 
     func close(_ sessionId: String) {
-        connection.send(.close(sessionId: sessionId))
+        sendMessage(.close(sessionId: sessionId))
     }
 
     private var requestedFiles: Set<String> = []
@@ -583,14 +701,14 @@ final class AppModel {
         if force { requestedFiles.remove(path); remoteFileErrors[path] = nil; imageCache.retry(key: "file:\(path)") }
         guard !requestedFiles.contains(path) else { return }
         requestedFiles.insert(path)
-        connection.send(.fetchFile(path: path))
+        sendMessage(.fetchFile(path: path))
     }
 
     /// Latest `git status`+`diff` per session, for reviewing changes before approving.
     var gitDiffs: [String: String] = [:]
 
     func requestGitDiff(_ sessionId: String) {
-        connection.send(.gitDiff(sessionId: sessionId))
+        sendMessage(.gitDiff(sessionId: sessionId))
     }
 
     // MARK: git
@@ -618,7 +736,7 @@ final class AppModel {
     }
 
     func requestGitStatus(_ sessionId: String) {
-        connection.send(.gitStatus(sessionId: sessionId))
+        sendMessage(.gitStatus(sessionId: sessionId))
     }
 
     // MARK: pull requests
@@ -635,7 +753,7 @@ final class AppModel {
     func requestPullRequest(_ sessionId: String, force: Bool = false) {
         if !force, let cached = pullRequests[sessionId], cached.loading || Date().timeIntervalSince(cached.fetchedAt) < 180 { return }
         pullRequests[sessionId] = PullRequestState(info: pullRequests[sessionId]?.info, error: nil, fetchedAt: Date(), loading: true)
-        connection.send(.pullRequest(sessionId: sessionId))
+        sendMessage(.pullRequest(sessionId: sessionId))
     }
 
     // MARK: project browser & search
@@ -646,7 +764,7 @@ final class AppModel {
 
     func requestDirectory(_ sessionId: String, path: String) {
         directoryErrors[DirectoryKey(sessionId: sessionId, path: path)] = nil
-        connection.send(.listDirectory(sessionId: sessionId, path: path))
+        sendMessage(.listDirectory(sessionId: sessionId, path: path))
     }
 
     struct SearchResult: Equatable {
@@ -660,7 +778,7 @@ final class AppModel {
 
     func searchProject(_ sessionId: String, query: String) {
         searchInFlight.insert(sessionId)
-        connection.send(.searchProject(sessionId: sessionId, query: query))
+        sendMessage(.searchProject(sessionId: sessionId, query: query))
     }
 
     /// A Mac file another screen wants attached to the session's next prompt (an @-mention chip).
@@ -675,7 +793,7 @@ final class AppModel {
     var projectCommands: [String: [ProjectCommand]] = [:]
 
     func requestCommands(_ sessionId: String) {
-        connection.send(.listCommands(sessionId: sessionId))
+        sendMessage(.listCommands(sessionId: sessionId))
     }
 
     @Observable
@@ -700,7 +818,7 @@ final class AppModel {
         let start = { [self] in
             let run = CommandRun(id: UUID().uuidString.lowercased(), sessionId: sessionId, command: command)
             commandRuns[run.id] = run
-            connection.send(.runCommand(sessionId: sessionId, runId: run.id, command: command))
+            sendMessage(.runCommand(sessionId: sessionId, runId: run.id, command: command))
             completion(run)
         }
         if requireBiometricsForApproval {
@@ -714,7 +832,7 @@ final class AppModel {
     }
 
     func cancelCommand(_ run: CommandRun) {
-        connection.send(.cancelCommand(sessionId: run.sessionId, runId: run.id))
+        sendMessage(.cancelCommand(sessionId: run.sessionId, runId: run.id))
     }
 
     /// The file diff last asked for; the reply carries the path but not which side, so it lands here.
@@ -724,21 +842,21 @@ final class AppModel {
         let key = GitFileKey(sessionId: sessionId, path: path, staged: staged)
         gitFileDiffs[key] = nil
         pendingFileDiff = key
-        connection.send(.gitDiff(sessionId: sessionId, path: path, staged: staged))
+        sendMessage(.gitDiff(sessionId: sessionId, path: path, staged: staged))
     }
 
     func runGit(_ sessionId: String, _ action: GitAction) {
         guard !gitBusy.contains(sessionId) else { return }
         gitBusy.insert(sessionId)
         gitResults[sessionId] = nil
-        connection.send(.gitAction(sessionId: sessionId, action: action))
+        sendMessage(.gitAction(sessionId: sessionId, action: action))
     }
 
     /// Latest file-search results for the composer's "@" mention picker.
     var fileMatches: [String] = []
 
     func requestFiles(_ sessionId: String, query: String) {
-        connection.send(.listFiles(sessionId: sessionId, query: query))
+        sendMessage(.listFiles(sessionId: sessionId, query: query))
     }
 
     /// Latest `/usage` payload (cost + plan rate-limit windows) and any error, for the limits screen.
@@ -748,34 +866,72 @@ final class AppModel {
     func requestUsage(_ sessionId: String) {
         usageReport = nil
         usageError = nil
-        connection.send(.getUsage(sessionId: sessionId))
+        sendMessage(.getUsage(sessionId: sessionId))
+    }
+
+    // MARK: palette, worktrees, tasks, processes (actions in AppModel+Features.swift)
+
+    /// Slash commands, skills and sub-agents of a session's project, once asked for.
+    var palettes: [String: [PaletteItem]] = [:]
+    /// Reusable prompts, kept on the phone (they belong to you, not to a Mac).
+    var snippets: [PromptSnippet] = PromptSnippet.load()
+    var worktrees: [String: [Worktree]] = [:]
+    var worktreeErrors: [String: String] = [:]
+    var worktreeBusy = false
+    /// The Mac's task queue.
+    var tasks: [AgentTask] = []
+    var taskSettings = TaskQueueSettings()
+    /// Commands still running on the Mac.
+    var backgroundProcesses: [BackgroundProcess] = []
+    /// Processes whose output this phone is following.
+    var attachedProcesses: Set<String> = []
+    /// The session a rewind is in flight for, and why the last one failed.
+    var rewindingSession: String?
+    var rewindError: String?
+    /// Set right after a rewind so the chat can say what happened in the new session.
+    var rewindNotice: RewindNotice?
+
+    struct RewindNotice: Equatable {
+        let sessionId: String
+        let dropped: Int
     }
 
     // MARK: inbound
 
-    private func handle(_ message: ServerMessage) {
+    private func handle(_ message: ServerMessage, from macId: String) {
+        // A Mac we only monitor keeps its session list and its approvals flowing; everything else
+        // (transcripts, git, simulators…) belongs to the Mac on screen.
+        let isActive = macId == activeMacId
         switch message {
         case .welcome(let host):
+            hostByMac[macId] = host
+            updateMac(macId) { $0.hostName = host.hostName; $0.lastConnectedAt = Date() }
+            guard isActive else {
+                connections[macId]?.send(.listSessions)
+                return
+            }
             errorBanner = nil
-            updateActiveMac { $0.hostName = host.hostName; $0.lastConnectedAt = Date() }
             refresh()
             if codexModels.isEmpty { requestCodexModels() }
             // Re-attach to everything we were looking at before the reconnect — asking only for the
             // events missed where the transcript is still here.
-            for id in openSessionIds { connection.send(.open(sessionId: id, since: transcripts[id] != nil ? lastSeq[id] : nil)) }
+            for id in openSessionIds { sendMessage(.open(sessionId: id, since: transcripts[id] != nil ? lastSeq[id] : nil)) }
             if let udid = simulatorFeed.watching { sendSimulatorStream(udid, enabled: true) }
             for id in liveActivities.activeSessionIds { registerActivityToken(id, token: liveActivities.pushToken(for: id)) }
         case .error(let text, _):
-            errorBanner = text
+            if isActive { errorBanner = text }
         case .sessions(let items):
-            sessions = items
+            sessionsByMac[macId] = items
+            guard isActive else { scheduleWidgetUpdate(); return }
             showingCachedSessions = false
             scheduleCacheSave()
             scheduleWidgetUpdate()
             scheduleSpotlightUpdate()
         case .projects(let items):
+            guard isActive else { return }
             projects = items
         case .history(let sessionId, let entries):
+            guard isActive else { return }
             var transcript = Transcript()
             transcript.apply(entries: entries)
             transcripts[sessionId] = transcript
@@ -790,6 +946,7 @@ final class AppModel {
                 if quietCreate { quietCreate = false } else { present(sessionId, kind: awaitingKind) }
             }
         case .catchUp(let sessionId, let entries, let seq):
+            guard isActive else { return }
             guard transcripts[sessionId] != nil else { return }
             transcripts[sessionId]?.apply(entries: entries)
             lastSeq[sessionId] = seq
@@ -799,6 +956,7 @@ final class AppModel {
             }
             syncActivity(sessionId)
         case .event(let sessionId, let payload, let seq):
+            guard isActive else { return }
             guard transcripts[sessionId] != nil else { return }
             if let seq { lastSeq[sessionId] = seq }
             transcripts[sessionId]?.apply(payload)
@@ -812,21 +970,24 @@ final class AppModel {
                 syncActivity(sessionId)
             }
         case .permissionRequest(let request):
-            if !permissions.contains(where: { $0.id == request.id }) { permissions.append(request) }
-            syncActivity(request.sessionId)
+            if permissionsByMac[macId]?.contains(where: { $0.id == request.id }) != true {
+                permissionsByMac[macId, default: []].append(request)
+            }
+            if isActive { syncActivity(request.sessionId) }
             updateWidget()
         case .permissionResolved(let sessionId, let requestId):
-            permissions.removeAll { $0.id == requestId }
-            syncActivity(sessionId)
+            permissionsByMac[macId]?.removeAll { $0.id == requestId }
+            if isActive { syncActivity(sessionId) }
             scheduleWidgetUpdate()
         case .state(let state):
             let wasRunning = states[state.id]?.status == .running || states[state.id]?.status == .awaitingPermission
             states[state.id] = state
             for p in state.pendingPermissions where !permissions.contains(where: { $0.id == p.id }) { permissions.append(p) }
-            if let idx = sessions.firstIndex(where: { $0.id == state.id }) {
-                sessions[idx].status = state.status
-                sessions[idx].origin = state.origin
+            if let idx = sessionsByMac[macId]?.firstIndex(where: { $0.id == state.id }) {
+                sessionsByMac[macId]?[idx].status = state.status
+                sessionsByMac[macId]?[idx].origin = state.origin
             }
+            guard isActive else { scheduleWidgetUpdate(); return }
             // A turn we didn't start from this phone (another device, the Watch) still gets a timer.
             if state.status == .running, !wasRunning, activityTrackers[state.id]?.turnStartedAt == nil {
                 activityTrackers[state.id, default: ActivityTracker()].turnStartedAt = Date()
@@ -834,8 +995,10 @@ final class AppModel {
             if state.status != .running, state.status != .awaitingPermission { activityTrackers[state.id]?.turnStartedAt = nil }
             syncActivity(state.id)
         case .models(let agent, let items):
+            guard isActive else { return }
             if agent == .codex { codexModels = items }
         case .file(let path, let mediaType, let base64, let error):
+            guard isActive else { return }
             let type = mediaType ?? "application/octet-stream"
             if let base64, error == nil {
                 if type.hasPrefix("image/") {
@@ -850,6 +1013,7 @@ final class AppModel {
                 remoteFileErrors[path] = error ?? "Could not load from the Mac"
             }
         case .gitDiff(let sessionId, let diff, let error, let path):
+            guard isActive else { return }
             if let path {
                 let key = pendingFileDiff.flatMap { $0.sessionId == sessionId && $0.path == path ? $0 : nil }
                     ?? GitFileKey(sessionId: sessionId, path: path, staged: false)
@@ -858,53 +1022,89 @@ final class AppModel {
                 gitDiffs[sessionId] = error.map { "⚠️ \($0)" } ?? diff
             }
         case .gitStatus(let sessionId, let status, let error):
+            guard isActive else { return }
             gitStatuses[sessionId] = status
             gitErrors[sessionId] = error
             gitBusy.remove(sessionId)
         case .gitResult(let sessionId, let action, let output, let error):
+            guard isActive else { return }
             gitResults[sessionId] = GitResult(action: action, output: output, error: error, at: Date())
             // A successful action invalidates every cached file diff for the repo.
             if error == nil { gitFileDiffs = gitFileDiffs.filter { $0.key.sessionId != sessionId } }
         case .fileList(_, let paths):
+            guard isActive else { return }
             fileMatches = paths
         case .usage(_, let data, let error):
+            guard isActive else { return }
             usageReport = data
             usageError = error
         case .directory(let sessionId, let path, let entries, let error):
+            guard isActive else { return }
             let key = DirectoryKey(sessionId: sessionId, path: path)
             if let error { directoryErrors[key] = error } else { directories[key] = entries }
         case .searchResults(let sessionId, let query, let matches, let truncated, let error):
+            guard isActive else { return }
             searchInFlight.remove(sessionId)
             searchResults[sessionId] = SearchResult(query: query, matches: matches, truncated: truncated, error: error)
         case .commands(let sessionId, let items):
+            guard isActive else { return }
             projectCommands[sessionId] = items
         case .commandOutput(_, let runId, let chunk, let done, let exitCode):
+            guard isActive else { return }
             guard let run = commandRuns[runId] else { break }
             if !chunk.isEmpty { run.output += chunk }
             if done { run.done = true; run.exitCode = exitCode }
         case .pullRequest(let sessionId, let info, let error):
+            guard isActive else { return }
             pullRequests[sessionId] = PullRequestState(info: info, error: error, fetchedAt: Date(), loading: false)
         case .sessionSearchResults(let query, let hits, let error):
+            guard isActive else { return }
             sessionSearchInFlight = false
             sessionSearch = SessionSearch(query: query, hits: hits, error: error)
         case .simulators(let items):
+            guard isActive else { return }
             simulatorFeed.devices = items
         case .simulatorFrame(let frame):
+            guard isActive else { return }
             simulatorFeed.receive(frame)
         case .simulatorVideo(let frame):
+            guard isActive else { return }
             simulatorFeed.receiveVideo(frame)
         case .simulatorInputFailed(let udid, let message):
+            guard isActive else { return }
             if udid == simulatorFeed.watching { simulatorFeed.show(message, error: true) }
         case .simulatorActionResult(let udid, let action, let error):
+            guard isActive else { return }
             if simulatorFeed.pendingAction?.udid == udid { simulatorFeed.pendingAction = nil }
             if let error { simulatorFeed.show("\(action.label): \(error)", error: true) }
         case .simulatorApps(let udid, let items, let error):
+            guard isActive else { return }
             simulatorFeed.apps = (udid, items, error)
         case .simulatorScreenshot(let udid, let jpegBase64, _, _, let error):
+            guard isActive else { return }
             guard udid == simulatorFeed.watching, let waiter = simulatorFeed.screenshotWaiter else { break }
             simulatorFeed.screenshotWaiter = nil
             let image = jpegBase64.flatMap { Data(base64Encoded: $0) }.flatMap { UIImage(data: $0) }
             waiter(image, image == nil ? (error ?? "The Mac sent no image") : nil)
+        case .rewound(let sessionId, let newSessionId, let dropped, let error):
+            guard isActive else { return }
+            handleRewound(sessionId: sessionId, newSessionId: newSessionId, dropped: dropped, error: error)
+        case .palette(let sessionId, let items):
+            guard isActive else { return }
+            palettes[sessionId] = items
+        case .worktrees(let sessionId, let items, let error):
+            guard isActive else { return }
+            worktrees[sessionId] = items
+            worktreeErrors[sessionId] = error
+            worktreeBusy = false
+        case .tasks(let items, let settings):
+            guard isActive else { return }
+            tasks = items
+            taskSettings = settings
+            scheduleWidgetUpdate()
+        case .processes(let items):
+            guard isActive else { return }
+            backgroundProcesses = items
         case .pong:
             break
         }
@@ -938,7 +1138,7 @@ final class AppModel {
     }
 
     private func registerActivityToken(_ sessionId: String, token: String?) {
-        connection.send(.liveActivity(sessionId: sessionId, pushToken: token, approvalNeedsApp: requireBiometricsForApproval))
+        sendMessage(.liveActivity(sessionId: sessionId, pushToken: token, approvalNeedsApp: requireBiometricsForApproval))
     }
 
     /// A decision made from the Dynamic Island / lock screen. The intent may have launched the app in
@@ -951,7 +1151,7 @@ final class AppModel {
         }
         guard isConnected else { return }
         // Allow arrives here only when the phone doesn't require Face ID (the widget opens the app otherwise).
-        connection.send(.permission(sessionId: sessionId, requestId: requestId, allow: allow, message: allow ? nil : "Denied from the Live Activity", remember: nil))
+        sendMessage(.permission(sessionId: sessionId, requestId: requestId, allow: allow, message: allow ? nil : "Denied from the Live Activity", remember: nil))
         permissions.removeAll { $0.id == requestId }
         // Give the Mac a moment to answer with the new state so the activity flips before we suspend.
         try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -1003,7 +1203,7 @@ final class AppModel {
     }
 
     private func sendSimulatorStream(_ udid: String, enabled: Bool) {
-        connection.send(.simulatorStream(udid: udid, enabled: enabled,
+        sendMessage(.simulatorStream(udid: udid, enabled: enabled,
                                          maxPixelSize: enabled ? SimulatorFeed.maxPixelSize : nil,
                                          fps: enabled ? SimulatorFeed.fps : nil,
                                          codec: enabled ? "h264" : nil))
@@ -1026,18 +1226,18 @@ final class AppModel {
     func sendSimulatorInput(_ event: SimulatorInputEvent) {
         guard let udid = simulatorFeed.watching else { return }
         simulatorFeed.notice = nil
-        connection.send(.simulatorInput(udid: udid, event: event))
+        sendMessage(.simulatorInput(udid: udid, event: event))
     }
 
     func sendSimulatorAction(_ action: SimulatorAction, udid: String) {
         simulatorFeed.pendingAction = (udid, action)
         simulatorFeed.notice = nil
-        connection.send(.simulatorAction(udid: udid, action: action))
+        sendMessage(.simulatorAction(udid: udid, action: action))
     }
 
     func requestSimulatorApps(_ udid: String) {
         if simulatorFeed.apps?.udid != udid { simulatorFeed.apps = nil }
-        connection.send(.listSimulatorApps(udid: udid))
+        sendMessage(.listSimulatorApps(udid: udid))
     }
 
     /// Ask the Mac for a full-resolution still of the simulator being watched.
@@ -1045,7 +1245,7 @@ final class AppModel {
         guard let udid = simulatorFeed.watching else { return completion(nil, "No simulator selected") }
         simulatorFeed.screenshotWaiter?(nil, "Superseded")
         simulatorFeed.screenshotWaiter = completion
-        connection.send(.simulatorScreenshot(udid: udid))
+        sendMessage(.simulatorScreenshot(udid: udid))
     }
 
 }

@@ -70,6 +70,9 @@ public struct Transcript: Equatable, Sendable {
     public private(set) var totalCostUSD: Double = 0
     public private(set) var inputTokens: Int = 0
     public private(set) var outputTokens: Int = 0
+    /// What the model is carrying right now: the input tokens of the latest assistant message
+    /// (prompt + cache), which is what fills the context window. Zeroed by a compaction.
+    public private(set) var contextTokens: Int = 0
     /// When the latest prompt was sent and how much the assistant has produced since — the
     /// "2m 58s · 1.9k tokens" of the status line while a turn runs.
     public private(set) var turnStartedAt: Date?
@@ -173,6 +176,11 @@ public struct Transcript: Equatable, Sendable {
         if let m = msg["model"]?.string, !m.hasPrefix("<") { model = m }
         let messageId = msg["id"]?.string ?? message["uuid"]?.string ?? UUID().uuidString
         if let out = msg["usage"]?["output_tokens"]?.int, out > 0 { turnOutputByMessage[messageId] = out }
+        if let usage = msg["usage"] {
+            let carried = (usage["input_tokens"]?.int ?? 0) + (usage["cache_read_input_tokens"]?.int ?? 0)
+                + (usage["cache_creation_input_tokens"]?.int ?? 0)
+            if carried > 0 { contextTokens = carried }
+        }
         for block in blocks {
             let blockIndex = appliedBlocks[messageId, default: 0]
             appliedBlocks[messageId] = blockIndex + 1
@@ -276,7 +284,10 @@ public struct Transcript: Equatable, Sendable {
             let cacheRead = usage["cache_read_input_tokens"]?.int ?? 0
             let cacheCreate = usage["cache_creation_input_tokens"]?.int ?? 0
             let base = usage["input_tokens"]?.int ?? 0
-            if base + cacheRead + cacheCreate > 0 { inputTokens = base + cacheRead + cacheCreate }
+            if base + cacheRead + cacheCreate > 0 {
+                inputTokens = base + cacheRead + cacheCreate
+                contextTokens = max(contextTokens, inputTokens)
+            }
             if let out = usage["output_tokens"]?.int, out > 0 { outputTokens = out }
         }
         let isError = message["is_error"]?.bool ?? false
@@ -295,6 +306,7 @@ public struct Transcript: Equatable, Sendable {
         case "init":
             if let m = message["model"]?.string { model = m }
         case "compact_boundary":
+            contextTokens = 0
             upsert(TranscriptItem(id: "note:\(message["uuid"]?.string ?? UUID().uuidString)", kind: .note(text: "Context compacted"), timestamp: timestamp))
         case "api_error", "error":
             let text = message["error"]?.string ?? message["message"]?.string ?? "API error"

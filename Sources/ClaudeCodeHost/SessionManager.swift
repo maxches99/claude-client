@@ -24,7 +24,7 @@ public actor SessionManager {
     }
 
     /// A session the daemon drives: a `claude` process of our own, or a thread in the shared Codex app-server.
-    private final class Hosted {
+    final class Hosted {
         let process: CLIProcess?          // Claude only
         var state: SessionState
         var pending: [String: PermissionRequest] = [:]
@@ -95,18 +95,18 @@ public actor SessionManager {
         init(state: SessionState) { self.state = state }
     }
 
-    private let cli: ClaudeCLI
+    let cli: ClaudeCLI
     private let codex: CodexBackend?
-    private let store: TranscriptStore
+    let store: TranscriptStore
     private let registry: LiveSessionRegistry
-    private let notifier: Notifier?
+    let notifier: Notifier?
     private let livePusher: LiveActivityPusher?
     private let approvalLog: String?
-    private let log: @Sendable (String) -> Void
-    private var subscribers: [UUID: Sender] = [:]
+    let log: @Sendable (String) -> Void
+    var subscribers: [UUID: Sender] = [:]
     /// Live Activity push tokens per session, per phone. Kept while the phone is away — that's the point.
     private var activityTokens: [String: [UUID: (token: String, approvalNeedsApp: Bool)]] = [:]
-    private var hosted: [String: Hosted] = [:]
+    var hosted: [String: Hosted] = [:]
     private var watched: [String: Watched] = [:]
     private var watchedCodex: [String: WatchedCodex] = [:]
     /// Codex threads someone else has open right now, refreshed with the session list.
@@ -127,10 +127,23 @@ public actor SessionManager {
     }
     private var hookWaiters: [String: HookWaiter] = [:]
 
+    // MARK: queue & processes (logic in SessionManagerTasks.swift / BackgroundProcesses.swift)
+
+    /// Commands left running on the Mac, by run id — they outlive the phone that started them.
+    var processes: [String: BackgroundRun] = [:]
+    /// The task queue, oldest first, and how it is worked off.
+    var tasks: [AgentTask] = []
+    var taskSettings = TaskQueueSettings()
+    /// Wakes the queue for scheduled tasks.
+    var taskTimer: Task<Void, Never>?
+    /// `tasks.json` in the support directory, when the daemon gave us one.
+    let taskStorePath: String?
+
     public init(cli: ClaudeCLI, codex: CodexBackend? = nil, store: TranscriptStore = TranscriptStore(), registry: LiveSessionRegistry = LiveSessionRegistry(),
-                notifier: Notifier? = nil, livePusher: LiveActivityPusher? = nil, approvalLog: String? = nil,
+                notifier: Notifier? = nil, livePusher: LiveActivityPusher? = nil, approvalLog: String? = nil, taskStore: String? = nil,
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.approvalLog = approvalLog
+        self.taskStorePath = taskStore
         self.cli = cli
         self.codex = codex
         self.store = store
@@ -146,6 +159,10 @@ public actor SessionManager {
                 }
             }
         }
+        Task { [weak self] in
+            await self?.loadTasks()
+            await self?.startTaskTimer()
+        }
     }
 
     // MARK: subscribers
@@ -156,13 +173,14 @@ public actor SessionManager {
 
     public func unsubscribe(_ id: UUID) {
         subscribers[id] = nil
+        detachAllProcesses(phone: id)
         // Nobody left to answer: let the Mac show its own prompt instead of holding the CLI.
         if subscribers.isEmpty { cancelHookPermissions(reason: "no phone connected") }
     }
 
     public var hasSubscribers: Bool { !subscribers.isEmpty }
 
-    private func broadcast(_ message: ServerMessage) {
+    func broadcast(_ message: ServerMessage) {
         for send in subscribers.values { send(message) }
     }
 
@@ -254,7 +272,7 @@ public actor SessionManager {
         store.projects().filter { $0.path != SessionManager.chatDirectory }
     }
 
-    private static func kind(cwd: String) -> SessionKind {
+    static func kind(cwd: String) -> SessionKind {
         cwd == chatDirectory ? .chat : .agent
     }
 
@@ -400,7 +418,7 @@ public actor SessionManager {
 
     /// Hosted or listed as Codex — or, before the thread list has arrived, shaped like a Codex id:
     /// Codex thread ids are UUIDv7 (time-ordered, `01a0…`), Claude session ids random UUIDv4.
-    private func isCodexThread(_ id: String) -> Bool {
+    func isCodexThread(_ id: String) -> Bool {
         if let h = hosted[id] { return h.agent == .codex }
         if codexThreads.contains(where: { $0.id == id }) || recentCodexThreads.contains(where: { $0.id == id }) { return true }
         return store.session(id: id) == nil && id.count == 36 && id.dropFirst(14).first == "7"
@@ -484,7 +502,7 @@ public actor SessionManager {
         }
     }
 
-    private func spawn(sessionId: String, config: CLIProcess.Config, origin: SessionOrigin, kind: SessionKind = .agent) throws -> Hosted {
+    func spawn(sessionId: String, config: CLIProcess.Config, origin: SessionOrigin, kind: SessionKind = .agent) throws -> Hosted {
         let process = CLIProcess(config: config)
         let state = SessionState(id: sessionId, origin: origin, status: .idle, cwd: config.cwd, model: config.model,
                                  permissionMode: config.permissionMode, kind: kind)
@@ -995,7 +1013,7 @@ public actor SessionManager {
     }
 
     /// Resolves a session's working directory across hosted/watched/stored sessions.
-    private func cwdFor(_ sessionId: String) -> String? {
+    func cwdFor(_ sessionId: String) -> String? {
         if let h = hosted[sessionId] { return h.state.cwd }
         if let w = watched[sessionId] { return w.state.cwd }
         if let w = watchedCodex[sessionId] { return w.state.cwd }
@@ -1142,7 +1160,7 @@ public actor SessionManager {
         return String(out.prefix(120_000))
     }
 
-    private func gitCwd(_ sessionId: String) throws -> String {
+    func gitCwd(_ sessionId: String) throws -> String {
         guard let cwd = cwdFor(sessionId) else { throw ManagerError.unknownSession(sessionId) }
         guard FileManager.default.fileExists(atPath: cwd) else { throw ManagerError.cwdMissing(cwd) }
         return cwd
@@ -1550,7 +1568,7 @@ public actor SessionManager {
 
     private func commandFinished(runId: String) { commandRuns[runId] = nil }
 
-    private final class CommandOutputCounter: @unchecked Sendable {
+    final class CommandOutputCounter: @unchecked Sendable {
         private let lock = NSLock()
         private var total = 0
         var warned = false
@@ -1558,7 +1576,7 @@ public actor SessionManager {
     }
 
     /// Runs any tool in `cwd` and captures its output; the base for git and gh.
-    nonisolated private func runTool(_ executable: String, _ args: [String], cwd: String? = nil, timeout: TimeInterval = 15) -> (code: Int32, out: String, err: String) {
+    nonisolated func runTool(_ executable: String, _ args: [String], cwd: String? = nil, timeout: TimeInterval = 15) -> (code: Int32, out: String, err: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: executable)
         p.arguments = args
@@ -1582,7 +1600,7 @@ public actor SessionManager {
         return (p.terminationStatus, String(decoding: outData, as: UTF8.self), String(decoding: errData, as: UTF8.self))
     }
 
-    nonisolated private func runGit(_ args: [String], timeout: TimeInterval = 15) -> (code: Int32, out: String, err: String) {
+    nonisolated func runGit(_ args: [String], timeout: TimeInterval = 15) -> (code: Int32, out: String, err: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         p.arguments = ["-c", "core.pager=cat"] + args
@@ -1636,6 +1654,8 @@ public actor SessionManager {
     }
 
     public func shutdown() async {
+        taskTimer?.cancel()
+        terminateAllProcesses()
         for id in Array(hosted.keys) { await close(sessionId: id) }
         for id in Array(watched.keys) { await close(sessionId: id) }
         for id in Array(watchedCodex.keys) { stopWatchingCodex(sessionId: id) }
@@ -1691,6 +1711,7 @@ public actor SessionManager {
                     notifier.notify(.done, body: "\(name) · \(SessionManager.notifySnippet(summary))")
                 }
             }
+            taskTurnFinished(sessionId: sessionId, isError: isError, summary: message["result"]?.string)
         default:
             break
         }
@@ -1761,6 +1782,7 @@ public actor SessionManager {
         broadcast(.sessions(items: listSessions()))
         pushActivity(sessionId, h, throttled: false)
         activityTokens[sessionId] = nil
+        if status != 0 { taskTurnFinished(sessionId: sessionId, isError: true, summary: h.state.lastError) }
     }
 
     private func update(_ h: Hosted, status: SessionStatus) {
@@ -1799,6 +1821,7 @@ public actor SessionManager {
                     notifier.notify(.done, body: "\(name) · \(SessionManager.notifySnippet((text?.isEmpty == false ? text : h.title) ?? "turn complete"))")
                 }
             }
+            taskTurnFinished(sessionId: threadId, isError: isError, summary: summary)
         case .approval(let threadId, let request):
             guard let h = hosted[threadId] else {
                 Task { await codex?.decide(requestId: request.id, allow: false) }

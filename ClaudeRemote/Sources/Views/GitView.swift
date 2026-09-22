@@ -16,6 +16,7 @@ struct GitView: View {
     @State private var prTitle = ""
     @State private var prBody = ""
     @State private var prDraft = false
+    @State private var showWorktrees = false
     @FocusState private var messageFocused: Bool
 
     private var status: GitStatus? { model.gitStatuses[sessionId] }
@@ -40,6 +41,7 @@ struct GitView: View {
             .navigationTitle("Git")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .sheet(isPresented: $showWorktrees) { WorktreesView(sessionId: sessionId) }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -49,6 +51,9 @@ struct GitView: View {
                         Menu {
                             Button("Refresh", systemImage: "arrow.clockwise") { model.requestGitStatus(sessionId) }
                             Button("Fetch", systemImage: "arrow.down.to.line") { run(.fetch) }
+                            if model.supportsQueue {
+                                Button("Worktrees…", systemImage: "square.split.2x1") { showWorktrees = true }
+                            }
                             Divider()
                             Button("Stage all", systemImage: "plus.square.on.square") { run(.stage(paths: [])) }
                             Button("Unstage all", systemImage: "minus.square") { run(.unstage(paths: [])) }

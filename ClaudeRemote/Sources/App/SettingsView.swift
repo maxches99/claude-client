@@ -32,10 +32,17 @@ struct SettingsView: View {
                     Button { showAddMac = true } label: {
                         Label("Add Mac…", systemImage: "plus")
                     }
+                    if model.macs.count > 1 {
+                        Toggle("Stay connected to every Mac", isOn: Binding(get: { model.watchAllMacs }, set: { model.watchAllMacs = $0 }))
+                        Toggle("One list across every Mac", isOn: Binding(get: { model.showAllMacs }, set: { model.showAllMacs = $0 }))
+                            .disabled(!model.watchAllMacs)
+                    }
                 } header: {
                     Text("Macs")
                 } footer: {
-                    Text("The app shows one Mac at a time — pick it here or from the title of the session list. Swipe a Mac to forget it.")
+                    Text(model.macs.count > 1
+                         ? "Staying connected keeps every Mac's sessions and approvals arriving, so the inbox is complete wherever the agent is. A chat still opens on one Mac at a time — tapping a session on another one switches over. Swipe a Mac to forget it."
+                         : "The app shows one Mac at a time — pick it here or from the title of the session list. Swipe a Mac to forget it.")
                 }
                 Section {
                     Toggle("Require Face ID to approve", isOn: $model.requireBiometricsForApproval)
