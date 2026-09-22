@@ -23,8 +23,8 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
 
 | Path | What |
 |---|---|
-| `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, `CodexTranslator` / `CodexRollout` (Codex events and session files → the same reducer), WebSocket channel (TLS roles) |
-| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` |
+| `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, `CodexTranslator` / `CodexRollout` (Codex events and session files → the same reducer), WebSocket channel (TLS roles), the queue / palette / worktree / turn-review models |
+| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` and its feature files (`…Rewind`, `…Palette`, `…Worktrees`, `…Tasks`, `BackgroundProcesses`) |
 | `Sources/ClaudeRemoteDaemon` | The daemon as a library: `Daemon` (config → listener + Bonjour, relay dial-out, notifier, phone tracking, status), `DaemonConfig` (`config.json`), `PhoneSession`, `WebSocketServer`, `HookServer` (hook socket), `RelayClient`, `DeviceRegistry`, pairing URL + QR |
 | `Sources/ccremote` | Thin CLI front-end for the daemon (flags, terminal QR) |
 | `ClaudeRemoteHost/` | **Mac menu-bar app** hosting the daemon: status, paired phones, QR, settings, open-at-login, keep-awake (Tuist project) |
@@ -199,6 +199,29 @@ open the normal way (resume), or "Continue a copy on the phone" forks them.
   soon as the turn finishes. The × pulls one back. Works for Claude and Codex sessions the phone
   hosts; a Desktop session's inbox already queues on its own.
 
+## Rewinding, and undoing one turn
+
+Two separate takebacks, deliberately kept apart — one is about what the agent *knows*, the other about
+what it *wrote*.
+
+* **Rewind to here** (long-press a prompt in the transcript) copies the conversation up to just before
+  that prompt into a new session on the Mac and opens it, so you can ask again differently. The
+  original session is untouched and stays in the list; the copy says how much was left behind. Claude
+  sessions only — a Codex thread cannot be cut this way yet.
+* **Changes by turn…** (session menu) reads the transcript and lists, newest first, every turn that
+  wrote a file: which files, which commands it ran, the diff of each file, and **Undo this turn's file
+  changes** — `git checkout --` for exactly those paths. It takes the files back to the last commit,
+  so anything uncommitted in them goes, including edits made after that turn; the conversation is not
+  touched (rewind it too if you want the agent to forget as well).
+
+## The approvals inbox
+
+The bell in the session list opens everything waiting on you — across sessions, chats, projects **and
+every paired Mac** — oldest first. Swipe a row to allow or deny it on the spot, tap it for the full
+request (the same sheet the session shows, so questions and plan reviews work there too), or open the
+session it belongs to. A request from another Mac is answered on that Mac's own connection; nothing
+switches over behind your back.
+
 ## Approving Desktop and terminal sessions
 
 Sessions the Mac runs itself — Claude Desktop, `claude` in a terminal, an SDK script — cannot
@@ -226,6 +249,19 @@ daemon running the hook exits quietly. `--uninstall-hook` (or the toggle) remove
   (`{"commands": [{"name": "Tests", "command": "swift test"}]}`) or are guessed from the build files
   (Package.swift, Tuist, package.json, Cargo, Go, pytest, Makefile…); anything can be typed. Running
   is Face ID-gated like an approval when that setting is on.
+* **The palette** (the ⌘ button in the composer) is everything you can launch here without
+  remembering its name: the slash commands the CLI advertises, the skills and sub-agents defined in
+  `.claude/` (the project's first, then yours from `~/.claude`, each with its description), and your
+  own **saved prompts** — kept on the phone, so they follow you between Macs. "Save the draft as a
+  prompt" turns what is in the composer into one. The same project commands and skills also show up
+  in the "/" list as you type.
+* **Context meter.** Once the model is carrying more than half its window, a ring in the composer says
+  how full it is (yellow past 75%, red when the CLI is about to compact on its own); the session menu
+  always shows the figure, and both offer **Compact the conversation** — the CLI's own `/compact`.
+* **Background processes.** A dev server or a watcher does not belong in a one-shot run: **Background
+  processes…** starts one that keeps running when the phone goes away, buffers its output on the Mac,
+  and lets any phone attach later and see the tail — with Stop when you're done. They are listed with
+  what they are doing per project, and they stop with the Mac app.
 * **Read aloud / hands-free.** Any reply can be read out (message menu, or "Read last reply aloud").
   **Hands-free voice** in the session menu turns the chat into a conversation: each finished reply
   is read aloud, then the mic opens; stop talking for a couple of seconds and the prompt is sent.
@@ -243,6 +279,11 @@ Actions run `git` on the Mac in the session's directory with `GIT_TERMINAL_PROMP
 needs a password fails fast instead of hanging — use the keychain helper or an SSH key with an agent.
 While the agent is mid-turn in that repo, actions are refused so the phone doesn't race its edits.
 
+**Worktrees** (the Git menu, or the session menu) list the repo's checkouts: the main working tree
+and the extras next to it. Add one — `<repo>-<name>` on a branch of its own, created from HEAD or any
+base you name — and start a session in it straight from the list, so two agents can work on two
+branches without editing the same files. Removing one deletes its directory, so it asks first.
+
 **Pull requests** need GitHub's `gh` on the Mac: the Git screen shows the branch's PR (state, review
 decision, conflicts, every CI check with a link) with "Open on GitHub", or **Create pull request…**
 (title, description, draft — the branch is pushed with an upstream first if it has none). The Git
@@ -252,6 +293,21 @@ Diffs are how you point at code: tap a line, then another, and the range is sele
 this** drops it into the composer as a quote — the file, the line numbers and the lines as a
 fenced `diff` block — so "this condition is inverted" carries exactly the lines you mean. The same
 works in the permission sheet's working-tree review. Copy puts the same quote on the clipboard.
+
+## The task queue
+
+**Task queue…** (list menu) is a list of chores the Mac works off by itself. A task is a prompt, a
+project, an agent and a permission mode; the daemon starts a session for it, sends the prompt, and
+marks it done with the agent's last reply as the summary — so a finished task is an ordinary session
+you can open and take over. Tasks run **one at a time** by default (up to four in parallel), the queue
+can be paused, and each task can start as soon as there's a slot, at a time today, or **every day** at
+one — a nightly "run the tests and tell me what broke". **Run in a fresh worktree** gives a task its
+own checkout so parallel ones don't collide.
+
+Nobody is watching a queued task, so anything it stops to ask lands in the approvals inbox and that
+task waits there — pick a permission mode that doesn't ask, or plan to answer. The queue lives in
+`tasks.json` next to the other daemon files and survives a restart; a task that was running when the
+Mac app stopped is marked failed rather than left claiming to run.
 
 ## Find, share, dictate
 
@@ -278,6 +334,14 @@ daemon then pushes every state change straight to the activity, and the Deny but
 through the app (iOS wakes it in the background to run the intent). The key is an `AuthKey_*.p8`
 from the developer portal (Keys → +, tick APNs); Xcode builds use the sandbox gateway (the default),
 TestFlight / App Store builds need `--apns-production`.
+
+## Several Macs at once
+
+The app stays connected to every Mac you have paired, not just the one on screen: their sessions and
+their approvals keep arriving, so the inbox and the widget are never half the picture. **Show every
+Mac** (list menu) folds them into one list — each row carries the Mac it lives on, and opening one
+from another Mac switches over first. Both switches live in Settings → Macs; turning the first off
+goes back to one Mac at a time.
 
 ## iPad and Mac
 

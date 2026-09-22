@@ -1,7 +1,8 @@
 import Foundation
 
 /// Wire-protocol version. Bump when messages change incompatibly.
-public let protocolVersion = 3
+/// 4: rewind, palette, worktrees, the task queue and background processes.
+public let protocolVersion = 4
 
 /// Which coding agent runs a session. Claude Code is the default everywhere a field is missing,
 /// so messages from an older build still decode.

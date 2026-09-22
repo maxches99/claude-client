@@ -19,40 +19,60 @@ struct SessionListView: View {
     @State private var renaming: SessionSummary?
     @State private var renameText = ""
     @State private var searchTask: Task<Void, Never>?
+    @State private var showInbox = false
+    @State private var showTasks = false
+    @State private var showProcesses = false
 
     private var isChats: Bool { scope == .chats }
+    /// One list across every paired Mac (only worth it when there is more than one).
+    private var unified: Bool { model.showAllMacs && model.macs.count > 1 }
 
-    /// Sessions grouped by their project folder, newest project first, for the Sessions tab.
+    /// Sessions grouped by their project folder, newest project first, for the Sessions tab. In the
+    /// unified list a group is a project *on one Mac*, so two Macs with the same folder name stay apart.
     private struct ProjectGroup: Identifiable {
         let id: String
         let name: String
+        let macId: String
         let cwd: String
-        let sessions: [SessionSummary]
+        let sessions: [MacSession]
         let latest: Date
     }
 
     private var projectGroups: [ProjectGroup] {
-        Dictionary(grouping: filtered) { $0.cwd }
-            .map { cwd, sessions in
-                let sorted = sessions.sorted { $0.updatedAt > $1.updatedAt }
-                return ProjectGroup(id: cwd, name: sorted.first?.projectName ?? cwd,
-                                    cwd: cwd, sessions: sorted, latest: sorted.first?.updatedAt ?? .distantPast)
+        Dictionary(grouping: filtered) { "\($0.macId)\n\($0.session.cwd)" }
+            .map { key, items in
+                let sorted = items.sorted { $0.session.updatedAt > $1.session.updatedAt }
+                let first = sorted.first
+                return ProjectGroup(id: key, name: first?.session.projectName ?? key, macId: first?.macId ?? "",
+                                    cwd: first?.session.cwd ?? "", sessions: sorted,
+                                    latest: first?.session.updatedAt ?? .distantPast)
             }
             .sorted { $0.latest > $1.latest }
     }
 
-    private var filtered: [SessionSummary] {
+    /// The sessions of this tab, from the active Mac or from every one of them.
+    private var filtered: [MacSession] {
         let wanted: SessionKind = isChats ? .chat : .agent
-        let scoped = model.sessions.filter { $0.kind == wanted && (showArchived || !model.archivedSessions.contains($0.id)) }
+        let base: [MacSession] = unified
+            ? model.allSessions(kind: wanted)
+            : model.sessions.filter { $0.kind == wanted }.map { MacSession(macId: model.activeMacId ?? "", session: $0) }
+        let scoped = base.filter { showArchived || !model.archivedSessions.contains($0.session.id) }
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return scoped }
-        return scoped.filter { $0.title.lowercased().contains(q) || $0.projectName.lowercased().contains(q) }
+        return scoped.filter { $0.session.title.lowercased().contains(q) || $0.session.projectName.lowercased().contains(q) }
     }
 
-    private var pinned: [SessionSummary] { filtered.filter { model.pinnedSessions.contains($0.id) } }
+    private var pinned: [MacSession] { filtered.filter { model.pinnedSessions.contains($0.session.id) } }
     private var archivedCount: Int {
         let wanted: SessionKind = isChats ? .chat : .agent
         return model.sessions.filter { $0.kind == wanted && model.archivedSessions.contains($0.id) }.count
+    }
+
+    /// The Mac a row belongs to, when the list is showing more than one.
+    private func macChip(_ item: MacSession) -> some View {
+        Group {
+            if unified { CDSChip(text: model.macName(item.macId), systemImage: "desktopcomputer") }
+        }
     }
 
     /// Transcript hits from the Mac for the current query (only sessions of this tab).
@@ -107,8 +127,8 @@ struct SessionListView: View {
             }
             List {
                 if isChats {
-                    let active = filtered.filter { $0.origin != .stored }
-                    let stored = filtered.filter { $0.origin == .stored }
+                    let active = filtered.filter { $0.session.origin != .stored }
+                    let stored = filtered.filter { $0.session.origin == .stored }
                     Section {
                         if model.supportsChats { newChatRow }
                     }
@@ -179,11 +199,26 @@ struct SessionListView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                ApprovalsToolbarButton(isPresented: $showInbox)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 SimulatorToolbarButton(isPresented: $showSimulator)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button("Approvals inbox", systemImage: "tray.full") { showInbox = true }
+                    if !isChats, model.supportsQueue {
+                        Button("Task queue…", systemImage: "list.bullet.rectangle") { showTasks = true }
+                        Button("Background processes…", systemImage: "bolt.horizontal") { showProcesses = true }
+                    }
+                    Divider()
                     Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
+                    if model.macs.count > 1 {
+                        Toggle(isOn: Binding(get: { model.showAllMacs }, set: { model.showAllMacs = $0 })) {
+                            Label("Show every Mac", systemImage: "rectangle.stack")
+                        }
+                        .disabled(!model.watchAllMacs)
+                    }
                     if archivedCount > 0 || showArchived {
                         Toggle(isOn: $showArchived) { Label("Show archived (\(archivedCount))", systemImage: "archivebox") }
                     }
@@ -214,6 +249,9 @@ struct SessionListView: View {
         }
         .sheet(isPresented: $showAddMac) { PairingView() }
         .sheet(isPresented: $showSimulator) { SimulatorView() }
+        .sheet(isPresented: $showInbox) { ApprovalsInboxView() }
+        .sheet(isPresented: $showTasks) { TasksView() }
+        .sheet(isPresented: $showProcesses) { ProcessesView(sessionId: nil) }
         .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Title", text: $renameText)
             Button("Save") {
@@ -292,7 +330,8 @@ struct SessionListView: View {
 
     /// How many sessions in a project are waiting on the user — shown as a badge even when collapsed.
     private func pendingCount(_ group: ProjectGroup) -> Int {
-        group.sessions.filter { $0.status == .awaitingPermission || model.pendingPermission(for: $0.id) != nil }.count
+        let waiting = Set((model.permissionsByMac[group.macId] ?? []).map(\.sessionId))
+        return group.sessions.filter { $0.session.status == .awaitingPermission || waiting.contains($0.session.id) }.count
     }
 
     /// Collapsible project header with a "+" to start a session in that project — the Claude Code sidebar look.
@@ -308,7 +347,7 @@ struct SessionListView: View {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .bold))
                         .rotationEffect(.degrees(isCollapsed(group) ? 0 : 90))
-                    Text(group.name)
+                    Text(unified ? "\(model.macName(group.macId)) · \(group.name)" : group.name)
                         .font(.caption2.weight(.semibold)).textCase(.uppercase)
                     Text("\(group.sessions.count)")
                         .font(.caption2).foregroundStyle(CDS.textMuted.opacity(0.6))
@@ -327,7 +366,11 @@ struct SessionListView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            Button { newSessionCwd = group.cwd; showNewSession = true } label: {
+            Button {
+                if group.macId != model.activeMacId { model.switchTo(group.macId) }
+                newSessionCwd = group.cwd
+                showNewSession = true
+            } label: {
                 Image(systemName: "plus").font(.system(size: 13, weight: .semibold))
                     .contentShape(Rectangle())
             }
@@ -339,10 +382,10 @@ struct SessionListView: View {
         .listRowInsets(EdgeInsets(top: 0, leading: CDS.gutter, bottom: 4, trailing: CDS.gutter))
     }
 
-    private func row(_ session: SessionSummary) -> some View {
-        ZStack {
-            // Sidebar rows navigate without a disclosure chevron; the link stays for the tap.
-            NavigationLink(value: session.id) { EmptyView() }.opacity(0)
+    private func row(_ item: MacSession) -> some View {
+        let session = item.session
+        // Opening goes through the model: a row may belong to another Mac, which is switched to first.
+        return Button { model.open(item) } label: {
             HStack(alignment: .top, spacing: 10) {
                 StatusDot(status: session.status, origin: session.origin, agent: session.agent)
                     .frame(width: 8)
@@ -365,12 +408,14 @@ struct SessionListView: View {
                         }
                         Text("·")
                         Text(RelativeTime.string(session.updatedAt))
+                        macChip(item)
                         if session.origin == .desktop { CDSChip(text: session.sourceLabel, style: .agent(session.agent.tint)) }
                         if session.kind == .agent, session.origin == .host { CDSChip(text: "Phone", systemImage: "iphone") }
                         if session.kind == .agent, session.agent == .codex, session.origin != .desktop {
                             CDSChip(text: "Codex", style: .agent(CDS.agentCodex))
                         }
-                        if session.status == .awaitingPermission || model.pendingPermission(for: session.id) != nil {
+                        if session.status == .awaitingPermission
+                            || (model.permissionsByMac[item.macId] ?? []).contains(where: { $0.sessionId == session.id }) {
                             CDSChip(text: "Needs approval", style: .warning)
                         }
                     }
@@ -379,10 +424,15 @@ struct SessionListView: View {
                 Spacer(minLength: 0)
             }
             .padding(.vertical, 2)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .listRowBackground(CDS.surface0)
         .listRowSeparator(.hidden)
         .contextMenu {
+            if item.macId != model.activeMacId {
+                Button("Switch to \(model.macName(item.macId))", systemImage: "desktopcomputer") { model.switchTo(item.macId) }
+            }
             Button("Rename…", systemImage: "pencil") { renameText = session.title; renaming = session }
                 .disabled(!model.isConnected)
             if model.pinnedSessions.contains(session.id) {

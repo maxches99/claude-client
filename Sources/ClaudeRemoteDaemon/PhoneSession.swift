@@ -276,6 +276,52 @@ final class PhoneSession: @unchecked Sendable {
                 send(.sessionSearchResults(query: query, hits: await manager.searchSessions(query: query), error: nil))
             case .liveActivity(let sessionId, let pushToken, let approvalNeedsApp):
                 await manager.registerLiveActivity(sessionId: sessionId, phone: id, token: pushToken, approvalNeedsApp: approvalNeedsApp)
+            case .rewind(let sessionId, let uuid):
+                do {
+                    let result = try await manager.rewind(sessionId: sessionId, uuid: uuid)
+                    send(.rewound(sessionId: sessionId, newSessionId: result.newSessionId, dropped: result.dropped, error: nil))
+                    try await manager.open(sessionId: result.newSessionId) { [weak self] msg in self?.send(msg) }
+                } catch {
+                    send(.rewound(sessionId: sessionId, newSessionId: "", dropped: 0, error: "\(error)"))
+                }
+            case .listPalette(let sessionId):
+                send(.palette(sessionId: sessionId, items: await manager.paletteItems(sessionId: sessionId)))
+            case .listWorktrees(let sessionId):
+                do {
+                    send(.worktrees(sessionId: sessionId, items: try await manager.worktrees(sessionId: sessionId), error: nil))
+                } catch {
+                    send(.worktrees(sessionId: sessionId, items: [], error: "\(error)"))
+                }
+            case .worktreeAction(let sessionId, let action):
+                do {
+                    send(.worktrees(sessionId: sessionId, items: try await manager.worktreeAction(sessionId: sessionId, action: action), error: nil))
+                } catch {
+                    let existing = (try? await manager.worktrees(sessionId: sessionId)) ?? []
+                    send(.worktrees(sessionId: sessionId, items: existing, error: "\(error)"))
+                }
+            case .listTasks:
+                let list = await manager.taskList()
+                send(.tasks(items: list.items, settings: list.settings))
+            case .addTask(let task):
+                await manager.addTask(task)
+            case .updateTask(let task):
+                await manager.updateTask(task)
+            case .taskAction(let id, let action):
+                await manager.performTaskAction(id: id, action: action)
+            case .setTaskSettings(let settings):
+                await manager.setTaskSettings(settings)
+            case .listProcesses:
+                send(.processes(items: await manager.listProcesses()))
+            case .startProcess(let sessionId, let runId, let command, let label):
+                do {
+                    try await manager.startProcess(sessionId: sessionId, runId: runId, command: command, label: label, phone: id)
+                } catch {
+                    send(.commandOutput(sessionId: sessionId ?? "", runId: runId, chunk: "\(error)\n", done: true, exitCode: -1))
+                }
+            case .attachProcess(let runId, let attached):
+                await manager.attachProcess(runId: runId, phone: id, attached: attached)
+            case .killProcess(let runId):
+                await manager.killProcess(runId: runId)
             #if os(macOS)
             case .listSimulators:
                 send(.simulators(items: await SimulatorStreamer.shared.list()))
@@ -340,7 +386,8 @@ extension ClientMessage {
              .gitStatus(let id), .gitAction(let id, _), .liveActivity(let id, _, _),
              .listFiles(let id, _), .getUsage(let id), .listDirectory(let id, _), .searchProject(let id, _), .listCommands(let id),
              .runCommand(let id, _, _), .cancelCommand(let id, _), .pullRequest(let id), .renameSession(let id, _),
-             .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id):
+             .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id),
+             .rewind(let id, _), .listPalette(let id), .listWorktrees(let id), .worktreeAction(let id, _):
             return id
         default:
             return nil
