@@ -110,6 +110,26 @@ public enum ClientMessage: Codable, Sendable {
     /// Start receiving a background process's output (the buffered tail first), or stop.
     case attachProcess(runId: String, attached: Bool)
     case killProcess(runId: String)
+    /// What happened on the Mac since `since` (sessions, finished tasks, stopped processes); answered with `digest`.
+    case digest(since: Date)
+    /// Where on the Mac this session can be continued; answered with `handoffTargets`.
+    case listHandoffTargets(sessionId: String)
+    /// Continue the session (or open its project) there; answered with `handoffResult`.
+    case handoff(sessionId: String, targetId: String)
+    /// Publish a sealed transcript page through the relay; answered with `shared`.
+    case shareTranscript(sessionId: String, title: String, payload: SharePayload)
+    case revokeShare(shareId: String)
+    /// Start a shell in a pseudo-terminal on the Mac (in the session's project, or home). Output
+    /// streams as `terminalOutput` to every phone attached to it; it keeps running when phones leave.
+    case terminalOpen(sessionId: String?, terminalId: String, cols: Int, rows: Int)
+    /// Follow a terminal (its screen so far is replayed first), or stop following it.
+    case terminalAttach(terminalId: String, attached: Bool)
+    /// Keystrokes, base64 (control bytes and partial UTF-8 survive the trip).
+    case terminalInput(terminalId: String, dataBase64: String)
+    case terminalResize(terminalId: String, cols: Int, rows: Int)
+    /// Hang up the shell (SIGHUP) and forget the terminal.
+    case terminalClose(terminalId: String)
+    case listTerminals
     /// Register (or, with `pushToken == nil`, drop) this phone's Live Activity for a session. When the
     /// Mac has APNs configured it pushes `SessionActivityState` updates to the token, so the activity
     /// keeps moving while the app is in the background. `approvalNeedsApp` mirrors the phone's Face ID
@@ -160,6 +180,15 @@ public enum ServerMessage: Codable, Sendable {
     /// The whole queue, every time anything in it changes.
     case tasks(items: [AgentTask], settings: TaskQueueSettings)
     case processes(items: [BackgroundProcess])
+    case digest(report: DigestReport)
+    case handoffTargets(sessionId: String, items: [HandoffTarget])
+    case handoffResult(sessionId: String, targetId: String, error: String?)
+    /// The published link (without its key), or why it could not be.
+    case shared(sessionId: String, share: ShareInfo?, error: String?)
+    case terminals(items: [TerminalInfo])
+    /// Output of a terminal, base64 (a read may split a UTF-8 character).
+    case terminalOutput(terminalId: String, dataBase64: String)
+    case terminalExited(terminalId: String, exitCode: Int32?)
     case simulators(items: [SimulatorInfo])
     case simulatorActionResult(udid: String, action: SimulatorAction, error: String?)
     case simulatorApps(udid: String, items: [SimulatorApp], error: String?)

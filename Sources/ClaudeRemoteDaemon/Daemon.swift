@@ -208,6 +208,14 @@ public final class Daemon: @unchecked Sendable {
         if let minutes = config.idleTimeoutMinutes, minutes > 0 {
             Task { [manager] in await manager.setIdleTimeout(TimeInterval(minutes * 60)) }
         }
+        if config.relayEnabled, let relay = config.relayURL.flatMap(URL.init(string:)), let endpoint = ShareConfig.httpBase(fromRelay: relay),
+           let room, let secret = config.relaySecret {
+            // The relay may be dialed on loopback (the hub runs next to it); links need the address
+            // readers can reach, the same one the pairing URL gives phones.
+            let publicBase = config.relayURLForPhones.flatMap(URL.init(string:)).flatMap(ShareConfig.httpBase(fromRelay:)) ?? endpoint
+            let share = ShareConfig(endpoint: endpoint, publicBase: publicBase, room: room, secret: secret)
+            Task { [manager] in await manager.setShareConfig(share) }
+        }
         #if os(macOS)
         SimulatorStreamer.log = log
         SimulatorInput.log = log

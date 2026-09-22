@@ -39,6 +39,9 @@ final class AppModel {
     /// The queue, the palette, worktrees, rewind and background processes need protocol 4 — an older
     /// daemon would answer them with "malformed message", so they stay out of the way instead.
     var supportsQueue: Bool { (host?.protocolVersion ?? 1) >= 4 }
+    /// The digest, terminals, handoff and share links need protocol 5.
+    var supportsMacTools: Bool { (host?.protocolVersion ?? 1) >= 5 }
+    func supportsMacTools(_ macId: String) -> Bool { (hostByMac[macId]?.protocolVersion ?? 1) >= 5 }
     /// Models Codex on the Mac can run, fetched once per connection.
     var codexModels: [ModelOption] = []
     /// Sessions per Mac, so the unified list can show them all at once.
@@ -500,6 +503,9 @@ final class AppModel {
         taskSettings = TaskQueueSettings()
         backgroundProcesses = []
         attachedProcesses = []
+        handoffTargets = [:]
+        terminals = []
+        terminalScreens = [:]
         activityTrackers = [:]
         liveActivities.endAll()
         imageCache.reset()
@@ -896,6 +902,25 @@ final class AppModel {
         let dropped: Int
     }
 
+    // MARK: digest, handoff, share links, terminals (actions in AppModel+MacTools.swift)
+
+    /// "While you were away", per Mac, until dismissed.
+    var digests: [String: DigestReport] = [:]
+    var handoffTargets: [String: [HandoffTarget]] = [:]
+    /// The outcome of the last handoff, for a banner.
+    var handoffMessage: Banner?
+
+    struct Banner: Equatable {
+        let text: String
+        let isError: Bool
+    }
+    /// Links this phone published (with their keys — the only copy), newest first.
+    var shares: [ShareRecord] = ShareRecord.load()
+    var shareWaiters: [String: CheckedContinuation<ShareInfo, Error>] = [:]
+    /// Shells running on the active Mac, and the screens this phone is showing.
+    var terminals: [TerminalInfo] = []
+    var terminalScreens: [String: TerminalModel] = [:]
+
     // MARK: inbound
 
     private func handle(_ message: ServerMessage, from macId: String) {
@@ -903,8 +928,12 @@ final class AppModel {
         // (transcripts, git, simulators…) belongs to the Mac on screen.
         let isActive = macId == activeMacId
         switch message {
+        case .digest(let report):
+            receiveDigest(report, from: macId)
+            return
         case .welcome(let host):
             hostByMac[macId] = host
+            requestDigestIfAway(macId)
             updateMac(macId) { $0.hostName = host.hostName; $0.lastConnectedAt = Date() }
             guard isActive else {
                 connections[macId]?.send(.listSessions)
@@ -1105,6 +1134,30 @@ final class AppModel {
         case .processes(let items):
             guard isActive else { return }
             backgroundProcesses = items
+        case .handoffTargets(let sessionId, let items):
+            guard isActive else { return }
+            handoffTargets[sessionId] = items
+        case .handoffResult(_, let targetId, let error):
+            guard isActive else { return }
+            let label = handoffTargets.values.flatMap { $0 }.first { $0.id == targetId }?.label ?? "Opened on the Mac"
+            handoffMessage = error.map { Banner(text: $0, isError: true) } ?? Banner(text: "\(label) — done on the Mac.", isError: false)
+        case .shared(let sessionId, let share, let error):
+            guard isActive else { return }
+            if let waiter = shareWaiters.removeValue(forKey: sessionId) {
+                if let share { waiter.resume(returning: share) } else { waiter.resume(throwing: ShareFailure.mac(error ?? "The Mac could not publish the link.")) }
+            }
+        case .terminals(let items):
+            guard isActive else { return }
+            terminals = items
+        case .terminalOutput(let terminalId, let dataBase64):
+            guard isActive, let screen = terminalScreens[terminalId], let data = Data(base64Encoded: dataBase64) else { return }
+            let replies = screen.feed([UInt8](data))
+            if !replies.isEmpty { sendMessage(.terminalInput(terminalId: terminalId, dataBase64: Data(replies).base64EncodedString())) }
+        case .terminalExited(let terminalId, let exitCode):
+            guard isActive else { return }
+            terminalScreens[terminalId]?.exited = true
+            terminalScreens[terminalId]?.exitCode = exitCode
+            terminals.removeAll { $0.id == terminalId }
         case .pong:
             break
         }
@@ -1168,6 +1221,7 @@ final class AppModel {
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     func enteredBackground() {
+        markSeen()
         flushCache()
         updateWidget()
         guard !liveActivities.activeSessionIds.isEmpty, backgroundTask == .invalid else { return }

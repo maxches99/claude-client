@@ -23,12 +23,12 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
 
 | Path | What |
 |---|---|
-| `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, `CodexTranslator` / `CodexRollout` (Codex events and session files → the same reducer), WebSocket channel (TLS roles), the queue / palette / worktree / turn-review models |
-| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` and its feature files (`…Rewind`, `…Palette`, `…Worktrees`, `…Tasks`, `BackgroundProcesses`) |
+| `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, `CodexTranslator` / `CodexRollout` (Codex events and session files → the same reducer), WebSocket channel (TLS roles), the queue / palette / worktree / turn-review / digest models, the terminal emulator (`TerminalScreen`) and the share page (`TranscriptHTML`) |
+| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` and its feature files (`…Rewind`, `…Palette`, `…Worktrees`, `…Tasks`, `…Digest`, `…Handoff`, `…Share`, `BackgroundProcesses`, `TerminalSessions` — the pseudo-terminal itself is the small C target `CPTY`) |
 | `Sources/ClaudeRemoteDaemon` | The daemon as a library: `Daemon` (config → listener + Bonjour, relay dial-out, notifier, phone tracking, status), `DaemonConfig` (`config.json`), `PhoneSession`, `WebSocketServer`, `HookServer` (hook socket), `RelayClient`, `DeviceRegistry`, pairing URL + QR |
 | `Sources/ccremote` | Thin CLI front-end for the daemon (flags, terminal QR) |
 | `ClaudeRemoteHost/` | **Mac menu-bar app** hosting the daemon: status, paired phones, QR, settings, open-at-login, keep-awake (Tuist project) |
-| `relay/` | Node relay for reaching the Mac off-network (`relay/README.md`) |
+| `relay/` | Node relay for reaching the Mac off-network, and the host of share links (`relay/README.md`) |
 | `ClaudeRemote/` | iOS app + widget, watchOS app + complication (Tuist project) |
 | `Tests/` | Reducer / protocol tests (`swift test`) |
 | `Tuist.swift`, `Workspace.swift`, `Tuist/` | Tuist config: `tuist generate` writes `ClaudeRemote.xcworkspace` with both app projects; your Apple team goes into the untracked `Tuist/team.xcconfig` |
@@ -222,6 +222,16 @@ request (the same sheet the session shows, so questions and plan reviews work th
 session it belongs to. A request from another Mac is answered on that Mac's own connection; nothing
 switches over behind your back.
 
+## Catching up
+
+Come back after a while and the session list opens with **While you were away**: which sessions moved,
+which are waiting for you, which ran into errors, and the tasks that finished — across every connected
+Mac. Tap it for the details: per session the prompts it got, the files it wrote, the commands it ran,
+its errors and its last reply; the queue's finished tasks and the background processes that stopped.
+**Catch up…** in the list menu shows the same for the last hour, today, the last day or the last week.
+The Mac works it out from the transcripts (Claude's and Codex's), so it covers Desktop and terminal
+sessions as well as the phone's own.
+
 ## Approving Desktop and terminal sessions
 
 Sessions the Mac runs itself — Claude Desktop, `claude` in a terminal, an SDK script — cannot
@@ -262,6 +272,18 @@ daemon running the hook exits quietly. `--uninstall-hook` (or the toggle) remove
   processes…** starts one that keeps running when the phone goes away, buffers its output on the Mac,
   and lets any phone attach later and see the tail — with Stop when you're done. They are listed with
   what they are doing per project, and they stop with the Mac app.
+* **Terminal.** **Terminal…** (session menu, or **Terminals…** in the list menu) opens a login shell on
+  the Mac in a real pseudo-terminal — your prompt, your aliases, ^C and job control, colours, and
+  full-screen programs (`top`, `less`, `vim`) on an xterm-compatible screen. A bar above the keyboard
+  has Esc, Tab, a sticky Ctrl, ^C and the arrows; a hardware keyboard works as is, and Paste uses
+  bracketed paste. The shell keeps running when you leave: come back, or open it from another phone,
+  and the screen is replayed. Opening one is Face ID-gated like running a command.
+* **Continue on the Mac** (session menu) hands a session back to the desk: **Continue in Claude
+  Desktop** imports it into the Code tab (through Desktop's own `claude://resume` link), **Continue in
+  Terminal** opens `claude --resume` (or `codex resume`) in a new Terminal window, and the project
+  opens in Finder, Xcode (when there is a workspace, project or package) or an editor you have installed.
+  For a session the phone hosts, the daemon lets go of it first, so the transcript has one writer; mid-turn
+  it refuses. The phone can still follow the session from the list afterwards.
 * **Read aloud / hands-free.** Any reply can be read out (message menu, or "Read last reply aloud").
   **Hands-free voice** in the session menu turns the chat into a conversation: each finished reply
   is read aloud, then the mic opens; stop talking for a couple of seconds and the prompt is sent.
@@ -319,6 +341,19 @@ Mac app stopped is marked failed rather than left claiming to run.
 * **Dictation** — tap the mic and talk; the text streams into the composer as you speak (on-device
   recognition when the language supports it). Hold the mic for the older voice-memo attachment.
 
+## Share links
+
+**Share as a link…** (session menu) publishes the transcript as a read-only page for someone without
+the app: prompts and replies, tool work folded up, in their browser, for an hour, a day or a week.
+The page is rendered and **encrypted on the phone** (AES-256-GCM, a fresh key per link). The Mac passes
+only the ciphertext to its relay, the relay stores it and serves a small viewer, and the key is the
+`#fragment` of the link, which browsers never send to a server — so neither the Mac nor the relay can
+read what was shared. The viewer decrypts in the reader's browser, takes the key out of the address
+bar, and shows the page in a sandboxed frame where no script runs and nothing outside can load.
+Revoke a link from the same sheet or from Settings → Shared links; the relay deletes it. It needs a
+relay (Host → Settings → Remote access); links survive relay restarts when it has a data directory
+(`--data`, which `relay/deploy.sh` sets up).
+
 ## Live Activity / Dynamic Island
 
 A session started from the phone (and any session you have open) shows up as a Live Activity while it
@@ -358,6 +393,11 @@ images show inline; anything else is a chip that opens a viewer — Markdown ren
 text and code monospaced, PDFs paged — with Copy and a share button that hands the bytes over as a
 real file, so "Save to Files", AirDrop or "Open in…" keep the name and type.
 
+**Camera and mark-up.** The composer's + menu can take a photo; any picture in the composer — a
+photo, a screenshot, the simulator's still — opens for drawing on when tapped (PencilKit, a red marker
+to start), so "this is misaligned" can come with a circle around it. The drawing is burned into the
+image before it goes to the agent.
+
 ## Simulator live view and control
 
 When an iOS Simulator is booted on the Mac (e.g. the agent is driving your app in it), a phone
@@ -394,6 +434,15 @@ messages with `IndigoHIDMessageFor…` and posts them through `SimDeviceLegacyHI
 the private frameworks; a Mac without Xcode just reports that input is unavailable.
 `ccremote --sim-input <udid> '{"tap":{"x":0.5,"y":0.5}}'` and `ccremote --sim-video <udid> 10
 out.h264` exercise both paths from a terminal.
+
+## Apple Watch
+
+The Watch app (Xcode builds only — sideloaders cannot install it) opens on what is waiting: approvals
+first, each with Allow / Deny, a plan to read and approve, or a question whose options are buttons (one
+tap for a single choice, toggles and Send for several). The wrist taps when a new request arrives and
+when a turn you opened there finishes. **Ask Claude** starts a quick chat by voice and shows the reply;
+a session's Reply offers ready answers ("Yes, go ahead", "Run the tests"…) next to dictation, and a
+running session shows what its agent is doing and can be stopped.
 
 ## Remote access (off Wi-Fi)
 

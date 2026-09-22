@@ -28,7 +28,9 @@ let package = Package(
             .product(name: "NIOWebSocket", package: "swift-nio", condition: .when(platforms: [.linux])),
         ]),
         // Mac/Linux: drives `claude` CLI processes over stream-json, indexes ~/.claude.
-        .target(name: "ClaudeCodeHost", dependencies: ["ClaudeRemoteCore"]),
+        .target(name: "ClaudeCodeHost", dependencies: ["ClaudeRemoteCore", "CPTY"]),
+        // The fork-to-exec part of starting a shell in a pseudo-terminal (terminals from the phone).
+        .target(name: "CPTY"),
         // Mac/Linux: the daemon itself — WebSocket server (+ Bonjour on macOS), relay dial-out,
         // pairing, phone tracking. Hosted by the `ccremote` CLI and by the ClaudeRemote Host menu-bar app.
         .target(name: "ClaudeRemoteDaemon", dependencies: [

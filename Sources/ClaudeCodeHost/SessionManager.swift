@@ -100,7 +100,7 @@ public actor SessionManager {
     }
 
     let cli: ClaudeCLI
-    private let codex: CodexBackend?
+    let codex: CodexBackend?
     let store: TranscriptStore
     private let registry: LiveSessionRegistry
     let notifier: Notifier?
@@ -119,7 +119,7 @@ public actor SessionManager {
     private var cachedLoggedIn: Bool?
     private var cachedCodexVersion: String?
     /// Codex threads on disk, as last fetched from the app-server (see `refreshSources`).
-    private var codexThreads: [CodexBackend.ThreadInfo] = []
+    var codexThreads: [CodexBackend.ThreadInfo] = []
     /// Codex threads this daemon closed recently — `thread/list` picks them up with a delay.
     private var recentCodexThreads: [CodexBackend.ThreadInfo] = []
     /// Permission prompts of sessions we do not host (Desktop / terminal), handed to us by the CLI's
@@ -140,6 +140,10 @@ public actor SessionManager {
 
     /// Commands left running on the Mac, by run id — they outlive the phone that started them.
     var processes: [String: BackgroundRun] = [:]
+    /// Shells in pseudo-terminals, by terminal id (TerminalSessions.swift).
+    var terminals: [String: TerminalRun] = [:]
+    /// Where share links are published (SessionManagerShare.swift); nil without a relay.
+    var shareConfig: ShareConfig?
     /// The task queue, oldest first, and how it is worked off.
     var tasks: [AgentTask] = []
     var taskSettings = TaskQueueSettings()
@@ -212,6 +216,7 @@ public actor SessionManager {
     public func unsubscribe(_ id: UUID) {
         subscribers[id] = nil
         detachAllProcesses(phone: id)
+        detachAllTerminals(phone: id)
         // Nobody left to answer: let the Mac show its own prompt instead of holding the CLI.
         if subscribers.isEmpty { cancelHookPermissions(reason: "no phone connected") }
     }
@@ -262,7 +267,8 @@ public actor SessionManager {
             codexInfo = CodexInfo(path: codex.cli.path, version: cachedCodexVersion, loggedIn: await codex.loggedIn)
         }
         return HostInfo(hostName: HostPaths.machineName, daemonVersion: daemonVersion,
-                        cliVersion: cachedCliVersion, cliPath: cli.path, loggedIn: cachedLoggedIn, codex: codexInfo, livePush: livePusher != nil)
+                        cliVersion: cachedCliVersion, cliPath: cli.path, loggedIn: cachedLoggedIn, codex: codexInfo, livePush: livePusher != nil,
+                        canShare: shareConfig != nil)
     }
 
     public var hasCodex: Bool { codex != nil }
@@ -828,7 +834,7 @@ public actor SessionManager {
         broadcast(.sessions(items: listSessions()))
     }
 
-    private func hasHookPermission(sessionId: String) -> Bool {
+    func hasHookPermission(sessionId: String) -> Bool {
         hookWaiters.values.contains { $0.request.sessionId == sessionId }
     }
 
@@ -951,7 +957,7 @@ public actor SessionManager {
     }
 
     /// Whole rollout file plus the offset to keep tailing from.
-    private static func readRollout(path: String) -> ([JSONValue], UInt64) {
+    static func readRollout(path: String) -> ([JSONValue], UInt64) {
         guard let data = FileManager.default.contents(atPath: path) else { return ([], 0) }
         var lines: [JSONValue] = []
         for line in data.split(separator: 0x0A) where !line.isEmpty {
@@ -1715,6 +1721,7 @@ public actor SessionManager {
     public func shutdown() async {
         taskTimer?.cancel()
         terminateAllProcesses()
+        terminateAllTerminals()
         for id in Array(hosted.keys) { await close(sessionId: id) }
         for id in Array(watched.keys) { await close(sessionId: id) }
         for id in Array(watchedCodex.keys) { stopWatchingCodex(sessionId: id) }

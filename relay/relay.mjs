@@ -7,12 +7,18 @@
 // only forwards bytes — but it CAN read them, so run it on a host you control. Put TLS in front
 // (see relay/README.md); this process listens plain on 127.0.0.1 by default.
 //
-//   CCRELAY_SECRET=... node relay.mjs [--port 8787] [--host 127.0.0.1]
+//   CCRELAY_SECRET=... node relay.mjs [--port 8787] [--host 127.0.0.1] [--data /var/lib/ccremote-relay]
 //
 // Env: CCRELAY_SECRET (required) — shared secret the daemon presents on /agent and /agent-conn.
+//      CCRELAY_DATA — where share links are kept across restarts (memory only when unset).
+//
+// It also hosts share links (see share.mjs): the Mac posts a transcript page the phone sealed with a
+// key only the phone has; people open /s/<id>#<key> and the page is decrypted in their browser.
 
+import http from "node:http";
 import { WebSocketServer } from "ws";
 import { parse as parseURL } from "node:url";
+import { ShareStore, handleShareHTTP } from "./share.mjs";
 
 const args = process.argv.slice(2);
 function opt(name, def) { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : def; }
@@ -28,7 +34,18 @@ const rooms = new Map();           // room -> { agent: ws }
 const pending = new Map();         // connId -> { client, agentConn, buf: [], timer }
 let connSeq = 0;
 
-const wss = new WebSocketServer({ host: HOST, port: PORT }, () => log(`relay listening on ws://${HOST}:${PORT}`));
+const DATA = opt("--data", process.env.CCRELAY_DATA || "");
+const shares = new ShareStore({ dir: DATA || null, log });
+
+// One HTTP server: share links over plain requests, the relay itself over WebSocket upgrades.
+const server = http.createServer((req, res) => {
+  handleShareHTTP(req, res, { store: shares, secret: SECRET, log }).catch((e) => {
+    log(`share: ${e?.message || e}`);
+    if (!res.headersSent) { res.writeHead(500, { "Content-Type": "application/json" }); res.end('{"error":"internal"}'); }
+  });
+});
+const wss = new WebSocketServer({ server });
+server.listen(PORT, HOST, () => log(`relay listening on ws://${HOST}:${PORT}${DATA ? ` · shares in ${DATA}` : " · shares in memory"}`));
 
 wss.on("connection", (ws, req) => {
   const { pathname, query } = parseURL(req.url, true);

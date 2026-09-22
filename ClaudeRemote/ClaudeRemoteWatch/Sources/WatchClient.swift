@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import Observation
+import WatchKit
 import WidgetKit
 import ClaudeRemoteCore
 
@@ -17,6 +18,12 @@ final class WatchClient {
     private(set) var states: [String: SessionState] = [:]
     private(set) var permissions: [PermissionRequest] = []
     private var transcripts: [String: Transcript] = [:]
+    /// Sessions opened on the wrist — their finished turns tap the wrist.
+    private var followed: Set<String> = []
+    /// A question dictated for a new chat, sent as soon as the Mac has created the chat.
+    private var pendingChatPrompt: String?
+    /// The chat just started from the wrist, for the view to navigate to.
+    var startedChatId: String?
 
     private var pairing: WatchPairing?
     private var channel: WebSocketChannel?     // the winning connection once the race is decided
@@ -70,12 +77,46 @@ final class WatchClient {
 
     func open(_ sessionId: String) {
         if transcripts[sessionId] == nil { transcripts[sessionId] = Transcript() }
+        followed.insert(sessionId)
         send(.open(sessionId: sessionId))
     }
 
-    func decide(_ request: PermissionRequest, allow: Bool) {
-        send(.permission(sessionId: request.sessionId, requestId: request.id, allow: allow, message: allow ? nil : "Denied from Watch"))
+    func decide(_ request: PermissionRequest, allow: Bool, reason: String? = nil, updatedInput: JSONValue? = nil) {
+        send(.permission(sessionId: request.sessionId, requestId: request.id, allow: allow,
+                         message: allow ? nil : (reason ?? "Denied from Watch"), updatedInput: updatedInput))
         permissions.removeAll { $0.id == request.id }
+        WKInterfaceDevice.current().play(allow ? .success : .directionDown)
+    }
+
+    /// Answers an AskUserQuestion with the picked option labels per question.
+    func answer(_ request: PermissionRequest, answers: [String: [String]]) {
+        decide(request, allow: true, updatedInput: AskUserQuestion.answeredInput(request.input, answers: answers))
+    }
+
+    /// Starts a tool-less chat and sends it `text` — a question asked by voice from the wrist.
+    func startChat(_ text: String, agent: AgentKind = .claude) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        pendingChatPrompt = t
+        startedChatId = nil
+        send(.create(options: .chat(agent: agent)))
+    }
+
+    /// What the agent is doing right now, when it is inside a tool call.
+    func livePhase(for sessionId: String) -> String? {
+        guard status(for: sessionId) == .running, let items = transcripts[sessionId]?.items else { return nil }
+        for item in items.reversed() {
+            switch item.kind {
+            case .toolUse(_, let name, let input, _, true):
+                let line = ToolSummary.line(name: name, input: input)
+                return line.isEmpty ? ToolSummary.displayName(name) : "\(ToolSummary.displayName(name)) · \(line)"
+            case .thinking(_, true): return "Thinking…"
+            case .assistantText(_, true): return "Writing…"
+            case .user: return "Working…"
+            default: continue
+            }
+        }
+        return "Working…"
     }
 
     func prompt(_ sessionId: String, text: String) {
@@ -206,14 +247,30 @@ final class WatchClient {
         case .sessions(let items):
             sessions = items
         case .state(let state):
+            let was = states[state.id]?.status
             states[state.id] = state
             for p in state.pendingPermissions where !permissions.contains(where: { $0.id == p.id }) { permissions.append(p) }
+            // A turn the wrist was following just ended.
+            if was == .running, state.status == .idle, followed.contains(state.id) {
+                WKInterfaceDevice.current().play(state.lastError == nil ? .success : .failure)
+            }
         case .permissionRequest(let request):
-            if !permissions.contains(where: { $0.id == request.id }) { permissions.append(request) }
+            if !permissions.contains(where: { $0.id == request.id }) {
+                permissions.append(request)
+                WKInterfaceDevice.current().play(.notification)
+            }
         case .permissionResolved(_, let requestId):
             permissions.removeAll { $0.id == requestId }
         case .history(let sessionId, let entries):
             var t = Transcript(); t.apply(entries: entries); transcripts[sessionId] = t
+            // A brand-new chat (empty history) right after we asked for one: send the dictated question.
+            if entries.isEmpty, let prompt = pendingChatPrompt {
+                pendingChatPrompt = nil
+                followed.insert(sessionId)
+                send(.prompt(sessionId: sessionId, text: prompt, images: []))
+                startedChatId = sessionId
+                send(.listSessions)
+            }
         case .event(let sessionId, let payload, _):
             transcripts[sessionId]?.apply(payload)
         case .catchUp(let sessionId, let entries, _):

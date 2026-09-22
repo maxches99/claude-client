@@ -21,6 +21,9 @@ struct ChatView: View {
     @State private var showProcesses = false
     @State private var showWorktrees = false
     @State private var confirmRewind: String?
+    @State private var showTerminals = false
+    @State private var showShareLink = false
+    @State private var confirmHandoff: HandoffTarget?
     /// Replies are read aloud and the mic opens for the next prompt — a conversation without looking.
     @State private var handsFree = false
     @State private var showFind = false
@@ -50,6 +53,10 @@ struct ChatView: View {
                 CDSBanner(kind: .danger, text: error, systemImage: "exclamationmark.triangle.fill") { model.errorBanner = nil }
             }
             if showFind { findBar }
+            if let message = model.handoffMessage {
+                CDSBanner(kind: message.isError ? .danger : .info, text: message.text,
+                          systemImage: message.isError ? "exclamationmark.triangle.fill" : "desktopcomputer") { model.handoffMessage = nil }
+            }
             if let notice = model.rewindNotice, notice.sessionId == sessionId {
                 CDSBanner(kind: .info,
                           text: "Rewound: this is a copy without the last \(notice.dropped) transcript entr\(notice.dropped == 1 ? "y" : "ies"). Files on the Mac were not reverted.",
@@ -111,6 +118,9 @@ struct ChatView: View {
                         Section {
                             Button("Browse files…", systemImage: "folder") { showBrowser = true }
                             Button("Run a command…", systemImage: "terminal") { showCommands = true }
+                            if model.supportsMacTools {
+                                Button("Terminal…", systemImage: "apple.terminal") { showTerminals = true }
+                            }
                             if model.supportsQueue {
                                 Button("Background processes…", systemImage: "bolt.horizontal") { showProcesses = true }
                             }
@@ -141,10 +151,25 @@ struct ChatView: View {
                         ShareLink(item: exportDocument, preview: SharePreview(summary?.title ?? "Transcript", image: Image(systemName: "doc.text"))) {
                             Label("Share transcript…", systemImage: "square.and.arrow.up")
                         }
+                        if model.canShareLinks {
+                            Button("Share as a link…", systemImage: "link") { showShareLink = true }
+                                .disabled(transcript.items.isEmpty)
+                        }
                         Button("Copy last reply", systemImage: "doc.on.doc") {
                             UIPasteboard.general.string = TranscriptExport.lastReply(items: transcript.items)
                         }
                         .disabled(TranscriptExport.lastReply(items: transcript.items).isEmpty)
+                    }
+                    if model.supportsMacTools, let targets = model.handoffTargets[sessionId], !targets.isEmpty {
+                        Menu {
+                            ForEach(targets) { target in
+                                Button(target.label, systemImage: target.systemImage) {
+                                    if target.kind == .session { confirmHandoff = target } else { model.handoff(sessionId, to: target) }
+                                }
+                            }
+                        } label: {
+                            Label("Continue on the Mac", systemImage: "desktopcomputer.and.arrow.down")
+                        }
                     }
                     Button("Reload transcript", systemImage: "arrow.clockwise") { model.open(sessionId) }
                     if !isChat {
@@ -178,6 +203,18 @@ struct ChatView: View {
         .sheet(isPresented: $showTurnChanges) { TurnChangesView(sessionId: sessionId) }
         .sheet(isPresented: $showProcesses) { ProcessesView(sessionId: sessionId) }
         .sheet(isPresented: $showWorktrees) { WorktreesView(sessionId: sessionId) }
+        .sheet(isPresented: $showTerminals) { TerminalsView(sessionId: isChat ? nil : sessionId) }
+        .sheet(isPresented: $showShareLink) { ShareLinkSheet(sessionId: sessionId) }
+        .confirmationDialog(confirmHandoff?.label ?? "", isPresented: Binding(get: { confirmHandoff != nil }, set: { if !$0 { confirmHandoff = nil } }), titleVisibility: .visible) {
+            Button("Continue there") {
+                if let target = confirmHandoff { model.handoff(sessionId, to: target) }
+                confirmHandoff = nil
+            }
+        } message: {
+            Text(state?.origin == .host
+                 ? "The phone lets go of this session (its transcript stays), and it continues on the Mac. You can still follow it from here."
+                 : "It opens on the Mac. You can still follow it from here.")
+        }
         .confirmationDialog("Rewind to this prompt?", isPresented: Binding(get: { confirmRewind != nil }, set: { if !$0 { confirmRewind = nil } }), titleVisibility: .visible) {
             Button("Rewind") {
                 if let itemId = confirmRewind { model.rewind(sessionId, toItemId: itemId) }
@@ -216,6 +253,7 @@ struct ChatView: View {
         .onAppear {
             model.openIfNeeded(sessionId)
             if !isChat, model.supportsQueue, model.palettes[sessionId] == nil { model.requestPalette(sessionId) }
+            if model.supportsMacTools { model.requestHandoffTargets(sessionId) }
             if let q = model.pendingFind.removeValue(forKey: sessionId) { findQuery = q; openFind() }
             if !isChat, model.gitStatuses[sessionId] != nil || model.pullRequests[sessionId] != nil { model.requestPullRequest(sessionId) }
         }
@@ -596,6 +634,16 @@ struct ComposerDock: View {
     /// Hands-free: the reply already read out, and the pause that sends what was dictated.
     @State private var spokenReplyId: String?
     @State private var showPalette = false
+    @State private var showCamera = false
+    @State private var markup: MarkupTarget?
+
+    /// An image in the attachment strip being drawn on.
+    private struct MarkupTarget: Identifiable {
+        let index: Int
+        let image: UIImage
+        let filename: String
+        var id: Int { index }
+    }
     @State private var silenceTask: Task<Void, Never>?
 
     private var agent: AgentKind { state?.agent ?? summary?.agent ?? .claude }
@@ -812,6 +860,22 @@ struct ComposerDock: View {
                       matching: .any(of: [.images, .videos]))
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item],
                       allowsMultipleSelection: true) { result in loadFiles(result) }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraPicker { image in
+                if let data = image.jpegData(compressionQuality: 0.9),
+                   let att = Media.imageAttachment(from: data, filename: "photo-\(shortStamp()).jpg") {
+                    files.append(att)
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .fullScreenCover(item: $markup) { target in
+            MarkupView(image: target.image) { marked in
+                guard target.index < files.count, let data = marked.jpegData(compressionQuality: 0.9),
+                      let att = Media.imageAttachment(from: data, filename: target.filename) else { return }
+                files[target.index] = att
+            }
+        }
         .sheet(isPresented: $showPalette) {
             PaletteView(sessionId: sessionId, draft: draft) { insert in
                 let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -878,6 +942,9 @@ struct ComposerDock: View {
 
     private var attachButton: some View {
         Menu {
+            if CameraPicker.isAvailable {
+                Button("Take Photo", systemImage: "camera") { showCamera = true }
+            }
             Button("Photo or Video", systemImage: "photo.on.rectangle") { showPhotoPicker = true }
             Button("File", systemImage: "doc") { showFileImporter = true }
             Button("File on Mac", systemImage: "externaldrive") { showMacPicker = true }
@@ -1096,6 +1163,12 @@ struct ComposerDock: View {
             HStack(spacing: 8) {
                 ForEach(Array(files.enumerated()), id: \.offset) { index, file in
                     fileChip(file) { files.remove(at: index) }
+                        .onTapGesture {
+                            // Tapping a picture opens it for drawing on.
+                            guard file.mediaType.hasPrefix("image/"), let data = Data(base64Encoded: file.base64),
+                                  let image = UIImage(data: data) else { return }
+                            markup = MarkupTarget(index: index, image: image, filename: file.filename)
+                        }
                 }
                 ForEach(Array(macFiles.enumerated()), id: \.offset) { index, path in
                     macFileChip(path) { macFiles.remove(at: index) }
@@ -1129,6 +1202,13 @@ struct ComposerDock: View {
                 Image(uiImage: ui).resizable().scaledToFill()
                     .frame(width: 56, height: 56)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(alignment: .bottomLeading) {
+                        Image(systemName: "pencil.tip.crop.circle")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.white, .black.opacity(0.5))
+                            .padding(3)
+                    }
+                    .accessibilityHint("Tap to mark up")
             } else {
             HStack(spacing: 8) {
                 Image(systemName: iconName(for: file.mediaType))

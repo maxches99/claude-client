@@ -2,7 +2,8 @@ import Foundation
 
 /// Wire-protocol version. Bump when messages change incompatibly.
 /// 4: rewind, palette, worktrees, the task queue and background processes.
-public let protocolVersion = 4
+/// 5: the digest, terminals, handoff to the Mac and share links.
+public let protocolVersion = 5
 
 /// Which coding agent runs a session. Claude Code is the default everywhere a field is missing,
 /// so messages from an older build still decode.
@@ -50,9 +51,12 @@ public struct HostInfo: Codable, Equatable, Sendable {
     public var codex: CodexInfo?
     /// The Mac can push Live Activity updates through APNs (a key is configured).
     public var livePush: Bool?
+    /// The Mac has a relay to publish share links through.
+    public var canShare: Bool?
 
     public init(hostName: String, daemonVersion: String, cliVersion: String?, cliPath: String, loggedIn: Bool?,
-                protocolVersion: Int = ClaudeRemoteCore.protocolVersion, codex: CodexInfo? = nil, livePush: Bool? = nil) {
+                protocolVersion: Int = ClaudeRemoteCore.protocolVersion, codex: CodexInfo? = nil, livePush: Bool? = nil,
+                canShare: Bool? = nil) {
         self.hostName = hostName
         self.daemonVersion = daemonVersion
         self.cliVersion = cliVersion
@@ -61,6 +65,7 @@ public struct HostInfo: Codable, Equatable, Sendable {
         self.protocolVersion = protocolVersion
         self.codex = codex
         self.livePush = livePush
+        self.canShare = canShare
     }
 }
 

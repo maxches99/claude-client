@@ -322,6 +322,43 @@ final class PhoneSession: @unchecked Sendable {
                 await manager.attachProcess(runId: runId, phone: id, attached: attached)
             case .killProcess(let runId):
                 await manager.killProcess(runId: runId)
+            case .digest(let since):
+                send(.digest(report: await manager.digest(since: since)))
+            case .listHandoffTargets(let sessionId):
+                send(.handoffTargets(sessionId: sessionId, items: await manager.handoffTargets(sessionId: sessionId)))
+            case .handoff(let sessionId, let targetId):
+                do {
+                    try await manager.handoff(sessionId: sessionId, targetId: targetId)
+                    send(.handoffResult(sessionId: sessionId, targetId: targetId, error: nil))
+                } catch {
+                    send(.handoffResult(sessionId: sessionId, targetId: targetId, error: "\(error)"))
+                }
+            case .shareTranscript(let sessionId, let title, let payload):
+                do {
+                    send(.shared(sessionId: sessionId, share: try await manager.shareTranscript(sessionId: sessionId, title: title, payload: payload), error: nil))
+                } catch {
+                    send(.shared(sessionId: sessionId, share: nil, error: "\(error)"))
+                }
+            case .revokeShare(let shareId):
+                try await manager.revokeShare(shareId: shareId)
+            case .terminalOpen(let sessionId, let terminalId, let cols, let rows):
+                do {
+                    try await manager.openTerminal(sessionId: sessionId, terminalId: terminalId, cols: cols, rows: rows, phone: id)
+                } catch {
+                    let text = "\r\n\(error)\r\n"
+                    send(.terminalOutput(terminalId: terminalId, dataBase64: Data(text.utf8).base64EncodedString()))
+                    send(.terminalExited(terminalId: terminalId, exitCode: nil))
+                }
+            case .terminalAttach(let terminalId, let attached):
+                await manager.attachTerminal(terminalId: terminalId, phone: id, attached: attached)
+            case .terminalInput(let terminalId, let dataBase64):
+                if let data = Data(base64Encoded: dataBase64) { await manager.terminalInput(terminalId: terminalId, data: [UInt8](data)) }
+            case .terminalResize(let terminalId, let cols, let rows):
+                await manager.resizeTerminal(terminalId: terminalId, cols: cols, rows: rows)
+            case .terminalClose(let terminalId):
+                await manager.closeTerminal(terminalId: terminalId)
+            case .listTerminals:
+                send(.terminals(items: await manager.listTerminals()))
             #if os(macOS)
             case .listSimulators:
                 send(.simulators(items: await SimulatorStreamer.shared.list()))
@@ -387,7 +424,8 @@ extension ClientMessage {
              .listFiles(let id, _), .getUsage(let id), .listDirectory(let id, _), .searchProject(let id, _), .listCommands(let id),
              .runCommand(let id, _, _), .cancelCommand(let id, _), .pullRequest(let id), .renameSession(let id, _),
              .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id),
-             .rewind(let id, _), .listPalette(let id), .listWorktrees(let id), .worktreeAction(let id, _):
+             .rewind(let id, _), .listPalette(let id), .listWorktrees(let id), .worktreeAction(let id, _),
+             .listHandoffTargets(let id), .handoff(let id, _), .shareTranscript(let id, _, _):
             return id
         default:
             return nil
