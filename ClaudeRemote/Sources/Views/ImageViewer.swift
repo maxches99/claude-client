@@ -38,25 +38,39 @@ struct ImageViewer: View {
     var body: some View {
         ZStack {
             Color.black.opacity(backdrop).ignoresSafeArea()
-            TabView(selection: $index) {
-                ForEach(target.images.indices, id: \.self) { i in
-                    ZoomableImage(image: target.images[i],
-                                  onTap: { withAnimation(.easeOut(duration: 0.2)) { chromeHidden.toggle() } },
-                                  onPull: { dragOffset = $0 },
-                                  onRelease: release)
-                        .ignoresSafeArea()
-                        .tag(i)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .ignoresSafeArea()
-            .offset(y: dragOffset)
-
+            pages
             if !chromeHidden && dragOffset == 0 { chrome.transition(.opacity) }
         }
         .statusBarHidden(chromeHidden)
-        .sensoryFeedback(.success, trigger: saved) { _, new in new == .saved || new == .copied }
+        .sensoryFeedback(.success, trigger: saved, condition: Self.succeeded)
         .presentationBackground(.clear)
+    }
+
+    private var pages: some View {
+        TabView(selection: $index) {
+            ForEach(target.images.indices, id: \.self) { i in
+                page(i)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .ignoresSafeArea()
+        .offset(y: dragOffset)
+    }
+
+    private func page(_ i: Int) -> some View {
+        ZoomableImage(image: target.images[i],
+                      onTap: { withAnimation(.easeOut(duration: 0.2)) { chromeHidden.toggle() } },
+                      onPull: { dragOffset = $0 },
+                      onRelease: release)
+            .ignoresSafeArea()
+            .tag(i)
+    }
+
+    private static func succeeded(_ old: SaveResult?, _ new: SaveResult?) -> Bool {
+        switch new {
+        case .saved?, .copied?: return true
+        default: return false
+        }
     }
 
     private func release(_ offset: CGFloat, _ velocity: CGFloat) {
