@@ -135,6 +135,19 @@ public actor SessionManager {
     var terminals: [String: TerminalRun] = [:]
     /// Where share links are published (SessionManagerShare.swift); nil without a relay.
     var shareConfig: ShareConfig?
+    /// Claude-vs-Codex duels (SessionManagerDuels.swift), kept with the task queue.
+    var duels: [Duel] = []
+    /// Judge chat session → the duel it is judging.
+    var judgeSessions: [String: String] = [:]
+    /// When the daily digest goes out (SessionManagerDigestSchedule.swift).
+    var digestSchedule = DigestSchedule()
+    var digestTimer: Task<Void, Never>?
+    /// Where cloned repositories go; also listed as projects.
+    let workspaceRoot: String
+    /// `digest-schedule.json` next to `tasks.json`.
+    var digestSchedulePath: String? {
+        taskStorePath.map { (($0 as NSString).deletingLastPathComponent as NSString).appendingPathComponent("digest-schedule.json") }
+    }
     /// The task queue, oldest first, and how it is worked off.
     var tasks: [AgentTask] = []
     var taskSettings = TaskQueueSettings()
@@ -145,9 +158,11 @@ public actor SessionManager {
 
     public init(cli: ClaudeCLI, codex: CodexBackend? = nil, store: TranscriptStore = TranscriptStore(), registry: LiveSessionRegistry = LiveSessionRegistry(),
                 notifier: Notifier? = nil, livePusher: LiveActivityPusher? = nil, approvalLog: String? = nil, taskStore: String? = nil,
+                workspaceRoot: String? = nil,
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.approvalLog = approvalLog
         self.taskStorePath = taskStore
+        self.workspaceRoot = workspaceRoot.flatMap { $0.isEmpty ? nil : ($0 as NSString).expandingTildeInPath } ?? NSHomeDirectory() + "/work"
         self.cli = cli
         self.codex = codex
         self.store = store
@@ -166,6 +181,7 @@ public actor SessionManager {
         Task { [weak self] in
             await self?.loadTasks()
             await self?.startTaskTimer()
+            await self?.loadDigestSchedule()
         }
     }
 
@@ -230,7 +246,7 @@ public actor SessionManager {
         }
         return HostInfo(hostName: Host.current().localizedName ?? ProcessInfo.processInfo.hostName, daemonVersion: daemonVersion,
                         cliVersion: cachedCliVersion, cliPath: cli.path, loggedIn: cachedLoggedIn, codex: codexInfo, livePush: livePusher != nil,
-                        canShare: shareConfig != nil)
+                        canShare: shareConfig != nil, workspaceRoot: workspaceRoot, hasGitHubCLI: SessionManager.locateGh() != nil)
     }
 
     public var hasCodex: Bool { codex != nil }
@@ -275,7 +291,11 @@ public actor SessionManager {
     }
 
     public func listProjects() -> [ProjectInfo] {
-        store.projects().filter { $0.path != SessionManager.chatDirectory }
+        var projects = store.projects().filter { $0.path != SessionManager.chatDirectory }
+        // Repositories cloned into the workspace count as projects before any session has run in them.
+        let known = Set(projects.map(\.path))
+        for repo in workspaceRepositories() where !known.contains(repo.path) { projects.append(repo) }
+        return projects
     }
 
     static func kind(cwd: String) -> SessionKind {
@@ -1268,7 +1288,10 @@ public actor SessionManager {
 
     /// `gh` wherever Homebrew or the installer put it; nil when GitHub's CLI is not installed.
     static func locateGh() -> String? {
-        for p in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"] where FileManager.default.isExecutableFile(atPath: p) { return p }
+        // ~/.local/bin is where gh's own installer (and pipx-style setups) put it; an app started by
+        // launchd does not have it on PATH.
+        for p in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh", NSHomeDirectory() + "/.local/bin/gh"]
+        where FileManager.default.isExecutableFile(atPath: p) { return p }
         let path = ClaudeCLI.childEnvironment()["PATH"] ?? ""
         for dir in path.split(separator: ":") {
             let p = "\(dir)/gh"
@@ -1277,7 +1300,7 @@ public actor SessionManager {
         return nil
     }
 
-    private func runGh(_ args: [String], cwd: String, timeout: TimeInterval = 40) throws -> (code: Int32, out: String, err: String) {
+    nonisolated func runGh(_ args: [String], cwd: String, timeout: TimeInterval = 40) throws -> (code: Int32, out: String, err: String) {
         guard let gh = SessionManager.locateGh() else { throw GitError.refused("GitHub CLI (gh) is not installed on the Mac.") }
         return runTool(gh, args, cwd: cwd, timeout: timeout)
     }
@@ -1499,6 +1522,11 @@ public actor SessionManager {
     /// Commands from `.ccremote.json` in the project, or a guess from its build files.
     public func projectCommands(sessionId: String) -> [ProjectCommand] {
         guard let cwd = cwdFor(sessionId) else { return [] }
+        return SessionManager.projectCommands(cwd: cwd)
+    }
+
+    /// The project's commands: `.ccremote.json` in the repo, or guessed from its build files.
+    static func projectCommands(cwd: String) -> [ProjectCommand] {
         let fm = FileManager.default
         let configPath = (cwd as NSString).appendingPathComponent(".ccremote.json")
         if let data = fm.contents(atPath: configPath), let json = try? JSONValue.parse(data), let list = json["commands"]?.array {
@@ -1661,6 +1689,7 @@ public actor SessionManager {
 
     public func shutdown() async {
         taskTimer?.cancel()
+        digestTimer?.cancel()
         terminateAllProcesses()
         terminateAllTerminals()
         for id in Array(hosted.keys) { await close(sessionId: id) }

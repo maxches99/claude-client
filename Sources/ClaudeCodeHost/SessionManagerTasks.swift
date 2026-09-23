@@ -84,6 +84,13 @@ extension SessionManager {
                 try? await interrupt(sessionId: sessionId)
             }
             tasks.remove(at: idx)
+        case .openPullRequest:
+            let taskId = tasks[idx].id
+            do {
+                _ = try await openPullRequest(forTask: taskId)
+            } catch {
+                if let i = tasks.firstIndex(where: { $0.id == taskId }) { tasks[i].error = "\(error)" }
+            }
         }
         saveTasks()
         broadcastTasks()
@@ -135,10 +142,15 @@ extension SessionManager {
             if task.inWorktree {
                 let slug = SessionManager.worktreeSlug(task.title)
                 let name = slug.isEmpty ? "task-\(task.id.prefix(6))" : "\(slug)-\(task.id.prefix(4))"
+                task.baseCommit = runGit(["-C", task.cwd, "rev-parse", "HEAD"]).out.trimmingCharacters(in: .whitespacesAndNewlines)
                 cwd = try addWorktree(repo: task.cwd, name: name, branch: "task/\(name)", base: nil)
                 task.worktreePath = cwd
+                task.branch = "task/\(name)"
             }
-            let options = NewSessionOptions(cwd: cwd, model: task.model, permissionMode: task.permissionMode, agent: task.agent)
+            // A task is there to change the project: Codex gets write access to its folder (its own
+            // default can be read-only, which leaves it describing the fix instead of making it).
+            let options = NewSessionOptions(cwd: cwd, model: task.model, permissionMode: task.permissionMode, agent: task.agent,
+                                            sandbox: task.agent == .codex ? CodexSandboxMode.workspaceWrite.rawValue : nil)
             let state = try await create(options)
             task.sessionId = state.id
             tasks[index] = task
@@ -157,6 +169,10 @@ extension SessionManager {
     /// A session finished a turn: if it belongs to a running task, that task is done (or re-armed,
     /// when it repeats daily).
     func taskTurnFinished(sessionId: String, isError: Bool, summary: String?) {
+        if let duelId = judgeSessions.removeValue(forKey: sessionId) {
+            judgeFinished(duelId: duelId, isError: isError, reply: summary ?? "")
+            return
+        }
         guard let idx = tasks.firstIndex(where: { $0.status == .running && $0.sessionId == sessionId }) else { return }
         var task = tasks[idx]
         let text = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -178,7 +194,37 @@ extension SessionManager {
         tasks[idx] = task
         saveTasks()
         broadcastTasks()
+        let taskId = task.id
+        Task { await self.afterTask(taskId, succeeded: !isError) }
         Task { await self.pumpTasks() }
+    }
+
+    /// What follows a finished worktree task: measure the change, then open its pull request or hand
+    /// it to its duel.
+    func afterTask(_ taskId: String, succeeded: Bool) async {
+        guard let task = tasks.first(where: { $0.id == taskId }) else { return }
+        if let worktree = task.worktreePath, let base = task.baseCommit, FileManager.default.fileExists(atPath: worktree) {
+            let stat = await offActor { [self] in changes(in: worktree, against: base).stat }
+            if let i = tasks.firstIndex(where: { $0.id == taskId }) {
+                tasks[i].diffStat = stat
+                saveTasks()
+                broadcastTasks()
+            }
+        }
+        if let duelId = task.duelId {
+            await duelTaskFinished(duelId: duelId)
+        } else if succeeded, task.openPullRequest, task.worktreePath != nil {
+            do {
+                let url = try await openPullRequest(forTask: taskId)
+                notifier?.notify(.done, body: "Pull request for \"\(task.title)\": \(url)")
+            } catch {
+                if let i = tasks.firstIndex(where: { $0.id == taskId }) {
+                    tasks[i].error = "Pull request: \(error)"
+                    saveTasks()
+                    broadcastTasks()
+                }
+            }
+        }
     }
 
     // MARK: scheduling
@@ -216,9 +262,16 @@ extension SessionManager {
         struct Stored: Decodable {
             var tasks: [AgentTask]
             var settings: TaskQueueSettings?
+            var duels: [Duel]?
         }
         guard let stored = try? ProtocolCoding.decoder.decode(Stored.self, from: data) else { return }
         taskSettings = stored.settings ?? TaskQueueSettings()
+        // A duel caught mid-judging lost its judge with the restart.
+        duels = (stored.duels ?? []).map { duel in
+            var duel = duel
+            if duel.status == .judging { duel.status = .failed; duel.error = "The host restarted while judging — ask for a new verdict." }
+            return duel
+        }
         // A task that was running when the daemon stopped has no process behind it any more.
         tasks = stored.tasks.map { task in
             var task = task
@@ -233,7 +286,7 @@ extension SessionManager {
             return task
         }
         // Finished one-off tasks are history; keep the recent ones only.
-        let finished = tasks.filter { $0.status.isFinished && $0.dailyAtMinutes == nil }
+        let finished = tasks.filter { $0.status.isFinished && $0.dailyAtMinutes == nil && $0.duelId == nil }
             .sorted { ($0.finishedAt ?? .distantPast) > ($1.finishedAt ?? .distantPast) }
         let drop = Set(finished.dropFirst(30).map(\.id))
         if !drop.isEmpty { tasks.removeAll { drop.contains($0.id) } }
@@ -244,8 +297,9 @@ extension SessionManager {
         struct Stored: Encodable {
             var tasks: [AgentTask]
             var settings: TaskQueueSettings
+            var duels: [Duel]
         }
-        guard let data = try? ProtocolCoding.encoder.encode(Stored(tasks: tasks, settings: taskSettings)) else { return }
+        guard let data = try? ProtocolCoding.encoder.encode(Stored(tasks: tasks, settings: taskSettings, duels: duels)) else { return }
         try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 }

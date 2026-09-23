@@ -41,6 +41,8 @@ final class AppModel {
     var supportsQueue: Bool { (host?.protocolVersion ?? 1) >= 4 }
     /// The digest, terminals, handoff and share links need protocol 5.
     var supportsMacTools: Bool { (host?.protocolVersion ?? 1) >= 5 }
+    /// Pull requests from tasks, review, cloning, duels and the scheduled digest need protocol 6.
+    var supportsPipelines: Bool { (host?.protocolVersion ?? 1) >= 6 }
     func supportsMacTools(_ macId: String) -> Bool { (hostByMac[macId]?.protocolVersion ?? 1) >= 5 }
     /// Models Codex on the Mac can run, fetched once per connection.
     var codexModels: [ModelOption] = []
@@ -506,6 +508,14 @@ final class AppModel {
         handoffTargets = [:]
         terminals = []
         terminalScreens = [:]
+        reviews = [:]
+        remoteRepositories = []
+        remoteRepositoriesError = nil
+        cloning = nil
+        cloneMessage = nil
+        duels = []
+        digestSchedule = nil
+        digestScheduleError = nil
         activityTrackers = [:]
         liveActivities.endAll()
         imageCache.reset()
@@ -616,6 +626,10 @@ final class AppModel {
         sendMessage(.dequeue(sessionId: sessionId, promptId: promptId))
         states[sessionId]?.queued.removeAll { $0.id == promptId }
     }
+
+    /// The full-screen image viewer. Presented from the app root, not the transcript row that opened it:
+    /// a live transcript re-creates its rows, and a cover owned by a row would close with it.
+    var imageViewer: ImageViewerTarget?
 
     // MARK: composer hand-offs
 
@@ -921,6 +935,28 @@ final class AppModel {
     var terminals: [TerminalInfo] = []
     var terminalScreens: [String: TerminalModel] = [:]
 
+    // MARK: review, workspace, duels, scheduled digest (actions in AppModel+Pipelines.swift)
+
+    struct ReviewState: Equatable {
+        var base: String?
+        var files: [ReviewFile] = []
+        var error: String?
+        var loading = false
+    }
+    /// The branch under review, per session.
+    var reviews: [String: ReviewState] = [:]
+    /// Remarks collected while reviewing, per session, until sent.
+    var reviewDrafts: [String: [ReviewComment]] = [:]
+    var remoteRepositories: [RemoteRepository] = []
+    var remoteRepositoriesError: String?
+    var remoteRepositoriesLoading = false
+    /// The clone in flight, and how the last one went.
+    var cloning: String?
+    var cloneMessage: Banner?
+    var duels: [Duel] = []
+    var digestSchedule: DigestSchedule?
+    var digestScheduleError: String?
+
     // MARK: inbound
 
     private func handle(_ message: ServerMessage, from macId: String) {
@@ -1158,6 +1194,30 @@ final class AppModel {
             terminalScreens[terminalId]?.exited = true
             terminalScreens[terminalId]?.exitCode = exitCode
             terminals.removeAll { $0.id == terminalId }
+        case .reviewDiff(let sessionId, let base, let files, let error):
+            guard isActive else { return }
+            reviews[sessionId] = ReviewState(base: base.isEmpty ? nil : base, files: files, error: error, loading: false)
+        case .remoteRepositories(let items, let error):
+            guard isActive else { return }
+            remoteRepositories = items
+            remoteRepositoriesError = error
+            remoteRepositoriesLoading = false
+        case .cloneResult(let source, let path, let error):
+            guard isActive else { return }
+            if cloning == source { cloning = nil }
+            cloneMessage = error.map { Banner(text: $0, isError: true) }
+                ?? Banner(text: "Cloned into \(path.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "the workspace").", isError: false)
+            if let path, let i = remoteRepositories.firstIndex(where: { source.hasSuffix($0.nameWithOwner) || source == $0.nameWithOwner }) {
+                remoteRepositories[i].localPath = path
+            }
+            sendMessage(.listProjects)
+        case .duels(let items):
+            guard isActive else { return }
+            duels = items
+        case .digestSchedule(let schedule, let error):
+            guard isActive else { return }
+            digestSchedule = schedule
+            digestScheduleError = error
         case .pong:
             break
         }

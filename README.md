@@ -23,8 +23,8 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
 
 | Path | What |
 |---|---|
-| `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, `CodexTranslator` / `CodexRollout` (Codex events and session files → the same reducer), WebSocket channel (TLS roles), the queue / palette / worktree / turn-review / digest models, the terminal emulator (`TerminalScreen`) and the share page (`TranscriptHTML`) |
-| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` and its feature files (`…Rewind`, `…Palette`, `…Worktrees`, `…Tasks`, `…Digest`, `…Handoff`, `…Share`, `BackgroundProcesses`, `TerminalSessions` — the pseudo-terminal itself is the small C target `CPTY`) |
+| `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, `CodexTranslator` / `CodexRollout` (Codex events and session files → the same reducer), WebSocket channel (TLS roles), the queue / palette / worktree / turn-review / digest / review / duel models (`DuelJudge`: the blind brief and verdict parser), the Telegram digest (`DigestTelegram`), the terminal emulator (`TerminalScreen`) and the share page (`TranscriptHTML`) |
+| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` and its feature files (`…Rewind`, `…Palette`, `…Worktrees`, `…Tasks`, `…Digest`, `…DigestSchedule`, `…PullRequests`, `…Review`, `…Duels`, `…Workspace`, `…Handoff`, `…Share`, `BackgroundProcesses`, `TerminalSessions` — the pseudo-terminal itself is the small C target `CPTY`) |
 | `Sources/ClaudeRemoteDaemon` | The daemon as a library: `Daemon` (config → listener + Bonjour, relay dial-out, notifier, phone tracking, status), `DaemonConfig` (`config.json`), `PhoneSession`, `WebSocketServer`, `HookServer` (hook socket), `RelayClient`, `DeviceRegistry`, pairing URL + QR |
 | `Sources/ccremote` | Thin CLI front-end for the daemon (flags, terminal QR) |
 | `ClaudeRemoteHost/` | **Mac menu-bar app** hosting the daemon: status, paired phones, QR, settings, open-at-login, keep-awake (Tuist project) |
@@ -232,6 +232,12 @@ its errors and its last reply; the queue's finished tasks and the background pro
 The Mac works it out from the transcripts (Claude's and Codex's), so it covers Desktop and terminal
 sessions as well as the phone's own.
 
+**A morning digest in Telegram**: Settings → Digest turns on a daily message at a time you pick —
+what's waiting for you, what moved and where, finished and failed tasks (with PR links), decided
+duels and processes that died — covering everything since the last one. "Send one now" sends it
+right away. It uses the Telegram bot configured for notifications (the Host app's Settings, or
+`--telegram-token` / `--telegram-chat`); the schedule lives in `digest-schedule.json`.
+
 ## Approving Desktop and terminal sessions
 
 Sessions the Mac runs itself — Claude Desktop, `claude` in a terminal, an SDK script — cannot
@@ -331,6 +337,38 @@ task waits there — pick a permission mode that doesn't ask, or plan to answer.
 `tasks.json` next to the other daemon files and survives a restart; a task that was running when the
 Mac app stopped is marked failed rather than left claiming to run.
 
+A finished task shows what it changed (files, +/−). With **Open a draft pull request when done**
+(needs a worktree and `gh` on the Mac) the daemon commits the worktree's changes on its `task/…`
+branch, pushes it and runs `gh pr create --draft` with the prompt and the agent's summary as the
+body; the PR link appears on the task. A finished worktree task can also do that later from its menu.
+
+**Review the changes…** (a task's menu, a session's menu, or the Git screen) is a GitHub-style review:
+every file changed on the branch against its base — the commit the task started from, or the default
+branch's merge-base, or any ref you type — with a per-file diff. Select lines, write what should
+change, repeat across files, add general remarks; **Send N remarks** puts one numbered review in the
+session's composer (each remark with its file, lines and quote) to read over and send.
+
+### Claude vs Codex
+
+**New duel** (the queue's + menu, when the Mac has Codex) gives the same prompt to Claude and Codex,
+each in its own worktree of the repo. When both are done the Mac runs the project's test command in
+each checkout (the first project command with "test" in its name: `.ccremote.json`, then
+`swift test`, `npm test`, `cargo test`, `go test`, `pytest`, `make test`…), then a **blind judge** — a tool-less chat with Claude or Codex — gets both diffs, the test
+results and the summaries as "Solution A" and "Solution B" (shuffled; it never learns which agent
+wrote which) and scores correctness, completeness, code quality and tests, 0–10 each, with a winner
+or a tie. The duel screen shows the verdict, the score bars, each side's diff, session and test
+result; **Keep** one removes the other's worktree and branch, **Rejudge** asks again (with the other
+agent as judge, if you like), and either side can become a draft PR. Codex duel tasks run with the
+workspace-write sandbox so they can actually edit.
+
+### Code on the hub
+
+**Clone a repository…** (list menu) clones into the host's workspace — `~/work` by default,
+`--workspace DIR` to change it — from `owner/name` or any git URL, or picks from your GitHub
+repositories when `gh` is logged in there. Everything in the workspace shows up as a project, so a
+Mac or the Linux hub can take tasks on repositories that were never checked out on it. PRs and
+private repositories need `gh auth login` and a git identity (`user.name` / `user.email`) on the host.
+
 ## Find, share, dictate
 
 * **Find in transcript** (session menu) — matches prompts, replies, thinking and tool calls/results;
@@ -392,6 +430,11 @@ chat. Files delivered by a `SendUserFile` tool call are fetched from the Mac on 
 images show inline; anything else is a chip that opens a viewer — Markdown rendered like a reply,
 text and code monospaced, PDFs paged — with Copy and a share button that hands the bytes over as a
 real file, so "Save to Files", AirDrop or "Open in…" keep the name and type.
+
+Tap any image in the transcript — a simulator screenshot, a pasted picture, an image the agent sent —
+and it opens full screen: pinch or double-tap to zoom, swipe to the turn's other images, pull down to
+close. **Save to Photos**, **Copy**, and Share hand it over as a PNG (`screenshot.png`, or the file's
+own name); a long press on the image in the chat offers the same without opening it.
 
 **Camera and mark-up.** The composer's + menu can take a photo; any picture in the composer — a
 photo, a screenshot, the simulator's still — opens for drawing on when tapped (PencilKit, a red marker
@@ -476,13 +519,15 @@ ccremote [--port 7811] [--token …] [--claude /path/to/claude] [--codex /path/t
          [--relay wss://vps | --no-relay] [--relay-secret S] [--room R] [--relay-fingerprint FP]
          [--ntfy TOPIC] [--telegram-token T --telegram-chat ID] [--no-notify-done]
          [--apns-key PATH --apns-key-id ID --apns-team TEAM] [--apns-bundle ID] [--apns-production]
-         [--install-hook | --uninstall-hook] [--codex-port N]
+         [--install-hook | --uninstall-hook] [--codex-port N] [--workspace ~/work]
 ```
 
 Running a second daemon for development next to the Host app? Use another port **and** `--no-relay`
 (or `--room`): two daemons registering the same relay room keep kicking each other out of it.
 
-`CCREMOTE_CLAUDE_PATH` / `CCREMOTE_CODEX_PATH` also override the binaries. Other files in the support dir: `token`,
+`CCREMOTE_CLAUDE_PATH` / `CCREMOTE_CODEX_PATH` also override the binaries. `CCREMOTE_SUPPORT_DIR`
+moves the whole support directory — a development daemon with its own token, hook socket, queue and
+config never touches the Host app's. Other files in the support dir: `token`,
 `tls-identity.p12` (+ pem), `relay-room`, `devices.json` (paired phones), `pairing-qr.png`.
 
 ## Sessions: rename, pin, archive, search
@@ -499,7 +544,9 @@ session with find-in-transcript already on that word.
 App Intents: **Ask the agent** (a question → a quick tool-less chat on the Mac → the reply comes back
 into the shortcut, so "Ask Claude …" works from Siri and Shortcuts), **Pending approvals** (count +
 which), **Approve pending** / **Deny pending** (Approve needs the app when Face ID is required),
-**Send to session** (a prompt into an existing session) and **Open session** (a session picker).
+**Send to session** (a prompt into an existing session), **Open session** (a session picker) and
+**Add a task** (a prompt, a project, an agent, a worktree and a draft PR when done — "Add a task in
+ClaudeRemote" from Siri; needs a host on protocol 6).
 Sessions are indexed in Spotlight by title and project; a hit opens the session.
 
 ## Reconnects, offline, widget

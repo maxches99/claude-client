@@ -190,7 +190,8 @@ public final class Daemon: @unchecked Sendable {
         let codexBackend = codex.map { CodexBackend(cli: $0, listenPort: config.codexPort, log: log) }
         manager = SessionManager(cli: cli, codex: codexBackend, notifier: notifier, livePusher: livePusher,
                                  approvalLog: SessionManager.approvalLogPath(supportDirectory: supportDirectory),
-                                 taskStore: SessionManager.taskStorePath(supportDirectory: supportDirectory), log: log)
+                                 taskStore: SessionManager.taskStorePath(supportDirectory: supportDirectory),
+                                 workspaceRoot: config.workspaceRoot, log: log)
         if config.relayEnabled, let relay = config.relayURL.flatMap(URL.init(string:)), let base = ShareConfig.httpBase(fromRelay: relay),
            let room, let secret = config.relaySecret {
             let share = ShareConfig(endpoint: base, publicBase: base, room: room, secret: secret)

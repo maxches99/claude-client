@@ -1,4 +1,5 @@
 import SwiftUI
+import ClaudeRemoteCore
 
 /// App settings: Face ID and the paired Macs. Present it from the session list's menu.
 struct SettingsView: View {
@@ -61,6 +62,9 @@ struct SettingsView: View {
                 } footer: {
                     Text(liveActivityFooter)
                 }
+                if model.supportsPipelines {
+                    DigestScheduleSection()
+                }
                 if !model.shares.isEmpty {
                     Section {
                         NavigationLink {
@@ -102,5 +106,49 @@ struct SettingsView: View {
     private func macDetail(_ mac: PairingInfo) -> String {
         guard let at = mac.lastConnectedAt else { return mac.routeSummary }
         return "\(mac.routeSummary) · \(RelativeTime.string(at))"
+    }
+}
+
+
+/// The daily digest the Mac sends to Telegram, set per Mac.
+struct DigestScheduleSection: View {
+    @Environment(AppModel.self) private var model
+
+    private var schedule: DigestSchedule? { model.digestSchedule }
+
+    var body: some View {
+        Section {
+            if let schedule {
+                Toggle("Daily digest in Telegram", isOn: Binding(
+                    get: { schedule.minutes != nil },
+                    set: { model.setDigestSchedule(minutes: $0 ? (schedule.minutes ?? 9 * 60) : nil) }
+                ))
+                .disabled(!schedule.canSend)
+                if let minutes = schedule.minutes {
+                    DatePicker("At", selection: Binding(
+                        get: { Calendar.current.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: Date()) ?? Date() },
+                        set: { date in
+                            let c = Calendar.current.dateComponents([.hour, .minute], from: date)
+                            model.setDigestSchedule(minutes: (c.hour ?? 9) * 60 + (c.minute ?? 0))
+                        }
+                    ), displayedComponents: .hourAndMinute)
+                }
+                Button("Send one now") { model.sendDigestNow() }
+                    .disabled(!schedule.canSend)
+                if let error = model.digestScheduleError {
+                    Text(error).font(.caption).foregroundStyle(CDS.danger)
+                }
+            } else {
+                ProgressView()
+            }
+        } header: {
+            Text("Digest · \(model.activeMac?.displayName ?? "Mac")")
+        } footer: {
+            Text(schedule?.canSend == false
+                 ? "Telegram is not set up on this Mac — add a bot token and chat in the Host app's Settings (on the hub: --telegram-token and --telegram-chat)."
+                 : "Every day at this time the Mac sends what happened since the last digest — what waits for you, what moved, finished tasks, duels — to your Telegram."
+                   + (schedule?.lastSentAt.map { " Last sent \($0.formatted(.relative(presentation: .named)))." } ?? ""))
+        }
+        .onAppear { model.requestDigestSchedule() }
     }
 }

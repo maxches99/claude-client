@@ -33,6 +33,8 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
     public var telegramChat: String?
     /// Also notify when a turn completes (permission-needed and errors always notify).
     public var notifyDone: Bool = true
+    /// Where repositories cloned from the phone go (`~/work` when unset); also listed as projects.
+    public var workspaceRoot: String?
 
     /// APNs auth key (`AuthKey_XXXX.p8`) for pushing Live Activity updates to the phone. All three
     /// must be set for pushes to happen; the phone still updates its own activity while it runs.
@@ -62,6 +64,7 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
         telegramToken = try c.decodeIfPresent(String.self, forKey: .telegramToken)
         telegramChat = try c.decodeIfPresent(String.self, forKey: .telegramChat)
         notifyDone = try c.decodeIfPresent(Bool.self, forKey: .notifyDone) ?? true
+        workspaceRoot = try c.decodeIfPresent(String.self, forKey: .workspaceRoot)
         apnsKeyPath = try c.decodeIfPresent(String.self, forKey: .apnsKeyPath)
         apnsKeyId = try c.decodeIfPresent(String.self, forKey: .apnsKeyId)
         apnsTeamId = try c.decodeIfPresent(String.self, forKey: .apnsTeamId)
@@ -90,7 +93,12 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
 
     // MARK: persistence
 
-    public static let supportDirectory = NSHomeDirectory() + "/Library/Application Support/ccremote"
+    /// `CCREMOTE_SUPPORT_DIR` gives a second daemon (a development build next to the Host app) its own
+    /// token, hook socket, task queue and config, so it cannot take over the running one's.
+    public static let supportDirectory: String = {
+        if let dir = ProcessInfo.processInfo.environment["CCREMOTE_SUPPORT_DIR"], !dir.isEmpty { return (dir as NSString).expandingTildeInPath }
+        return NSHomeDirectory() + "/Library/Application Support/ccremote"
+    }()
     public static var path: String { supportDirectory + "/config.json" }
 
     /// The saved config, or defaults when there is none (or it is unreadable).
@@ -162,6 +170,7 @@ public struct DaemonArguments {
             case "--ntfy": result.config.ntfy = try value(a)
             case "--telegram-token": result.config.telegramToken = try value(a)
             case "--telegram-chat": result.config.telegramChat = try value(a)
+            case "--workspace": result.config.workspaceRoot = try value(a)
             case "--no-notify-done": result.config.notifyDone = false
             case "--apns-key": result.config.apnsKeyPath = try value(a)
             case "--apns-key-id": result.config.apnsKeyId = try value(a)

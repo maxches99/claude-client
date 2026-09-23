@@ -10,6 +10,7 @@ struct ClaudeRemoteApp: App {
             ZStack {
                 RootView()
                     .environment(model)
+                    .fullScreenCover(item: Bindable(model).imageViewer) { ImageViewer(target: $0) }
                 if model.locked {
                     LockView().environment(model).transition(.opacity)
                 }
