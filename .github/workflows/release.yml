@@ -44,6 +44,12 @@ jobs:
           MARKETING_VERSION: ${{ steps.meta.outputs.version }}
           BUILD_NUMBER: ${{ steps.meta.outputs.build }}
         run: scripts/build-ios-ipa.sh
+      - name: Build the iOS app again without the widget (for free Apple IDs)
+        env:
+          MARKETING_VERSION: ${{ steps.meta.outputs.version }}
+          BUILD_NUMBER: ${{ steps.meta.outputs.build }}
+          STRIP_EXTENSIONS: "1"
+        run: scripts/build-ios-ipa.sh
       - name: Release notes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -54,13 +60,15 @@ jobs:
         id: sums
         run: |
           cd dist
-          shasum -a 256 ClaudeRemote-Host.zip ClaudeRemote.ipa > SHA256SUMS
+          shasum -a 256 ClaudeRemote-Host.zip ClaudeRemote.ipa ClaudeRemote-no-widget.ipa > SHA256SUMS
           cat SHA256SUMS
           echo "zip_sha256=$(shasum -a 256 ClaudeRemote-Host.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           cd ..
+          # The source offers the widget-less build: a free Apple ID can't sign the App Group the widget
+          # needs, and the phone updates from whatever this points at.
           scripts/release/altstore-source.sh "${{ steps.meta.outputs.version }}" "${{ steps.meta.outputs.build }}" \
-            dist/ClaudeRemote.ipa \
-            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/ClaudeRemote.ipa" \
+            dist/ClaudeRemote-no-widget.ipa \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/ClaudeRemote-no-widget.ipa" \
             dist/notes.md > dist/altstore.json
           jq . dist/altstore.json > /dev/null
       - name: Publish the GitHub Release
@@ -74,10 +82,13 @@ jobs:
             echo
             echo '**Mac:** `brew install --cask maxches99/tap/claude-remote-host` (or download the zip, unzip, run `xattr -dr com.apple.quarantine "ClaudeRemote Host.app"`, drag to Applications).'
             echo
-            echo "**iPhone:** add \`https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/altstore.json\` as a source in AltStore or SideStore, or sideload \`ClaudeRemote.ipa\` with Sideloadly."
+            echo "**iPhone:** add \`https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/altstore.json\` as a source in AltStore or SideStore, then install ClaudeRemote from it."
+            echo
+            echo 'The source serves `ClaudeRemote-no-widget.ipa`, because a free Apple ID cannot sign the App Group the widget needs. `ClaudeRemote.ipa` is the full build (widget included) for a paid account — sideload it with [Sideloadly](https://sideloadly.io) or AltStore'"'"'s **My Apps → +**.'
           } > dist/body.md
           gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file dist/body.md \
-            dist/ClaudeRemote-Host.zip dist/ClaudeRemote.ipa dist/altstore.json dist/SHA256SUMS
+            dist/ClaudeRemote-Host.zip dist/ClaudeRemote.ipa dist/ClaudeRemote-no-widget.ipa \
+            dist/altstore.json dist/SHA256SUMS
 
   tap:
     name: Bump the Homebrew cask

@@ -3,7 +3,8 @@
 # those tools re-sign the app with the user's own Apple ID, so no developer account is needed here.
 #
 #   scripts/build-ios-ipa.sh                       # → dist/ClaudeRemote.ipa
-#   STRIP_EXTENSIONS=1 scripts/build-ios-ipa.sh    # …without the widget (one App ID instead of two)
+#   STRIP_EXTENSIONS=1 scripts/build-ios-ipa.sh    # → dist/ClaudeRemote-no-widget.ipa (one App ID, and
+#                                                  #   no App Group, which a free Apple ID can't create)
 #
 # The Watch app is always left out: sideloaders can't install watchOS apps, and a free Personal Team
 # gets only 10 App IDs a week (each embedded app / extension is one). Entitlements are re-applied with
@@ -16,6 +17,8 @@ cd "$(dirname "$0")/.."
 command -v tuist >/dev/null || { echo "tuist is required: brew install tuist" >&2; exit 1; }
 
 APP_NAME="ClaudeRemote"
+IPA_NAME="ClaudeRemote"
+[ "${STRIP_EXTENSIONS:-0}" = 1 ] && IPA_NAME="ClaudeRemote-no-widget"
 DERIVED=".build/xcode"
 DIST="dist"
 STAGE="$DERIVED/ipa"
@@ -50,10 +53,15 @@ if [ -d "$STAGED/PlugIns/ClaudeRemoteWidget.appex" ]; then
     codesign --force --sign - --entitlements ClaudeRemote/ClaudeRemoteWidget/ClaudeRemoteWidget.entitlements \
         "$STAGED/PlugIns/ClaudeRemoteWidget.appex"
 fi
-codesign --force --sign - --entitlements ClaudeRemote/ClaudeRemote.entitlements "$STAGED"
+if [ "${STRIP_EXTENSIONS:-0}" = 1 ]; then
+    # Nothing left to share a container with, and a free Apple ID can't create the group anyway.
+    codesign --force --sign - "$STAGED"
+else
+    codesign --force --sign - --entitlements ClaudeRemote/ClaudeRemote.entitlements "$STAGED"
+fi
 
 mkdir -p "$DIST"
-rm -f "$DIST/$APP_NAME.ipa"
-(cd "$STAGE" && ditto -c -k --keepParent --norsrc --noextattr Payload "$OLDPWD/$DIST/$APP_NAME.ipa")
-echo "ipa:   $DIST/$APP_NAME.ipa  ($(du -h "$DIST/$APP_NAME.ipa" | cut -f1))"
+rm -f "$DIST/$IPA_NAME.ipa"
+(cd "$STAGE" && ditto -c -k --keepParent --norsrc --noextattr Payload "$OLDPWD/$DIST/$IPA_NAME.ipa")
+echo "ipa:   $DIST/$IPA_NAME.ipa  ($(du -h "$DIST/$IPA_NAME.ipa" | cut -f1))"
 echo "       version $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STAGED/Info.plist") ($(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STAGED/Info.plist"))"

@@ -3,6 +3,9 @@
 #
 #   scripts/release/altstore-source.sh <version> <build> <ipa> <download-url> [<notes-file>] > dist/altstore.json
 #
+# <ipa> is the build the source offers — the release points it at ClaudeRemote-no-widget.ipa, because a
+# free Apple ID cannot sign the App Group the widget needs. Size and entitlements are read from that file.
+#
 # Add https://github.com/maxches99/claude-client/releases/latest/download/altstore.json as a source in
 # AltStore or SideStore: it always redirects to the newest release, so the phone sees updates by itself.
 set -e
@@ -23,7 +26,15 @@ else
 fi
 # The privacy prompts the app can show, straight from its Info.plist.
 PRIVACY=$(plutil -convert json -o - ClaudeRemote/Info.plist | jq 'with_entries(select(.key | test("UsageDescription$")))')
-ENTITLEMENTS=$(plutil -convert json -o - ClaudeRemote/ClaudeRemote.entitlements | jq 'keys')
+
+# Entitlements come out of the .ipa itself, so the widget-less build (which has none) reports none.
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+ditto -x -k "$IPA" "$STAGE"
+APP=$(find "$STAGE/Payload" -maxdepth 1 -name "*.app" | head -1)
+ENTITLEMENTS=$(codesign -d --entitlements - --xml "$APP" 2>/dev/null |
+    plutil -convert json -o - - 2>/dev/null | jq 'keys' 2>/dev/null || true)
+[ -n "$ENTITLEMENTS" ] || ENTITLEMENTS="[]"
 
 jq -n \
     --arg version "$VERSION" --arg build "$BUILD" --arg url "$URL" --arg date "$DATE" \
@@ -41,7 +52,7 @@ jq -n \
         bundleIdentifier: "dev.maxches.ClaudeRemote",
         developerName: "Max Chesnikov",
         subtitle: "Claude Code on your Mac, from your phone",
-        localizedDescription: "Watch and steer Claude Code sessions on your Mac: approve tool calls, answer questions, send prompts, read diffs, browse the project, watch the iOS Simulator — over Wi-Fi or through the relay when you are away.\n\nNeeds the ClaudeRemote Host app on the Mac (brew install --cask maxches99/tap/claude-remote-host).",
+        localizedDescription: "Watch and steer the agent sessions on your Mac (Claude and Codex): approve tool calls, answer questions, send prompts, read diffs, browse the project, watch the iOS Simulator — over Wi-Fi or through the relay when you are away.\n\nNeeds the ClaudeRemote Host app on the Mac (brew install --cask maxches99/tap/claude-remote-host).\n\nThis build has no home-screen widget: the widget reads the app data through an App Group, which a free Apple ID cannot sign. The full build is ClaudeRemote.ipa on the release page.",
         iconURL: $icon,
         tintColor: "#D97757",
         category: "developer",
