@@ -112,9 +112,14 @@ https://github.com/maxches99/claude-client/releases/latest/download/altstore.jso
 ```
 
 The URL always redirects to the newest release, so new versions show up under Updates. A free Personal
-Team allows 3 sideloaded apps at once (the store itself is one) and 10 App IDs a week — the app plus
-its widget are two; the Watch app is not in the .ipa (sideloaders can't install watchOS apps).
-[Sideloadly](https://sideloadly.io) with `ClaudeRemote.ipa` from the release works too, no source needed.
+Team allows 3 sideloaded apps at once (the store itself is one) and 10 App IDs a week — the app plus its
+widget are two; the Watch app is not in the .ipa (sideloaders can't install watchOS apps).
+
+What the source serves is **`ClaudeRemote-no-widget.ipa`**: a free Apple ID cannot sign an App Group,
+which is how the home-screen widget reads the app's data, so the widget is left out and the app itself
+installs cleanly (and keeps updating — same bundle ID). The full build with the widget is
+`ClaudeRemote.ipa` on the same release page, for a paid account: install it from AltStore's
+**My Apps → +** or with [Sideloadly](https://sideloadly.io).
 
 **Xcode.** `cp Tuist/team.xcconfig.example Tuist/team.xcconfig`, put your Apple team ID in it (once — the
 file is untracked), then `tuist generate` opens `ClaudeRemote.xcworkspace` with the team already set;
@@ -636,7 +641,9 @@ git tag v1.0.1 && git push origin v1.0.1
 reads `$(MARKETING_VERSION)`; the build number is the run number), `scripts/build-mac-app.sh` makes the
 universal ad-hoc-signed Mac zip, `scripts/build-ios-ipa.sh` the unsigned `.ipa` (Watch app stripped,
 entitlements kept), `scripts/release/altstore-source.sh` the `altstore.json`, and everything lands in a
-GitHub Release with `SHA256SUMS`. A second job renders `scripts/release/cask.sh` into
+GitHub Release with `SHA256SUMS`. The `.ipa` is built twice: as-is, and with `STRIP_EXTENSIONS=1` into
+`ClaudeRemote-no-widget.ipa`, which is the one `altstore.json` points at (entitlements in the source are
+read back out of that .ipa, so they never drift). A second job renders `scripts/release/cask.sh` into
 `Casks/claude-remote-host.rb` in [maxches99/homebrew-tap](https://github.com/maxches99/homebrew-tap) and
 pushes it with the `TAP_GITHUB_TOKEN` secret (a fine-grained PAT with write access to that repo only).
 
