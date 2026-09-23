@@ -103,7 +103,16 @@ struct ScanQuad: Equatable, VectorArithmetic {
     }
 
     /// Shortest side, for sizing the brackets and the tick.
-    var side: CGFloat { (0..<4).map { hypot(p[$0].x - p[($0 + 1) % 4].x, p[$0].y - p[($0 + 1) % 4].y) }.min() ?? 0 }
+    var side: CGFloat {
+        var shortest = CGFloat.greatestFiniteMagnitude
+        for i in 0..<4 {
+            let a = p[i], b = p[(i + 1) % 4]
+            let dx: CGFloat = a.x - b.x
+            let dy: CGFloat = a.y - b.y
+            shortest = min(shortest, (dx * dx + dy * dy).squareRoot())
+        }
+        return shortest
+    }
 
     /// Pushed out from the centre by `amount`, so the brackets sit around the code rather than on it.
     func inflated(by amount: CGFloat) -> ScanQuad {
