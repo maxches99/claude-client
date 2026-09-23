@@ -78,10 +78,12 @@ public final class Notifier: @unchecked Sendable {
     public enum SendError: Error, CustomStringConvertible {
         case notConfigured
         case telegram(String)
+        case unreachable(String)
         public var description: String {
             switch self {
             case .notConfigured: return "Telegram is not set up."
             case .telegram(let why): return "Telegram refused the message: \(why)"
+            case .unreachable(let why): return "Telegram could not be reached from this Mac: \(why)"
             }
         }
     }
@@ -95,7 +97,14 @@ public final class Notifier: @unchecked Sendable {
             req.httpMethod = "POST"
             req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
             req.httpBody = Data(Notifier.formEncode(fields).utf8)
-            let (data, response) = try await session.data(for: req)
+            // A URLError's description carries the request URL, and with it the bot token: it goes to
+            // the phone as an error, so only the reason travels.
+            let data: Data, response: URLResponse
+            do {
+                (data, response) = try await session.data(for: req)
+            } catch {
+                throw SendError.unreachable((error as? URLError)?.localizedDescription ?? "network error")
+            }
             return ((response as? HTTPURLResponse)?.statusCode ?? 0, String(decoding: data, as: UTF8.self))
         }
         let (status, body) = try await post(["chat_id": chat, "text": html, "parse_mode": "HTML", "disable_web_page_preview": "true"])
