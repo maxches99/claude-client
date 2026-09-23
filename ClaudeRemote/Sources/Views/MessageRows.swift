@@ -542,6 +542,18 @@ struct InlineImagesView: View {
                         .frame(maxHeight: 320)
                         .clipShape(RoundedRectangle(cornerRadius: CDS.radius))
                         .overlay(RoundedRectangle(cornerRadius: CDS.radius).strokeBorder(CDS.border))
+                        .contentShape(RoundedRectangle(cornerRadius: CDS.radius))
+                        .onTapGesture { open(at: index) }
+                        .contextMenu {
+                            ShareLink(item: ExportedImage(image: ui, fileName: "\(exportName).png"),
+                                      preview: SharePreview(exportName, image: Image(uiImage: ui))) {
+                                Label("Share…", systemImage: "square.and.arrow.up")
+                            }
+                            Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.image = ui }
+                            Button("Open", systemImage: "arrow.up.left.and.arrow.down.right") { open(at: index) }
+                        }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityHint("Opens the image full screen")
                 } else if model.imageCache.failures.contains(key) {
                     Label("Image could not be decoded", systemImage: "photo").font(CDS.caption).foregroundStyle(CDS.textMuted)
                 } else {
@@ -549,6 +561,22 @@ struct InlineImagesView: View {
                 }
             }
         }
+    }
+
+    /// Tool results with images are nearly always simulator / browser screenshots.
+    private var exportName: String { keyPrefix.hasPrefix("result:") ? "screenshot" : "image" }
+
+    /// Opens the viewer on one image, with the turn's other decoded images a swipe away.
+    private func open(at index: Int) {
+        var decoded: [UIImage] = []
+        var start = 0
+        for (i, image) in images.enumerated() {
+            guard let ui = model.imageCache.image(key: "\(keyPrefix)#img\(i)", base64: image.base64) else { continue }
+            if i == index { start = decoded.count }
+            decoded.append(ui)
+        }
+        guard !decoded.isEmpty else { return }
+        model.imageViewer = ImageViewerTarget(images: decoded, index: start, name: exportName)
     }
 }
 
@@ -576,6 +604,16 @@ struct RemoteFileView: View {
                     .frame(maxHeight: 360)
                     .clipShape(RoundedRectangle(cornerRadius: CDS.radius))
                     .overlay(RoundedRectangle(cornerRadius: CDS.radius).strokeBorder(CDS.border))
+                    .contentShape(RoundedRectangle(cornerRadius: CDS.radius))
+                    .onTapGesture { model.imageViewer = ImageViewerTarget(images: [ui], index: 0, name: imageStem) }
+                    .contextMenu {
+                        ShareLink(item: ExportedImage(image: ui, fileName: "\(imageStem).png"),
+                                  preview: SharePreview(imageStem, image: Image(uiImage: ui))) {
+                            Label("Share…", systemImage: "square.and.arrow.up")
+                        }
+                        Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.image = ui }
+                    }
+                    .accessibilityAddTraits(.isButton)
             } else if model.imageCache.failures.contains(key) {
                 Label("Could not load from the Mac", systemImage: "exclamationmark.triangle").font(CDS.caption).foregroundStyle(CDS.textMuted)
             } else {
@@ -585,6 +623,8 @@ struct RemoteFileView: View {
         }
         .sheet(isPresented: $showViewer) { RemoteFileViewer(path: path) }
     }
+
+    private var imageStem: String { ((path as NSString).lastPathComponent as NSString).deletingPathExtension }
 
     /// Name + kind, with the size once the bytes have arrived. Tapping fetches (if needed) and opens.
     private var fileChip: some View {

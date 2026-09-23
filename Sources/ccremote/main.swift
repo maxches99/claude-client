@@ -18,6 +18,10 @@ func usage() -> Never {
       --claude PATH  path to the claude binary (default: Claude Desktop's bundled CLI, else PATH)
       --codex PATH   path to the codex binary (default: PATH, else the Codex app's bundled CLI)
       --codex-port N run the Codex app-server on ws://127.0.0.1:N and share it with the Codex app
+      --workspace DIR where repositories cloned from the phone go (default ~/work)
+
+    Environment: CCREMOTE_SUPPORT_DIR runs this daemon from another support directory (its own token,
+    hook socket, queue and config) — for a development daemon next to the Host app.
                      (launchctl setenv CODEX_APP_SERVER_WS_URL ws://127.0.0.1:N, then reopen the app)
       --name NAME    Bonjour service name (default: this Mac's name)
       --rotate-token generate a new pairing token (forgets paired phones)

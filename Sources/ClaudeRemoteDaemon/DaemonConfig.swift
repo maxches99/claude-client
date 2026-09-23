@@ -42,6 +42,8 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
     /// Close hosted chats after this many idle minutes (their `claude`/`codex` process is resident
     /// until then). `nil`/0 = never; an always-on hub wants 15 or so.
     public var idleTimeoutMinutes: Int?
+    /// Where repositories cloned from the phone go (`~/work` when unset); also listed as projects.
+    public var workspaceRoot: String?
 
     /// APNs auth key (`AuthKey_XXXX.p8`) for pushing Live Activity updates to the phone. All three
     /// must be set for pushes to happen; the phone still updates its own activity while it runs.
@@ -73,6 +75,7 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
         telegramToken = try c.decodeIfPresent(String.self, forKey: .telegramToken)
         telegramChat = try c.decodeIfPresent(String.self, forKey: .telegramChat)
         notifyDone = try c.decodeIfPresent(Bool.self, forKey: .notifyDone) ?? true
+        workspaceRoot = try c.decodeIfPresent(String.self, forKey: .workspaceRoot)
         apnsKeyPath = try c.decodeIfPresent(String.self, forKey: .apnsKeyPath)
         apnsKeyId = try c.decodeIfPresent(String.self, forKey: .apnsKeyId)
         apnsTeamId = try c.decodeIfPresent(String.self, forKey: .apnsTeamId)
@@ -178,6 +181,7 @@ public struct DaemonArguments {
             case "--ntfy": result.config.ntfy = try value(a)
             case "--telegram-token": result.config.telegramToken = try value(a)
             case "--telegram-chat": result.config.telegramChat = try value(a)
+            case "--workspace": result.config.workspaceRoot = try value(a)
             case "--no-notify-done": result.config.notifyDone = false
             case "--apns-key": result.config.apnsKeyPath = try value(a)
             case "--apns-key-id": result.config.apnsKeyId = try value(a)

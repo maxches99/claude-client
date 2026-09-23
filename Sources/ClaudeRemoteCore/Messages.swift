@@ -130,6 +130,21 @@ public enum ClientMessage: Codable, Sendable {
     /// Hang up the shell (SIGHUP) and forget the terminal.
     case terminalClose(terminalId: String)
     case listTerminals
+    /// Everything that changed on the session's branch against `base` (nil = the default branch, or for
+    /// a task's worktree the commit it started from), per file with diffs; answered with `reviewDiff`.
+    case reviewDiff(sessionId: String, base: String?)
+    /// Repositories the host's GitHub account can clone (`gh repo list`); answered with `remoteRepositories`.
+    case listRemoteRepositories
+    /// Clone a repository (URL or owner/name) into the host's workspace; answered with `cloneResult`.
+    case cloneRepository(source: String)
+    /// Pit Claude and Codex against each other on one prompt; the duel shows up in `duels`.
+    case startDuel(title: String, prompt: String, cwd: String, claudeMode: String?, codexPolicy: String?, judge: AgentKind)
+    case duelAction(id: String, action: DuelAction)
+    /// When the daily digest goes out (nil = off); answered with `digestSchedule`.
+    case setDigestSchedule(minutes: Int?)
+    /// Send the digest now (since the last one); answered with `digestSchedule`.
+    case sendDigestNow
+    case getDigestSchedule
     /// Register (or, with `pushToken == nil`, drop) this phone's Live Activity for a session. When the
     /// Mac has APNs configured it pushes `SessionActivityState` updates to the token, so the activity
     /// keeps moving while the app is in the background. `approvalNeedsApp` mirrors the phone's Face ID
@@ -189,6 +204,12 @@ public enum ServerMessage: Codable, Sendable {
     /// Output of a terminal, base64 (a read may split a UTF-8 character).
     case terminalOutput(terminalId: String, dataBase64: String)
     case terminalExited(terminalId: String, exitCode: Int32?)
+    case reviewDiff(sessionId: String, base: String, files: [ReviewFile], error: String?)
+    case remoteRepositories(items: [RemoteRepository], error: String?)
+    case cloneResult(source: String, path: String?, error: String?)
+    /// Every duel, whenever one changes.
+    case duels(items: [Duel])
+    case digestSchedule(schedule: DigestSchedule, error: String?)
     case simulators(items: [SimulatorInfo])
     case simulatorActionResult(udid: String, action: SimulatorAction, error: String?)
     case simulatorApps(udid: String, items: [SimulatorApp], error: String?)

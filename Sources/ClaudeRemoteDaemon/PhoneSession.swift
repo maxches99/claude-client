@@ -302,6 +302,7 @@ final class PhoneSession: @unchecked Sendable {
             case .listTasks:
                 let list = await manager.taskList()
                 send(.tasks(items: list.items, settings: list.settings))
+                send(.duels(items: await manager.duelList()))
             case .addTask(let task):
                 await manager.addTask(task)
             case .updateTask(let task):
@@ -359,6 +360,39 @@ final class PhoneSession: @unchecked Sendable {
                 await manager.closeTerminal(terminalId: terminalId)
             case .listTerminals:
                 send(.terminals(items: await manager.listTerminals()))
+            case .reviewDiff(let sessionId, let base):
+                do {
+                    let review = try await manager.reviewDiff(sessionId: sessionId, base: base)
+                    send(.reviewDiff(sessionId: sessionId, base: review.base, files: review.files, error: nil))
+                } catch {
+                    send(.reviewDiff(sessionId: sessionId, base: base ?? "", files: [], error: "\(error)"))
+                }
+            case .listRemoteRepositories:
+                do {
+                    send(.remoteRepositories(items: try await manager.listRemoteRepositories(), error: nil))
+                } catch {
+                    send(.remoteRepositories(items: [], error: "\(error)"))
+                }
+            case .cloneRepository(let source):
+                do {
+                    send(.cloneResult(source: source, path: try await manager.cloneRepository(source: source), error: nil))
+                } catch {
+                    send(.cloneResult(source: source, path: nil, error: "\(error)"))
+                }
+            case .startDuel(let title, let prompt, let cwd, let claudeMode, let codexPolicy, let judge):
+                _ = try await manager.startDuel(title: title, prompt: prompt, cwd: cwd, claudeMode: claudeMode, codexPolicy: codexPolicy, judge: judge)
+            case .duelAction(let duelId, let action):
+                try await manager.duelAction(id: duelId, action: action)
+            case .setDigestSchedule(let minutes):
+                send(.digestSchedule(schedule: await manager.setDigestSchedule(minutes: minutes), error: nil))
+            case .sendDigestNow:
+                do {
+                    send(.digestSchedule(schedule: try await manager.sendDigestNow(), error: nil))
+                } catch {
+                    send(.digestSchedule(schedule: await manager.currentDigestSchedule(), error: "\(error)"))
+                }
+            case .getDigestSchedule:
+                send(.digestSchedule(schedule: await manager.currentDigestSchedule(), error: nil))
             #if os(macOS)
             case .listSimulators:
                 send(.simulators(items: await SimulatorStreamer.shared.list()))
@@ -425,7 +459,7 @@ extension ClientMessage {
              .runCommand(let id, _, _), .cancelCommand(let id, _), .pullRequest(let id), .renameSession(let id, _),
              .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id),
              .rewind(let id, _), .listPalette(let id), .listWorktrees(let id), .worktreeAction(let id, _),
-             .listHandoffTargets(let id), .handoff(let id, _), .shareTranscript(let id, _, _):
+             .listHandoffTargets(let id), .handoff(let id, _), .shareTranscript(let id, _, _), .reviewDiff(let id, _):
             return id
         default:
             return nil

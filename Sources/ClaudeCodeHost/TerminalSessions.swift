@@ -92,7 +92,7 @@ extension SessionManager {
         env["NO_COLOR"] = nil
         env["TERM_PROGRAM"] = "ClaudeRemote"
         if env["LANG"] == nil { env["LANG"] = "en_US.UTF-8" }
-        let shell = env["SHELL"].flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil } ?? "/bin/zsh"
+        let shell = env["SHELL"].flatMap { FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil } ?? HostPaths.shell
         // A leading dash makes it a login shell, so the user's profile is read — the same shell they get in Terminal.
         let argv0 = "-" + (shell as NSString).lastPathComponent
         let size = (cols: UInt16(clamping: max(20, cols)), rows: UInt16(clamping: max(5, rows)))

@@ -81,8 +81,8 @@ struct PairingView: View {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 }
             }
-            .sheet(isPresented: $showScanner) {
-                QRScannerView { payload in
+            .fullScreenCover(isPresented: $showScanner) {
+                QRScannerView(accept: { PairingInfo.parse(pairURL: $0) != nil }) { payload in
                     showScanner = false
                     if let info = PairingInfo.parse(pairURL: payload) {
                         pair(info)

@@ -157,8 +157,91 @@ struct SendPromptIntent: AppIntent {
     }
 }
 
+/// A project on the Mac, for choosing where a task runs.
+struct ProjectEntity: AppEntity {
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Project")
+    static let defaultQuery = ProjectQuery()
+
+    let id: String      // the path
+    let name: String
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: LocalizedStringResource(stringLiteral: name),
+                              subtitle: LocalizedStringResource(stringLiteral: (id as NSString).abbreviatingWithTildeInPath))
+    }
+
+    init(_ project: ProjectInfo) {
+        id = project.path
+        name = project.name
+    }
+}
+
+struct ProjectQuery: EntityStringQuery {
+    @MainActor
+    private func projects() async -> [ProjectInfo] {
+        guard let model = AppModel.shared else { return [] }
+        if model.projects.isEmpty {
+            try? await model.ensureConnected()
+            model.refresh()
+            for _ in 0..<20 where model.projects.isEmpty { try? await Task.sleep(nanoseconds: 150_000_000) }
+        }
+        return model.projects
+    }
+
+    @MainActor
+    func entities(for identifiers: [String]) async throws -> [ProjectEntity] {
+        await projects().filter { identifiers.contains($0.path) }.map(ProjectEntity.init)
+    }
+
+    @MainActor
+    func entities(matching string: String) async throws -> [ProjectEntity] {
+        let q = string.lowercased()
+        return await projects().filter { $0.name.lowercased().contains(q) }.map(ProjectEntity.init)
+    }
+
+    @MainActor
+    func suggestedEntities() async throws -> [ProjectEntity] {
+        await projects().prefix(15).map(ProjectEntity.init)
+    }
+}
+
+/// "Add a task in ClaudeRemote" — a prompt into the Mac's queue, from Siri, a Shortcut or an automation.
+struct AddTaskIntent: AppIntent {
+    static let title: LocalizedStringResource = "Add a task to the queue"
+    static let description = IntentDescription("Puts a prompt in the Mac's task queue; the Mac runs it on its own and reports back.")
+    static let openAppWhenRun = false
+
+    @Parameter(title: "Prompt") var prompt: String
+    @Parameter(title: "Project") var project: ProjectEntity
+    @Parameter(title: "Agent", default: .claude) var agent: AgentChoice
+    @Parameter(title: "In a fresh worktree", default: true) var inWorktree: Bool
+    @Parameter(title: "Open a draft pull request", default: false) var openPullRequest: Bool
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Add \(\.$prompt) for \(\.$agent) in \(\.$project)") {
+            \.$inWorktree
+            \.$openPullRequest
+        }
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard let model = AppModel.shared else { throw IntentFailure.noApp }
+        try await model.ensureConnected()
+        guard model.supportsQueue else { throw IntentFailure.hostTooOld }
+        let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw IntentFailure.emptyPrompt }
+        let task = AgentTask(title: AgentTask.title(fromPrompt: text), prompt: text, cwd: project.id, agent: agent.kind,
+                             permissionMode: agent == .codex ? CodexApprovalPolicy.never.rawValue : PermissionMode.acceptEdits.rawValue,
+                             inWorktree: inWorktree, openPullRequest: inWorktree && openPullRequest && model.supportsPipelines)
+        model.addTask(task)
+        let waiting = model.tasks.filter { $0.status == .queued || $0.status == .running }.count
+        return .result(dialog: IntentDialog(stringLiteral: waiting > 1 ? "Queued in \(project.name) — \(waiting - 1) ahead of it." : "Queued in \(project.name)."))
+    }
+}
+
 enum IntentFailure: Error, CustomLocalizedStringResourceConvertible {
-    case noApp, notConnected, needsFaceID, timeout
+    case noApp, notConnected, needsFaceID, timeout, hostTooOld, emptyPrompt
 
     var localizedStringResource: LocalizedStringResource {
         switch self {
@@ -166,6 +249,8 @@ enum IntentFailure: Error, CustomLocalizedStringResourceConvertible {
         case .notConnected: return "The Mac is not reachable."
         case .needsFaceID: return "Face ID is required to approve — open ClaudeRemote."
         case .timeout: return "The agent did not answer in time."
+        case .hostTooOld: return "The Mac's ClaudeRemote Host is too old for the task queue — update it."
+        case .emptyPrompt: return "The task needs a prompt."
         }
     }
 }
@@ -180,6 +265,10 @@ struct ClaudeRemoteShortcuts: AppShortcutsProvider {
             "What's waiting in \(.applicationName)",
             "Pending approvals in \(.applicationName)",
         ], shortTitle: "Pending", systemImageName: "bell.badge")
+        AppShortcut(intent: AddTaskIntent(), phrases: [
+            "Add a task in \(.applicationName)",
+            "Queue a task in \(.applicationName)",
+        ], shortTitle: "Add task", systemImageName: "list.bullet.rectangle")
         AppShortcut(intent: ApprovePendingIntent(), phrases: [
             "Approve in \(.applicationName)",
             "Approve everything in \(.applicationName)",

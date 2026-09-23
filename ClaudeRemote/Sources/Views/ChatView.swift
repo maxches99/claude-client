@@ -24,6 +24,7 @@ struct ChatView: View {
     @State private var showTerminals = false
     @State private var showShareLink = false
     @State private var confirmHandoff: HandoffTarget?
+    @State private var showReview = false
     /// Replies are read aloud and the mic opens for the next prompt — a conversation without looking.
     @State private var handsFree = false
     @State private var showFind = false
@@ -125,6 +126,9 @@ struct ChatView: View {
                                 Button("Background processes…", systemImage: "bolt.horizontal") { showProcesses = true }
                             }
                             Button("Changes by turn…", systemImage: "arrow.uturn.backward.square") { showTurnChanges = true }
+                            if model.supportsPipelines {
+                                Button("Review changes…", systemImage: "text.magnifyingglass") { showReview = true }
+                            }
                             if model.supportsQueue {
                                 Button("Worktrees…", systemImage: "square.split.2x1") { showWorktrees = true }
                             }
@@ -205,6 +209,7 @@ struct ChatView: View {
         .sheet(isPresented: $showWorktrees) { WorktreesView(sessionId: sessionId) }
         .sheet(isPresented: $showTerminals) { TerminalsView(sessionId: isChat ? nil : sessionId) }
         .sheet(isPresented: $showShareLink) { ShareLinkSheet(sessionId: sessionId) }
+        .sheet(isPresented: $showReview) { ReviewView(sessionId: sessionId) }
         .confirmationDialog(confirmHandoff?.label ?? "", isPresented: Binding(get: { confirmHandoff != nil }, set: { if !$0 { confirmHandoff = nil } }), titleVisibility: .visible) {
             Button("Continue there") {
                 if let target = confirmHandoff { model.handoff(sessionId, to: target) }
@@ -252,6 +257,11 @@ struct ChatView: View {
         }
         .onAppear {
             model.openIfNeeded(sessionId)
+            if let insert = model.composerInsert, insert.sessionId == sessionId {
+                model.composerInsert = nil
+                draft = (draft.isEmpty ? "" : draft + "\n\n") + insert.text + "\n\n"
+                composerFocused = true
+            }
             if !isChat, model.supportsQueue, model.palettes[sessionId] == nil { model.requestPalette(sessionId) }
             if model.supportsMacTools { model.requestHandoffTargets(sessionId) }
             if let q = model.pendingFind.removeValue(forKey: sessionId) { findQuery = q; openFind() }

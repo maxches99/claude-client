@@ -45,7 +45,7 @@ extension SessionManager {
         }
 
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.executableURL = URL(fileURLWithPath: HostPaths.shell)
         p.arguments = ["-lc", trimmed]
         p.currentDirectoryURL = URL(fileURLWithPath: cwd)
         var env = ClaudeCLI.childEnvironment()

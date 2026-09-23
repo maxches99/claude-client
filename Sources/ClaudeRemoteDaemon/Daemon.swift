@@ -204,7 +204,8 @@ public final class Daemon: @unchecked Sendable {
         let codexBackend = codex.map { CodexBackend(cli: $0, listenPort: config.codexPort, log: log) }
         manager = SessionManager(cli: cli, codex: codexBackend, notifier: notifier, livePusher: livePusher,
                                  approvalLog: SessionManager.approvalLogPath(supportDirectory: supportDirectory),
-                                 taskStore: SessionManager.taskStorePath(supportDirectory: supportDirectory), log: log)
+                                 taskStore: SessionManager.taskStorePath(supportDirectory: supportDirectory),
+                                 workspaceRoot: config.workspaceRoot, log: log)
         if let minutes = config.idleTimeoutMinutes, minutes > 0 {
             Task { [manager] in await manager.setIdleTimeout(TimeInterval(minutes * 60)) }
         }

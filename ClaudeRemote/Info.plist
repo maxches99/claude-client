@@ -45,6 +45,8 @@
 	<string>Finds and connects to ccremote running on your Mac.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dictates prompts and records voice memos to send into a session.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Saves screenshots and images from a session to your photo library.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Turns your dictation and voice memos into text for the session.</string>
 	<key>NSSupportsLiveActivities</key>

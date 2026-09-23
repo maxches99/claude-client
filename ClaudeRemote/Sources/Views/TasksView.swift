@@ -11,16 +11,20 @@ struct TasksView: View {
     @State private var showNew = false
     @State private var confirmDelete: AgentTask?
 
-    private var running: [AgentTask] { model.tasks.filter { $0.status == .running } }
+    @State private var showNewDuel = false
+    @State private var reviewing: String?
+
+    private var solo: [AgentTask] { model.tasks.filter { $0.duelId == nil } }
+    private var running: [AgentTask] { solo.filter { $0.status == .running } }
     private var waiting: [AgentTask] {
-        model.tasks.filter { $0.status == .queued || $0.status == .scheduled }
+        solo.filter { $0.status == .queued || $0.status == .scheduled }
             .sorted { a, b in
                 if (a.status == .queued) != (b.status == .queued) { return a.status == .queued }
                 return (a.runAt ?? a.createdAt) < (b.runAt ?? b.createdAt)
             }
     }
     private var finished: [AgentTask] {
-        model.tasks.filter { $0.status.isFinished }.sorted { ($0.finishedAt ?? .distantPast) > ($1.finishedAt ?? .distantPast) }
+        solo.filter { $0.status.isFinished }.sorted { ($0.finishedAt ?? .distantPast) > ($1.finishedAt ?? .distantPast) }
     }
 
     var body: some View {
@@ -29,8 +33,16 @@ struct TasksView: View {
                 settingsSection
                 if !running.isEmpty { section("Running", running) }
                 if !waiting.isEmpty { section("Up next", waiting) }
+                if !model.duels.isEmpty {
+                    Section("Duels") {
+                        ForEach(model.duels) { duel in
+                            NavigationLink { DuelView(duelId: duel.id) } label: { DuelRow(duel: duel) }
+                                .listRowBackground(CDS.surface0)
+                        }
+                    }
+                }
                 if !finished.isEmpty { section("Finished", Array(finished.prefix(20))) }
-                if model.tasks.isEmpty {
+                if model.tasks.isEmpty && model.duels.isEmpty {
                     Text("Nothing queued. Add a few chores — “run the tests and fix what fails”, “update the changelog” — and the Mac works them off while you're away.")
                         .font(CDS.body).foregroundStyle(CDS.textMuted)
                         .listRowBackground(CDS.surface0)
@@ -45,12 +57,26 @@ struct TasksView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { showNew = true } label: { Image(systemName: "plus") }
+                    if model.supportsPipelines && model.hasCodex {
+                        Menu {
+                            Button("New task", systemImage: "plus") { showNew = true }
+                            Button("New duel: Claude vs Codex", systemImage: "figure.fencing") { showNewDuel = true }
+                        } label: { Image(systemName: "plus") }
                         .disabled(!model.isConnected)
+                    } else {
+                        Button { showNew = true } label: { Image(systemName: "plus") }
+                            .disabled(!model.isConnected)
+                    }
                 }
             }
             .sheet(isPresented: $showNew) { TaskEditor(task: nil) }
+            .sheet(isPresented: $showNewDuel) { DuelEditor() }
+            .sheet(item: Binding(get: { reviewing.map { ReviewTarget(sessionId: $0) } }, set: { reviewing = $0?.sessionId })) { target in
+                ReviewView(sessionId: target.sessionId)
+            }
             .sheet(item: $editing) { task in TaskEditor(task: task) }
+            // A session opened from in here (a duel side, a review sent) lands behind this sheet.
+            .onChange(of: model.sessionPath) { dismiss() }
             .confirmationDialog("Delete this task?", isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } }), titleVisibility: .visible) {
                 Button("Delete", role: .destructive) {
                     if let task = confirmDelete { model.taskAction(task.id, .delete) }
@@ -120,6 +146,18 @@ struct TasksView: View {
             if let summary = task.resultSummary, !summary.isEmpty, task.status != .running {
                 Text(summary).font(CDS.caption).foregroundStyle(CDS.textSecondary).lineLimit(3)
             }
+            if task.diffStat != nil || task.pullRequestURL != nil || (task.openPullRequest && !task.status.isFinished) {
+                HStack(spacing: 8) {
+                    if let stat = task.diffStat { Text(stat.label).font(CDS.caption).foregroundStyle(CDS.textMuted) }
+                    if let pr = task.pullRequestURL, let url = URL(string: pr) {
+                        Link(destination: url) {
+                            Label("Pull request", systemImage: "arrow.triangle.pull").font(CDS.caption.weight(.medium))
+                        }
+                    } else if task.openPullRequest && !task.status.isFinished {
+                        Label("draft PR when done", systemImage: "arrow.triangle.pull").font(CDS.caption).foregroundStyle(CDS.textMuted)
+                    }
+                }
+            }
             if let error = task.error, !error.isEmpty {
                 Text(error).font(CDS.caption).foregroundStyle(CDS.danger).lineLimit(3)
             }
@@ -151,6 +189,12 @@ struct TasksView: View {
             }
             if task.status.isFinished {
                 Button("Run again", systemImage: "arrow.clockwise") { model.taskAction(task.id, .retry) }
+            }
+            if model.supportsPipelines, let sessionId = task.sessionId, task.worktreePath != nil {
+                Button("Review the changes…", systemImage: "text.magnifyingglass") { reviewing = sessionId }
+            }
+            if model.supportsPipelines, task.status == .done, task.worktreePath != nil, task.pullRequestURL == nil {
+                Button("Open a draft pull request", systemImage: "arrow.triangle.pull") { model.taskAction(task.id, .openPullRequest) }
             }
             Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete = task }
         }
@@ -194,6 +238,8 @@ struct TaskEditor: View {
     @State private var agent: AgentKind = .claude
     @State private var permissionMode = PermissionMode.acceptEdits.rawValue
     @State private var inWorktree = false
+    @State private var openPullRequest = false
+    @State private var showClone = false
     @State private var schedule = Schedule.now
     @State private var time = Date()
 
@@ -234,6 +280,12 @@ struct TaskEditor: View {
                     }
                     Toggle("Run in a fresh worktree", isOn: $inWorktree)
                         .tint(CDS.brand)
+                    if model.supportsPipelines {
+                        Toggle("Open a draft pull request when done", isOn: $openPullRequest)
+                            .tint(CDS.brand)
+                            .disabled(!inWorktree || model.host?.hasGitHubCLI != true)
+                        Button("Clone a repository…", systemImage: "square.and.arrow.down.on.square") { showClone = true }
+                    }
                 }
                 Section {
                     if agent == .claude {
@@ -278,6 +330,10 @@ struct TaskEditor: View {
             }
         }
         .onAppear(perform: load)
+        .sheet(isPresented: $showClone) { CloneRepositoryView { path in cwd = path } }
+        .onChange(of: model.projects) { _, projects in
+            if cwd.isEmpty { cwd = projects.first?.path ?? "" }
+        }
     }
 
     private func load() {
@@ -288,6 +344,7 @@ struct TaskEditor: View {
             agent = task.agent
             permissionMode = task.permissionMode ?? PermissionMode.acceptEdits.rawValue
             inWorktree = task.inWorktree
+            openPullRequest = task.openPullRequest
             if let minutes = task.dailyAtMinutes {
                 schedule = .daily
                 time = Calendar.current.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: Date()) ?? Date()
@@ -312,6 +369,7 @@ struct TaskEditor: View {
         built.agent = agent
         built.permissionMode = permissionMode
         built.inWorktree = inWorktree
+        built.openPullRequest = inWorktree && openPullRequest
         switch schedule {
         case .now:
             built.dailyAtMinutes = nil
@@ -336,4 +394,11 @@ struct TaskEditor: View {
         let today = calendar.date(from: components) ?? now
         return today > now ? today : (calendar.date(byAdding: .day, value: 1, to: today) ?? now)
     }
+}
+
+
+/// A session to review, as a sheet item.
+struct ReviewTarget: Identifiable {
+    let sessionId: String
+    var id: String { sessionId }
 }

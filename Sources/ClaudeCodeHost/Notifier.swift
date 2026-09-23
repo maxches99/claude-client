@@ -76,6 +76,49 @@ public final class Notifier: @unchecked Sendable {
         send(req, to: "ntfy")
     }
 
+    public var canSendTelegram: Bool { config.telegramToken != nil && config.telegramChatID != nil }
+
+    public enum SendError: Error, CustomStringConvertible {
+        case notConfigured
+        case telegram(String)
+        public var description: String {
+            switch self {
+            case .notConfigured: return "Telegram is not set up."
+            case .telegram(let why): return "Telegram refused the message: \(why)"
+            }
+        }
+    }
+
+    /// A longer message with Telegram's HTML formatting (the digest), waiting for Telegram's answer. If it
+    /// rejects the markup, the same text goes out without it rather than not at all.
+    public func sendTelegramHTML(_ html: String) async throws {
+        guard let token = config.telegramToken, let chat = config.telegramChatID else { throw SendError.notConfigured }
+        func post(_ fields: [String: String]) async throws -> (Int, String) {
+            var req = URLRequest(url: URL(string: "https://api.telegram.org/bot\(token)/sendMessage")!)
+            req.httpMethod = "POST"
+            req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            req.httpBody = Data(Notifier.formEncode(fields).utf8)
+            let (data, response) = try await session.data(for: req)
+            return ((response as? HTTPURLResponse)?.statusCode ?? 0, String(decoding: data, as: UTF8.self))
+        }
+        let (status, body) = try await post(["chat_id": chat, "text": html, "parse_mode": "HTML", "disable_web_page_preview": "true"])
+        if status == 200 { return }
+        log("telegram HTML refused (\(status)): \(body.prefix(200)) — sending plain")
+        let plain = html.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"").replacingOccurrences(of: "&amp;", with: "&")
+        let (status2, body2) = try await post(["chat_id": chat, "text": plain, "disable_web_page_preview": "true"])
+        guard status2 == 200 else { throw SendError.telegram("HTTP \(status2): \(body2.prefix(200))") }
+    }
+
+    /// `application/x-www-form-urlencoded`, strictly: only unreserved characters stay as they are, so an
+    /// `&`, `=` or `+` inside the text (HTML entities have plenty) cannot split a field.
+    static func formEncode(_ fields: [String: String]) -> String {
+        let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        func enc(_ s: String) -> String { s.addingPercentEncoding(withAllowedCharacters: unreserved) ?? "" }
+        return fields.sorted { $0.key < $1.key }.map { "\(enc($0.key))=\(enc($0.value))" }.joined(separator: "&")
+    }
+
     private func sendTelegram(token: String, chat: String, text: String, silent: Bool) {
         guard var comps = URLComponents(string: "https://api.telegram.org/bot\(token)/sendMessage") else { return }
         comps.queryItems = [

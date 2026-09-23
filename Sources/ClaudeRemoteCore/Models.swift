@@ -3,7 +3,8 @@ import Foundation
 /// Wire-protocol version. Bump when messages change incompatibly.
 /// 4: rewind, palette, worktrees, the task queue and background processes.
 /// 5: the digest, terminals, handoff to the Mac and share links.
-public let protocolVersion = 5
+/// 6: pull requests from tasks, branch review, cloning into the workspace, duels, the scheduled digest.
+public let protocolVersion = 6
 
 /// Which coding agent runs a session. Claude Code is the default everywhere a field is missing,
 /// so messages from an older build still decode.
@@ -53,10 +54,14 @@ public struct HostInfo: Codable, Equatable, Sendable {
     public var livePush: Bool?
     /// The Mac has a relay to publish share links through.
     public var canShare: Bool?
+    /// Where cloned repositories go (`~/work` unless configured).
+    public var workspaceRoot: String?
+    /// GitHub's `gh` is installed (pull requests, repository list).
+    public var hasGitHubCLI: Bool?
 
     public init(hostName: String, daemonVersion: String, cliVersion: String?, cliPath: String, loggedIn: Bool?,
                 protocolVersion: Int = ClaudeRemoteCore.protocolVersion, codex: CodexInfo? = nil, livePush: Bool? = nil,
-                canShare: Bool? = nil) {
+                canShare: Bool? = nil, workspaceRoot: String? = nil, hasGitHubCLI: Bool? = nil) {
         self.hostName = hostName
         self.daemonVersion = daemonVersion
         self.cliVersion = cliVersion
@@ -66,6 +71,8 @@ public struct HostInfo: Codable, Equatable, Sendable {
         self.codex = codex
         self.livePush = livePush
         self.canShare = canShare
+        self.workspaceRoot = workspaceRoot
+        self.hasGitHubCLI = hasGitHubCLI
     }
 }
 
