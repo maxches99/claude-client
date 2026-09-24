@@ -26,6 +26,8 @@ final class HostModel {
     /// Transient message for the UI (copied, error…), cleared automatically.
     private(set) var toast: String?
     private(set) var recentLog: [String] = []
+    /// Work sessions started from the phone, newest first (refreshed when the panel opens).
+    private(set) var phoneSessions: [PhoneSessionRecord] = []
 
     var keepAwake: Bool {
         didSet {
@@ -224,6 +226,27 @@ final class HostModel {
 
     func forgetDevice(_ id: String) {
         daemon?.forgetDevice(id)
+    }
+
+    /// Claude Desktop is installed, so phone sessions can be continued there.
+    var hasClaudeDesktop: Bool { SessionManager.applicationPath("Claude") != nil }
+
+    func refreshPhoneSessions() {
+        guard let manager = daemon?.manager else { return }
+        Task { phoneSessions = await manager.recentPhoneSessions() }
+    }
+
+    /// Imports a phone session into Claude Desktop's Code tab and opens it there.
+    func openInClaudeDesktop(_ id: String) {
+        guard let manager = daemon?.manager else { return }
+        Task {
+            do {
+                try await manager.openInClaudeDesktop(sessionId: id)
+            } catch {
+                show("\(error)")
+            }
+            phoneSessions = await manager.recentPhoneSessions()
+        }
     }
 
     func refreshClaude() {

@@ -33,7 +33,7 @@ struct HostApp: App {
         Window("ClaudeRemote Host Settings", id: WindowID.settings) {
             SettingsWindow(model: model)
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
         .defaultPosition(.center)
 
         Window("ClaudeRemote Host Log", id: WindowID.log) {

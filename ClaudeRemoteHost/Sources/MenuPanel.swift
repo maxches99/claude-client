@@ -1,5 +1,6 @@
 import SwiftUI
 import ClaudeRemoteDaemon
+import ClaudeCodeHost
 
 /// The popover under the menu-bar icon: status, phones, a scannable QR and the main actions.
 struct MenuPanel: View {
@@ -21,6 +22,10 @@ struct MenuPanel: View {
             }
             PhonesSection(model: model)
             Divider()
+            if !model.recentPhoneWork.isEmpty {
+                PhoneWorkSection(model: model)
+                Divider()
+            }
             qrSection
             Divider()
             claudeRow
@@ -48,6 +53,7 @@ struct MenuPanel: View {
         .onAppear {
             model.refreshLoginItem()
             model.refreshLegacyAgent()
+            model.refreshPhoneSessions()
         }
     }
 
@@ -224,6 +230,45 @@ struct MenuPanel: View {
         }
         .buttonStyle(.borderless)
         .font(.callout)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+}
+
+extension HostModel {
+    /// The last few phone sessions worth offering on the Mac: Claude ones not yet in Claude Desktop.
+    var recentPhoneWork: [PhoneSessionRecord] {
+        guard hasClaudeDesktop else { return [] }
+        return Array(phoneSessions.filter { $0.agent == .claude && $0.openedInDesktop != true }.prefix(4))
+    }
+}
+
+/// Sessions started on the phone, each one click away from Claude Desktop.
+struct PhoneWorkSection: View {
+    let model: HostModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Started on the phone").font(.caption).foregroundStyle(.secondary)
+            ForEach(model.recentPhoneWork) { session in
+                HStack(spacing: 8) {
+                    Image(systemName: "text.bubble").foregroundStyle(.secondary).frame(width: 16)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(session.title ?? "New session").font(.callout).lineLimit(1)
+                        HStack(spacing: 4) {
+                            Text(session.projectName)
+                            Text("·")
+                            Text(session.updatedAt, style: .relative)
+                            Text("ago")
+                        }
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer()
+                    Button { model.openInClaudeDesktop(session.id) } label: { Image(systemName: "macwindow") }
+                        .buttonStyle(.borderless)
+                        .help("Continue in Claude Desktop (the phone lets go of it)")
+                }
+            }
+        }
         .padding(.horizontal, 14).padding(.vertical, 10)
     }
 }

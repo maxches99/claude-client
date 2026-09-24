@@ -35,6 +35,9 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
     public var notifyDone: Bool = true
     /// Where repositories cloned from the phone go (`~/work` when unset); also listed as projects.
     public var workspaceRoot: String?
+    /// Experimental: add sessions started from the phone to Claude Desktop's session list and file
+    /// Codex threads under their projects in the Codex app, by writing those apps' own state files.
+    public var mirrorToDesktopApps: Bool = false
 
     /// APNs auth key (`AuthKey_XXXX.p8`) for pushing Live Activity updates to the phone. All three
     /// must be set for pushes to happen; the phone still updates its own activity while it runs.
@@ -65,6 +68,7 @@ public struct DaemonConfig: Codable, Equatable, Sendable {
         telegramChat = try c.decodeIfPresent(String.self, forKey: .telegramChat)
         notifyDone = try c.decodeIfPresent(Bool.self, forKey: .notifyDone) ?? true
         workspaceRoot = try c.decodeIfPresent(String.self, forKey: .workspaceRoot)
+        mirrorToDesktopApps = try c.decodeIfPresent(Bool.self, forKey: .mirrorToDesktopApps) ?? false
         apnsKeyPath = try c.decodeIfPresent(String.self, forKey: .apnsKeyPath)
         apnsKeyId = try c.decodeIfPresent(String.self, forKey: .apnsKeyId)
         apnsTeamId = try c.decodeIfPresent(String.self, forKey: .apnsTeamId)

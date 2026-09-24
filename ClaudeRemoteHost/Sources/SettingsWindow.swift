@@ -84,6 +84,15 @@ struct SettingsWindow: View {
             }
 
             Section {
+                Toggle("Show phone sessions in Claude Desktop and the Codex app", isOn: $draft.mirrorToDesktopApps)
+            } header: {
+                Text("Desktop apps (experimental)")
+            } footer: {
+                Text("After each turn, a Claude session started on the phone is added to Claude Desktop's Code list — Desktop reads that list when it starts, so it shows up after Desktop's next launch — and a Codex thread is filed under its folder's project in the Codex app (a new project if the folder has none). Neither app offers a way to do this, so it writes their own state files: Codex's only while the Codex app is closed — otherwise when it quits. If Desktop opens a session the phone still runs, the phone's idle copy steps aside. Without this, use \"Started on the phone\" in the menu to open a session in Claude Desktop.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
                 LabeledContent("claude binary") {
                     HStack {
                         TextField("", text: optional($draft.claudePath), prompt: Text("auto — Claude Desktop's bundled CLI, else PATH"))
@@ -143,7 +152,9 @@ struct SettingsWindow: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 940)
+        // The form scrolls; a fixed tall window pushed the Apply bar off a laptop screen.
+        .frame(width: 560)
+        .frame(minHeight: 420, idealHeight: 720)
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Text(isDirty ? "Applying restarts the host; sessions started from the phone stop (they can be resumed)." : " ")

@@ -200,6 +200,9 @@ public final class Daemon: @unchecked Sendable {
                                  approvalLog: SessionManager.approvalLogPath(supportDirectory: supportDirectory),
                                  taskStore: SessionManager.taskStorePath(supportDirectory: supportDirectory),
                                  workspaceRoot: config.workspaceRoot, log: log)
+        if config.mirrorToDesktopApps {
+            Task { [manager] in await manager.setMirrorsToDesktopApps(true) }
+        }
         if config.relayEnabled, let relay = config.relayURL.flatMap(URL.init(string:)), let base = ShareConfig.httpBase(fromRelay: relay),
            let room, let secret = config.relaySecret {
             let share = ShareConfig(endpoint: base, publicBase: base, room: room, secret: secret)

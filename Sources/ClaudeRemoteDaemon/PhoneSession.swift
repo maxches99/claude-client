@@ -174,6 +174,7 @@ final class PhoneSession: @unchecked Sendable {
                 try await manager.open(sessionId: sessionId, since: since) { [weak self] msg in self?.send(msg) }
             case .create(let options):
                 let state = try await manager.create(options)
+                await manager.notePhoneSession(state)
                 send(.history(sessionId: state.id, entries: []))
                 send(.state(state: state))
             case .fork(let sessionId):
