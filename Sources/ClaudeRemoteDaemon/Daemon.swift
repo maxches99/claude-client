@@ -95,7 +95,9 @@ final class TokenStore: @unchecked Sendable {
 /// listener (+ Bonjour), the optional relay link and notifier, tracks phones, and publishes a
 /// `DaemonStatus` whenever something changes. Hosted by the CLI and by the menu-bar app.
 public final class Daemon: @unchecked Sendable {
-    public static let version = "0.2.0"
+    /// The app bundle's version when hosted by the menu-bar app (release builds stamp it from the
+    /// git tag); the bare CLI has no bundle and reports the fallback.
+    public static let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.1"
 
     public let config: DaemonConfig
     public let supportDirectory: String
