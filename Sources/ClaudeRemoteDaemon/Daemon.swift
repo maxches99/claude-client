@@ -117,6 +117,14 @@ public final class Daemon: @unchecked Sendable {
         set { lock.withLock { _onStatus = newValue } }
     }
 
+    /// A phone changed a setting that needs a restart (the relay): the app reloads `config.json` and
+    /// starts a new daemon. Without it (the CLI) the setting waits for the next start.
+    public var onRestartRequest: (@Sendable () -> Void)? {
+        get { lock.withLock { _onRestartRequest } }
+        set { lock.withLock { _onRestartRequest = newValue } }
+    }
+    private var _onRestartRequest: (@Sendable () -> Void)?
+
     private let log: @Sendable (String) -> Void
     private let tokenStore: TokenStore
     private let tlsIdentity: TLSIdentity?
@@ -211,6 +219,12 @@ public final class Daemon: @unchecked Sendable {
         SimulatorStreamer.log = log
         SimulatorInput.log = log
 
+        // What phones may change about the host itself (HostControl), and what they are told about it.
+        let relayRoom = room
+        let route: RelayRoute? = config.relayEnabled ? config.relayURL.flatMap { url in relayRoom.map { RelayRoute(url: url, room: $0) } } : nil
+        let canUpdate = HostControl.shared.updater != nil
+        Task { [manager] in await manager.setHostIdentity(relay: route, appVersion: Daemon.version, canUpdate: canUpdate) }
+
         let addresses = NetworkInfo.lanAddresses()
         _status = DaemonStatus(paired: registry.all, addresses: addresses,
                                pairing: Daemon.makePairing(config: config, token: tokenStore.current, serviceName: serviceName, useTLS: useTLS,
@@ -260,6 +274,11 @@ public final class Daemon: @unchecked Sendable {
     public func start() throws {
         guard lock.withLock({ !started }) else { return }
         lock.withLock { started = true }
+        let relaySetup = config.relayEnabled ? config.relayURL.flatMap { url in config.relaySecret.map { RelaySetup(url: url, secret: $0) } } : nil
+        // Only a host that can restart itself (the Mac app) takes the relay live; the CLI saves it for next time.
+        var restart: (@Sendable () -> Void)?
+        if onRestartRequest != nil { restart = { [weak self] in self?.onRestartRequest?() } }
+        HostControl.shared.configure(relay: relaySetup, supportDirectory: supportDirectory, restart: restart)
 
         let serverTLS: TLSRole = tlsIdentity.map { .server(identity: $0.identity) } ?? .none
         let server = WebSocketServer(port: config.port, tokenStore: tokenStore, serviceName: serviceName, manager: manager,

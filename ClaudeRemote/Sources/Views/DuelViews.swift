@@ -38,13 +38,13 @@ struct DuelRow: View {
         let sides = model.tasks(of: duel)
         switch duel.status {
         case .running:
-            return duel.projectName + " · " + sides.map { "\($0.agent.label): \($0.status.label.lowercased())" }.joined(separator: ", ")
+            return duel.projectName + " · " + sides.map { "\($0.sideLabel): \($0.status.label.lowercased())" }.joined(separator: ", ")
         case .judging:
             return duel.projectName + " · running the tests and asking the judge"
         case .decided:
             guard let verdict = duel.verdict else { return duel.projectName }
-            let totals = sides.compactMap { side in verdict.scores[side.id].map { "\(side.agent.label) \(String(format: "%.1f", $0.total))" } }.joined(separator: " vs ")
-            let winner = verdict.winnerTaskId.flatMap { id in sides.first { $0.id == id }?.agent.label }
+            let totals = sides.compactMap { side in verdict.scores[side.id].map { "\(side.sideLabel) \(String(format: "%.1f", $0.total))" } }.joined(separator: " vs ")
+            let winner = verdict.winnerTaskId.flatMap { id in sides.first { $0.id == id }?.sideLabel }
             return (winner.map { "\($0) won" } ?? "A tie") + (totals.isEmpty ? "" : " · " + totals)
         case .failed:
             return duel.error ?? "Failed"
@@ -110,7 +110,7 @@ struct DuelView: View {
             ReviewView(sessionId: target.sessionId)
         }
         .confirmationDialog("Keep this result?", isPresented: Binding(get: { confirmKeep != nil }, set: { if !$0 { confirmKeep = nil } }), titleVisibility: .visible) {
-            Button("Keep \(confirmKeep?.agent.label ?? "")'s") {
+            Button("Keep \(confirmKeep?.sideLabel ?? "")'s") {
                 if let side = confirmKeep { model.duelAction(duelId, .keep(taskId: side.id)) }
                 confirmKeep = nil
             }
@@ -147,8 +147,8 @@ struct DuelView: View {
         Section("Verdict") {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
-                    Image(systemName: winner == nil ? "equal.circle.fill" : "trophy.fill").foregroundStyle(winner?.agent.tint ?? CDS.textMuted)
-                    Text(winner.map { "\($0.agent.label) did it better" } ?? "A tie").font(.headline)
+                    Image(systemName: winner == nil ? "equal.circle.fill" : "trophy.fill").foregroundStyle(winner.map { DuelView.tint($0, in: sides) } ?? CDS.textMuted)
+                    Text(winner.map { "\($0.sideLabel) did it better" } ?? "A tie").font(.headline)
                 }
                 if !verdict.summary.isEmpty { Text(verdict.summary).font(CDS.body).foregroundStyle(CDS.textSecondary) }
                 ForEach([("Correctness", \DuelScore.correctness), ("Completeness", \DuelScore.completeness),
@@ -156,7 +156,7 @@ struct DuelView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(name).font(.caption2.weight(.semibold)).foregroundStyle(CDS.textMuted).textCase(.uppercase)
                         ForEach(sides) { side in
-                            if let score = verdict.scores[side.id] { scoreBar(side.agent, value: score[keyPath: key]) }
+                            if let score = verdict.scores[side.id] { scoreBar(side.sideLabel, tint: DuelView.tint(side, in: sides), value: score[keyPath: key]) }
                         }
                     }
                 }
@@ -173,13 +173,20 @@ struct DuelView: View {
         }
     }
 
-    private func scoreBar(_ agent: AgentKind, value: Double) -> some View {
+    /// Two sides of the same agent still need two colours.
+    static func tint(_ side: AgentTask, in sides: [AgentTask]) -> Color {
+        let sameAgent = Set(sides.map(\.agent)).count == 1
+        guard sameAgent, sides.firstIndex(where: { $0.id == side.id }) == 1 else { return side.agent.tint }
+        return side.agent == .claude ? CDS.agentCodex.opacity(0.85) : CDS.agentClaude
+    }
+
+    private func scoreBar(_ label: String, tint: Color, value: Double) -> some View {
         HStack(spacing: 6) {
-            Text(agent.label).font(CDS.caption).foregroundStyle(agent.tint).frame(width: 50, alignment: .leading)
+            Text(label).font(CDS.caption).foregroundStyle(tint).lineLimit(1).frame(width: 90, alignment: .leading)
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule().fill(CDS.fillNeutral)
-                    Capsule().fill(agent.tint).frame(width: geo.size.width * value / 10)
+                    Capsule().fill(tint).frame(width: geo.size.width * value / 10)
                 }
             }
             .frame(height: 6)
@@ -193,7 +200,7 @@ struct DuelView: View {
         return Section {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
-                    Text(side.agent.label).font(.headline).foregroundStyle(side.agent.tint)
+                    Text(side.sideLabel).font(.headline).foregroundStyle(DuelView.tint(side, in: model.tasks(of: duel)))
                     if isWinner { Image(systemName: "trophy.fill").foregroundStyle(CDS.brand) }
                     if duel.keptTaskId == side.id { CDSChip(text: "Kept", style: .accent) }
                     Spacer()
@@ -253,12 +260,31 @@ struct DuelEditor: View {
     @State private var claudeMode = PermissionMode.acceptEdits.rawValue
     @State private var codexPolicy = CodexApprovalPolicy.never.rawValue
     @State private var judge: AgentKind = .claude
+    /// Claude against Codex, or two models (or reasoning levels) head to head.
+    @State private var byModel = false
+    @State private var sideA = ContestantDraft(agent: .claude, model: "claude-opus-5")
+    @State private var sideB = ContestantDraft(agent: .claude, model: "claude-sonnet-5")
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Prompt") {
                     TextField("What should both agents do?", text: $prompt, axis: .vertical).lineLimit(3...10).font(CDS.prose)
+                }
+                if model.supportsAutomation {
+                    Section {
+                        Picker("Kind", selection: $byModel) {
+                            if model.hasBothAgents { Text("Claude vs Codex").tag(false) }
+                            Text("Model vs model").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        if byModel {
+                            ContestantPicker(title: "Side A", draft: $sideA)
+                            ContestantPicker(title: "Side B", draft: $sideB)
+                        }
+                    } footer: {
+                        if byModel { Text("Same prompt, two models (or two reasoning levels) — which one is worth it for this kind of job.") }
+                    }
                 }
                 Section {
                     Picker("Project", selection: $cwd) {
@@ -268,16 +294,20 @@ struct DuelEditor: View {
                     Text("Each agent works in its own fresh worktree of this repository, so they can run at the same time — set the queue to run two at once.")
                 }
                 Section("Unattended") {
+                    if !byModel || sideA.agent == .claude || sideB.agent == .claude {
                     Picker("Claude", selection: $claudeMode) {
                         ForEach([PermissionMode.acceptEdits, .auto, .dontAsk], id: \.self) { Text($0.label).tag($0.rawValue) }
                     }
+                    }
+                    if !byModel || sideA.agent == .codex || sideB.agent == .codex {
                     Picker("Codex", selection: $codexPolicy) {
                         ForEach(CodexApprovalPolicy.allCases, id: \.self) { Text($0.label).tag($0.rawValue) }
+                    }
                     }
                 }
                 Section {
                     Picker("Judge", selection: $judge) {
-                        ForEach(AgentKind.allCases, id: \.self) { Text($0.label).tag($0) }
+                        ForEach(AgentKind.allCases.filter { $0 == .claude ? model.hasClaude : model.hasCodex }, id: \.self) { Text($0.label).tag($0) }
                     }
                     .pickerStyle(.segmented)
                 } header: { Text("Who compares them") } footer: {
@@ -293,8 +323,9 @@ struct DuelEditor: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Start") {
+                        let contestants = byModel ? [sideA, sideB].map { $0.contestant(claudeMode: claudeMode, codexPolicy: codexPolicy, models: model.codexModels) } : nil
                         model.startDuel(title: title, prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines), cwd: cwd,
-                                        claudeMode: claudeMode, codexPolicy: codexPolicy, judge: judge)
+                                        claudeMode: claudeMode, codexPolicy: codexPolicy, judge: judge, contestants: contestants)
                         dismiss()
                     }
                     .disabled(prompt.trimmingCharacters(in: .whitespaces).isEmpty || cwd.isEmpty)
@@ -304,6 +335,81 @@ struct DuelEditor: View {
         .onAppear {
             if cwd.isEmpty { cwd = model.projects.first?.path ?? "" }
             if model.projects.isEmpty { model.refresh() }
+            if model.hasCodex, model.codexModels.isEmpty { model.requestCodexModels() }
+            // Only one agent on this Mac: a duel can only be model against model.
+            if !model.hasBothAgents {
+                byModel = true
+                judge = model.defaultAgent
+                if !model.hasClaude { sideA = ContestantDraft(agent: .codex); sideB = ContestantDraft(agent: .codex) }
+            }
+        }
+    }
+}
+
+/// One side of a model duel as it is being picked.
+struct ContestantDraft: Equatable {
+    var agent: AgentKind
+    var model: String = ""
+    var effort: String = ""
+
+    /// "Opus", "GPT-5.6 · high".
+    func label(models: [ModelOption]) -> String {
+        switch agent {
+        case .claude:
+            return NewSessionView.models.first { $0.id == model }?.label ?? "Claude"
+        case .codex:
+            let name = models.first { $0.id == model }?.label ?? (model.isEmpty ? "Codex" : model)
+            return effort.isEmpty ? name : "\(name) · \(effort)"
+        }
+    }
+
+    func contestant(claudeMode: String, codexPolicy: String, models: [ModelOption]) -> DuelContestant {
+        DuelContestant(agent: agent, model: model.isEmpty ? nil : model, effort: effort.isEmpty ? nil : effort,
+                       mode: agent == .claude ? claudeMode : codexPolicy, label: label(models: models))
+    }
+}
+
+/// Agent, model and (Codex) reasoning for one side.
+struct ContestantPicker: View {
+    @Environment(AppModel.self) private var model
+    let title: String
+    @Binding var draft: ContestantDraft
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(CDS.captionMedium).foregroundStyle(CDS.textMuted)
+            if model.hasBothAgents {
+                Picker("Agent", selection: $draft.agent) {
+                    ForEach(AgentKind.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            }
+            if draft.agent == .claude {
+                Picker("Model", selection: $draft.model) {
+                    ForEach(NewSessionView.models, id: \.id) { Text($0.label).tag($0.id) }
+                }
+            } else {
+                Picker("Model", selection: $draft.model) {
+                    ForEach(model.codexModels) { Text($0.label).tag($0.id) }
+                }
+                let efforts = model.codexModels.first { $0.id == draft.model }?.efforts ?? []
+                if !efforts.isEmpty {
+                    Picker("Reasoning", selection: $draft.effort) {
+                        ForEach(efforts, id: \.self) { Text($0.capitalized).tag($0) }
+                    }
+                }
+            }
+        }
+        .onChange(of: draft.agent) { _, agent in
+            draft.model = agent == .claude ? (NewSessionView.models.first?.id ?? "") : (model.codexModels.first { $0.isDefault }?.id ?? model.codexModels.first?.id ?? "")
+            draft.effort = ""
+        }
+        .onAppear {
+            if draft.agent == .codex, draft.model.isEmpty {
+                let m = model.codexModels.first { $0.isDefault } ?? model.codexModels.first
+                draft.model = m?.id ?? ""
+                draft.effort = m?.defaultEffort ?? ""
+            }
         }
     }
 }

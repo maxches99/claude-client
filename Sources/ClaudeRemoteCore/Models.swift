@@ -4,7 +4,7 @@ import Foundation
 /// 4: rewind, palette, worktrees, the task queue and background processes.
 /// 5: the digest, terminals, handoff to the Mac and share links.
 /// 6: pull requests from tasks, branch review, cloning into the workspace, duels, the scheduled digest.
-public let protocolVersion = 6
+public let protocolVersion = 7
 
 /// Which coding agent runs a session. Claude Code is the default everywhere a field is missing,
 /// so messages from an older build still decode.
@@ -62,6 +62,12 @@ public struct HostInfo: Codable, Equatable, Sendable {
     public var hasClaude: Bool?
     /// The Mac adds sessions started from the phone to Claude Desktop's and the Codex app's own lists.
     public var mirrorsToDesktopApps: Bool?
+    /// How phones reach this host through the relay; a phone updates its pairing from it.
+    public var relay: RelayRoute?
+    /// The version of the Host app / hub binary, when it knows it.
+    public var appVersion: String?
+    /// The host can download a newer release and restart into it.
+    public var canUpdate: Bool?
 
     /// Claude sessions can be started here.
     public var claudeInstalled: Bool { hasClaude ?? true }
@@ -69,7 +75,8 @@ public struct HostInfo: Codable, Equatable, Sendable {
     public init(hostName: String, daemonVersion: String, cliVersion: String?, cliPath: String, loggedIn: Bool?,
                 protocolVersion: Int = ClaudeRemoteCore.protocolVersion, codex: CodexInfo? = nil, livePush: Bool? = nil,
                 canShare: Bool? = nil, workspaceRoot: String? = nil, hasGitHubCLI: Bool? = nil,
-                hasClaude: Bool? = nil, mirrorsToDesktopApps: Bool? = nil) {
+                hasClaude: Bool? = nil, mirrorsToDesktopApps: Bool? = nil, relay: RelayRoute? = nil,
+                appVersion: String? = nil, canUpdate: Bool? = nil) {
         self.hostName = hostName
         self.daemonVersion = daemonVersion
         self.cliVersion = cliVersion
@@ -83,6 +90,9 @@ public struct HostInfo: Codable, Equatable, Sendable {
         self.hasGitHubCLI = hasGitHubCLI
         self.hasClaude = hasClaude
         self.mirrorsToDesktopApps = mirrorsToDesktopApps
+        self.relay = relay
+        self.appVersion = appVersion
+        self.canUpdate = canUpdate
     }
 }
 

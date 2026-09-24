@@ -57,6 +57,8 @@ final class AppModel {
     var supportsMacTools: Bool { (host?.protocolVersion ?? 1) >= 5 }
     /// Pull requests from tasks, review, cloning, duels and the scheduled digest need protocol 6.
     var supportsPipelines: Bool { (host?.protocolVersion ?? 1) >= 6 }
+    /// Issues, CI repair, model duels, templates, audit, relay setup, GitHub login, updates (protocol 7).
+    var supportsAutomation: Bool { (host?.protocolVersion ?? 1) >= 7 }
     func supportsMacTools(_ macId: String) -> Bool { (hostByMac[macId]?.protocolVersion ?? 1) >= 5 }
     /// Models Codex on the Mac can run, fetched once per connection.
     var codexModels: [ModelOption] = []
@@ -481,7 +483,7 @@ final class AppModel {
         updateMac(id, change)
     }
 
-    private func updateMac(_ macId: String, _ change: (inout PairingInfo) -> Void) {
+    func updateMac(_ macId: String, _ change: (inout PairingInfo) -> Void) {
         guard let idx = macs.firstIndex(where: { $0.id == macId }) else { return }
         change(&macs[idx])
         persistMacs()
@@ -971,6 +973,18 @@ final class AppModel {
     var digestSchedule: DigestSchedule?
     var digestScheduleError: String?
 
+    // MARK: protocol 7 state (AppModel+Automation.swift)
+    var issuesByCwd: [String: IssueList] = [:]
+    var templatesByCwd: [String: [PromptTemplate]] = [:]
+    var auditReport: AuditReport?
+    var auditLoading = false
+    /// Per Mac: its relay setup as fetched to hand to another Mac.
+    var relaySetups: [String: RelayFetch] = [:]
+    /// Per Mac: the answer to "join this relay" (nil error = restarting into it).
+    var relayJoins: [String: RelayJoin] = [:]
+    var githubByMac: [String: GitHubPanel] = [:]
+    var hostUpdates: [String: HostUpdate] = [:]
+
     // MARK: inbound
 
     private func handle(_ message: ServerMessage, from macId: String) {
@@ -983,6 +997,12 @@ final class AppModel {
             return
         case .welcome(let host):
             hostByMac[macId] = host
+            // The host says how it is reached through the relay: keep the pairing current by itself.
+            if let route = host.relay, macs.first(where: { $0.id == macId }).map({ $0.relayURL != route.url || $0.room != route.room }) == true {
+                updateMac(macId) { $0.relayURL = route.url; $0.room = route.room }
+            }
+            if relayJoins[macId]?.state == .restarting { relayJoins[macId] = RelayJoin(state: host.relay != nil ? .joined : .failed,
+                                                                                        message: host.relay != nil ? nil : "The Mac restarted without the relay.") }
             requestDigestIfAway(macId)
             updateMac(macId) { $0.hostName = host.hostName; $0.lastConnectedAt = Date() }
             guard isActive else {
@@ -1232,6 +1252,8 @@ final class AppModel {
             guard isActive else { return }
             digestSchedule = schedule
             digestScheduleError = error
+        case .issues, .templates, .audit, .relaySetup, .relayConfigured, .github, .hostUpdate:
+            receiveAutomation(message, from: macId, isActive: isActive)
         case .pong:
             break
         }

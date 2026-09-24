@@ -656,6 +656,9 @@ struct ComposerDock: View {
     @State private var fileSearchTask: Task<Void, Never>?
     /// Hands-free: the reply already read out, and the pause that sends what was dictated.
     @State private var spokenReplyId: String?
+    /// Hands-free: the permission request read out, waiting for a spoken yes or no.
+    @State private var voiceDecision: PermissionRequest?
+    @State private var voiceRetried = false
     @State private var showPalette = false
     @State private var showCamera = false
     @State private var markup: MarkupTarget?
@@ -711,6 +714,7 @@ struct ComposerDock: View {
         .onChange(of: draft) { _, _ in handleDraftChange() }
         .onChange(of: state?.status) { _, status in
             if handsFree, status == .idle { speakLatestReply() }
+            if handsFree, status == .awaitingPermission { askForDecision() }
         }
         .onChange(of: handsFree) { _, on in
             if on {
@@ -760,6 +764,42 @@ struct ComposerDock: View {
         }
     }
 
+    /// Hands-free approvals: the request is read out and a spoken yes / no answers it.
+    private func askForDecision() {
+        guard let request = model.pendingPermission(for: sessionId), voiceDecision?.id != request.id else { return }
+        voiceDecision = request
+        voiceRetried = false
+        silenceTask?.cancel()
+        if dictation.isListening { dictation.cancel() }
+        let what = request.title ?? ToolSummary.line(name: request.toolName, input: request.input)
+        model.narrator.speak("\(agent.label) wants to \(what.prefix(160)). Say yes or no.") {
+            guard handsFree, voiceDecision != nil else { return }
+            Task { await startDictation() }
+        }
+    }
+
+    /// Heard something while a request waits: yes / no answers it, anything else is ignored.
+    private func hearDecision(_ text: String) {
+        guard let request = voiceDecision, let allow = VoiceAnswer.parse(text) else { return }
+        voiceDecision = nil
+        dictation.cancel()
+        draft = dictationBase
+        model.decide(request, allow: allow, reason: allow ? nil : "Denied by voice")
+        model.narrator.speak(allow ? "Allowed." : "Denied.")
+    }
+
+    /// The mic closed without a yes or no: ask once more, then leave the card to a tap.
+    private func missedDecision() {
+        guard handsFree, voiceDecision != nil else { return }
+        draft = dictationBase
+        if voiceRetried { voiceDecision = nil; model.narrator.speak("I'll leave it for you to tap."); return }
+        voiceRetried = true
+        model.narrator.speak("Sorry — yes or no?") {
+            guard handsFree, voiceDecision != nil else { return }
+            Task { await startDictation() }
+        }
+    }
+
     /// In hands-free, a pause of a couple of seconds after speaking sends the prompt.
     private func armSilenceTimer() {
         silenceTask?.cancel()
@@ -773,6 +813,7 @@ struct ComposerDock: View {
     }
 
     private func sendDictated() {
+        if voiceDecision != nil { missedDecision(); return }
         guard handsFree, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         onSend()
     }
@@ -867,6 +908,7 @@ struct ComposerDock: View {
         .onChange(of: pickerItems) { _, items in loadPicked(items) }
         .onChange(of: dictation.text) { _, text in
             guard dictation.isListening || !text.isEmpty else { return }
+            if voiceDecision != nil { hearDecision(text); if !text.isEmpty { armSilenceTimer() }; return }
             let sep = dictationBase.isEmpty || dictationBase.hasSuffix("\n") || dictationBase.hasSuffix(" ") ? "" : " "
             draft = dictationBase + (text.isEmpty ? "" : sep + text)
             if !text.isEmpty { armSilenceTimer() }

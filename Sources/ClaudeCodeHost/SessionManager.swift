@@ -165,6 +165,16 @@ public actor SessionManager {
     var taskTimer: Task<Void, Never>?
     /// `tasks.json` in the support directory, when the daemon gave us one.
     let taskStorePath: String?
+    /// Watches the pull requests of tasks that fix their own CI (SessionManagerAutomation.swift).
+    var ciTimer: Task<Void, Never>?
+    /// A `gh auth login --web` the phone started, while it waits for the browser.
+    var githubLoginRun: Process?
+    var githubLoginState: GitHubLoginState?
+    /// How phones reach this host through the relay (set by the daemon).
+    var relayRoute: RelayRoute?
+    /// The Host app / hub version and whether it can update itself (set by the daemon).
+    var hostAppVersion: String?
+    var hostCanUpdate = false
 
     public init(cli: ClaudeCLI, codex: CodexBackend? = nil, store: TranscriptStore = TranscriptStore(), registry: LiveSessionRegistry = LiveSessionRegistry(),
                 notifier: Notifier? = nil, livePusher: LiveActivityPusher? = nil, approvalLog: String? = nil, taskStore: String? = nil,
@@ -191,6 +201,7 @@ public actor SessionManager {
         Task { [weak self] in
             await self?.loadTasks()
             await self?.startTaskTimer()
+            await self?.startCIWatch()
             await self?.loadDigestSchedule()
             await self?.loadPhoneSessions()
         }
@@ -258,7 +269,15 @@ public actor SessionManager {
         return HostInfo(hostName: Host.current().localizedName ?? ProcessInfo.processInfo.hostName, daemonVersion: daemonVersion,
                         cliVersion: cachedCliVersion, cliPath: cli.path, loggedIn: cachedLoggedIn, codex: codexInfo, livePush: livePusher != nil,
                         canShare: shareConfig != nil, workspaceRoot: workspaceRoot, hasGitHubCLI: SessionManager.locateGh() != nil,
-                        hasClaude: cli.isInstalled, mirrorsToDesktopApps: mirrorsToDesktopApps)
+                        hasClaude: cli.isInstalled, mirrorsToDesktopApps: mirrorsToDesktopApps, relay: relayRoute,
+                        appVersion: hostAppVersion, canUpdate: hostCanUpdate)
+    }
+
+    /// What the daemon knows and the manager reports to phones: the relay route and the app version.
+    public func setHostIdentity(relay: RelayRoute?, appVersion: String?, canUpdate: Bool) {
+        relayRoute = relay
+        hostAppVersion = appVersion
+        hostCanUpdate = canUpdate
     }
 
     /// The Claude CLI is optional (a Mac can run Codex alone): everything that starts `claude` asks here.
@@ -1724,6 +1743,8 @@ public actor SessionManager {
     public func shutdown() async {
         taskTimer?.cancel()
         digestTimer?.cancel()
+        ciTimer?.cancel()
+        githubLoginRun?.terminate()
         terminateAllProcesses()
         terminateAllTerminals()
         for id in Array(hosted.keys) { await close(sessionId: id) }

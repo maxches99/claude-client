@@ -377,8 +377,9 @@ final class PhoneSession: @unchecked Sendable {
                 } catch {
                     send(.cloneResult(source: source, path: nil, error: "\(error)"))
                 }
-            case .startDuel(let title, let prompt, let cwd, let claudeMode, let codexPolicy, let judge):
-                _ = try await manager.startDuel(title: title, prompt: prompt, cwd: cwd, claudeMode: claudeMode, codexPolicy: codexPolicy, judge: judge)
+            case .startDuel(let title, let prompt, let cwd, let claudeMode, let codexPolicy, let judge, let contestants):
+                _ = try await manager.startDuel(title: title, prompt: prompt, cwd: cwd, claudeMode: claudeMode, codexPolicy: codexPolicy,
+                                                judge: judge, contestants: contestants)
             case .duelAction(let duelId, let action):
                 try await manager.duelAction(id: duelId, action: action)
             case .setDigestSchedule(let minutes):
@@ -391,6 +392,59 @@ final class PhoneSession: @unchecked Sendable {
                 }
             case .getDigestSchedule:
                 send(.digestSchedule(schedule: await manager.currentDigestSchedule(), error: nil))
+            case .listIssues(let cwd):
+                do {
+                    send(.issues(cwd: cwd, items: try await manager.listIssues(cwd: cwd), error: nil))
+                } catch {
+                    send(.issues(cwd: cwd, items: [], error: "\(error)"))
+                }
+            case .listTemplates(let cwd):
+                send(.templates(cwd: cwd, items: await manager.templates(cwd: cwd)))
+            case .audit(let since, let cwd):
+                send(.audit(report: await manager.audit(since: since, cwd: cwd)))
+            case .getRelaySetup:
+                let setup = HostControl.shared.relaySetup
+                send(.relaySetup(setup: setup, error: setup == nil ? "This host is not on a relay." : nil))
+            case .setRelay(let setup):
+                do {
+                    try HostControl.shared.setRelay(setup)
+                    log("relay set from \(deviceLabel): \(setup.url) — restarting")
+                    send(.relayConfigured(error: nil))
+                } catch {
+                    send(.relayConfigured(error: "\(error)"))
+                }
+            case .githubStatus:
+                send(.github(account: await manager.githubAccount(), login: await manager.currentGitHubLogin, error: nil))
+            case .githubLogin:
+                do {
+                    try await manager.startGitHubLogin()
+                } catch {
+                    send(.github(account: await manager.githubAccount(), login: nil, error: "\(error)"))
+                }
+            case .githubCancelLogin:
+                await manager.cancelGitHubLogin()
+                send(.github(account: await manager.githubAccount(), login: nil, error: nil))
+            case .setGitIdentity(let name, let email):
+                do {
+                    try await manager.setGitIdentity(name: name, email: email)
+                    send(.github(account: await manager.githubAccount(), login: await manager.currentGitHubLogin, error: nil))
+                } catch {
+                    send(.github(account: await manager.githubAccount(), login: nil, error: "\(error)"))
+                }
+            case .checkHostUpdate:
+                if let updater = HostControl.shared.updater {
+                    send(.hostUpdate(update: await updater.check()))
+                } else {
+                    send(.hostUpdate(update: HostUpdate(state: .unsupported, current: daemonVersion,
+                                                        message: "This host does not update itself — update it where it was installed.")))
+                }
+            case .updateHost:
+                guard let updater = HostControl.shared.updater else {
+                    send(.hostUpdate(update: HostUpdate(state: .unsupported, current: daemonVersion)))
+                    break
+                }
+                log("update requested by \(deviceLabel)")
+                await updater.update { [weak self] progress in self?.send(.hostUpdate(update: progress)) }
             case .listSimulators:
                 send(.simulators(items: await SimulatorStreamer.shared.list()))
             case .simulatorStream(let udid, let enabled, let maxPixelSize, let fps, let codec):

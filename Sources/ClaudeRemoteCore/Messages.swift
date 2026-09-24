@@ -137,14 +137,36 @@ public enum ClientMessage: Codable, Sendable {
     case listRemoteRepositories
     /// Clone a repository (URL or owner/name) into the host's workspace; answered with `cloneResult`.
     case cloneRepository(source: String)
-    /// Pit Claude and Codex against each other on one prompt; the duel shows up in `duels`.
-    case startDuel(title: String, prompt: String, cwd: String, claudeMode: String?, codexPolicy: String?, judge: AgentKind)
+    /// Pit Claude and Codex against each other on one prompt; the duel shows up in `duels`. With
+    /// `contestants` (protocol 7) the sides are any two agent/model/effort combinations instead.
+    case startDuel(title: String, prompt: String, cwd: String, claudeMode: String?, codexPolicy: String?, judge: AgentKind,
+                   contestants: [DuelContestant]? = nil)
     case duelAction(id: String, action: DuelAction)
     /// When the daily digest goes out (nil = off); answered with `digestSchedule`.
     case setDigestSchedule(minutes: Int?)
     /// Send the digest now (since the last one); answered with `digestSchedule`.
     case sendDigestNow
     case getDigestSchedule
+    /// Open issues of the project's GitHub repository; answered with `issues`.
+    case listIssues(cwd: String)
+    /// Prompt templates for a project (its `.ccremote.json` and the host's own); answered with `templates`.
+    case listTemplates(cwd: String)
+    /// What agents did on the machine since `since` (one project, or all); answered with `audit`.
+    case audit(since: Date, cwd: String?)
+    /// This host's relay URL and secret, to hand to another Mac; answered with `relaySetup`.
+    case getRelaySetup
+    /// Join the relay: the host saves the setting and restarts; answered with `relayConfigured` first.
+    case setRelay(setup: RelaySetup)
+    /// The host's GitHub login and git identity; answered with `github`.
+    case githubStatus
+    /// Start `gh auth login --web`; the one-time code comes back in `github`, then the result.
+    case githubLogin
+    case githubCancelLogin
+    case setGitIdentity(name: String, email: String)
+    /// Whether a newer release exists; answered with `hostUpdate`.
+    case checkHostUpdate
+    /// Download the newest release and restart into it; progress and errors come as `hostUpdate`.
+    case updateHost
     /// Register (or, with `pushToken == nil`, drop) this phone's Live Activity for a session. When the
     /// Mac has APNs configured it pushes `SessionActivityState` updates to the token, so the activity
     /// keeps moving while the app is in the background. `approvalNeedsApp` mirrors the phone's Face ID
@@ -210,6 +232,14 @@ public enum ServerMessage: Codable, Sendable {
     /// Every duel, whenever one changes.
     case duels(items: [Duel])
     case digestSchedule(schedule: DigestSchedule, error: String?)
+    case issues(cwd: String, items: [GitHubIssue], error: String?)
+    case templates(cwd: String, items: [PromptTemplate])
+    case audit(report: AuditReport)
+    case relaySetup(setup: RelaySetup?, error: String?)
+    /// The host saved the relay and is restarting (`error` when it could not).
+    case relayConfigured(error: String?)
+    case github(account: GitHubAccount, login: GitHubLoginState?, error: String?)
+    case hostUpdate(update: HostUpdate)
     case simulators(items: [SimulatorInfo])
     case simulatorActionResult(udid: String, action: SimulatorAction, error: String?)
     case simulatorApps(udid: String, items: [SimulatorApp], error: String?)

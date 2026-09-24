@@ -1,5 +1,6 @@
 import SwiftUI
 import ClaudeRemoteDaemon
+import ClaudeRemoteCore
 import ClaudeCodeHost
 
 /// The popover under the menu-bar icon: status, phones, a scannable QR and the main actions.
@@ -10,6 +11,10 @@ struct MenuPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
+            if let update = model.update, update.state == .available || update.state == .updating || (update.state == .failed && update.latest != nil) {
+                updateBanner(update)
+                Divider()
+            }
             if let legacy = model.legacyAgent, legacy.isLoaded {
                 legacyBanner
                 Divider()
@@ -126,6 +131,25 @@ struct MenuPanel: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
+    }
+
+    private func updateBanner(_ update: HostUpdate) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: update.state == .failed ? "exclamationmark.triangle" : "arrow.down.circle.fill")
+                .foregroundStyle(update.state == .failed ? Color.orange : Color.accentColor)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(update.state == .updating ? (update.message ?? "Updating…") : "Version \(update.latest ?? "?") is out").font(.callout)
+                Text(update.state == .failed ? (update.message ?? "The update failed") : "You have \(update.current)")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer()
+            if update.state == .updating {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Update") { model.installUpdate() }.controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
     }
 
     private var claudeRow: some View {

@@ -1,4 +1,5 @@
 import SwiftUI
+import ClaudeRemoteCore
 import ClaudeCodeHost
 import ClaudeRemoteDaemon
 
@@ -13,6 +14,7 @@ struct SettingsWindow: View {
     @State private var hookInstalled = false
     @State private var hookError: String?
     @State private var codexPortText = ""
+    @State private var showRelayQR = false
     @State private var codexEnv: String?
     @State private var codexEnvError: String?
     @Environment(\.dismiss) private var dismiss
@@ -43,6 +45,21 @@ struct SettingsWindow: View {
                 }
                 if let room = model.status?.pairing.room {
                     LabeledContent("Room") { Text(room).font(.system(.body, design: .monospaced)).textSelection(.enabled) }
+                }
+                if let setup = model.relaySetup {
+                    LabeledContent("Another Mac") {
+                        Button("Relay setup QR…") { showRelayQR = true }
+                            .popover(isPresented: $showRelayQR) { RelaySetupQR(setup: setup) }
+                    }
+                } else {
+                    LabeledContent("Join a relay") {
+                        Button("Paste setup link") {
+                            if let text = NSPasteboard.general.string(forType: .string), let setup = RelaySetup.parse(text) {
+                                draft.relayURL = setup.url
+                                draft.relaySecret = setup.secret
+                            }
+                        }
+                    }
                 }
             } header: {
                 Text("Remote access")
@@ -250,5 +267,30 @@ struct LogWindow: View {
             .padding(8)
         }
         .frame(minWidth: 520, minHeight: 300)
+    }
+}
+
+/// The relay URL and secret as a QR: scanned in the phone app (Settings → a Mac → Join a relay), it
+/// puts another Mac on this relay without typing either.
+struct RelaySetupQR: View {
+    let setup: RelaySetup
+    @State private var copied = false
+
+    var body: some View {
+        VStack(spacing: 10) {
+            if let image = QRImage.render(setup.link, scale: 8) {
+                Image(nsImage: image).interpolation(.none).resizable().frame(width: 220, height: 220)
+            }
+            Text("Scan in the phone app: Settings → the other Mac → Join a relay.")
+                .font(.caption).multilineTextAlignment(.center).frame(width: 240)
+            Text("It carries the relay secret — show it only to your own devices.")
+                .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(width: 240)
+            Button(copied ? "Copied" : "Copy link") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(setup.link, forType: .string)
+                copied = true
+            }
+        }
+        .padding(16)
     }
 }

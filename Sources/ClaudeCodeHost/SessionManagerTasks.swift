@@ -91,6 +91,16 @@ extension SessionManager {
             } catch {
                 if let i = tasks.firstIndex(where: { $0.id == taskId }) { tasks[i].error = "\(error)" }
             }
+        case .pushFix:
+            let taskId = tasks[idx].id
+            do {
+                try await pushFix(taskId: taskId)
+            } catch {
+                if let i = tasks.firstIndex(where: { $0.id == taskId }) { tasks[i].error = "\(error)" }
+            }
+        case .toggleFixCI:
+            tasks[idx].fixCI.toggle()
+            if tasks[idx].fixCI { Task { await self.checkCI() } }
         }
         saveTasks()
         broadcastTasks()
@@ -149,7 +159,7 @@ extension SessionManager {
             }
             // A task is there to change the project: Codex gets write access to its folder (its own
             // default can be read-only, which leaves it describing the fix instead of making it).
-            let options = NewSessionOptions(cwd: cwd, model: task.model, permissionMode: task.permissionMode, agent: task.agent,
+            let options = NewSessionOptions(cwd: cwd, model: task.model, permissionMode: task.permissionMode, effort: task.effort, agent: task.agent,
                                             sandbox: task.agent == .codex ? CodexSandboxMode.workspaceWrite.rawValue : nil)
             let state = try await create(options)
             task.sessionId = state.id
@@ -203,6 +213,10 @@ extension SessionManager {
     /// it to its duel.
     func afterTask(_ taskId: String, succeeded: Bool) async {
         guard let task = tasks.first(where: { $0.id == taskId }) else { return }
+        if task.repairOf != nil {
+            await repairFinished(task, succeeded: succeeded)
+            return
+        }
         if let worktree = task.worktreePath, let base = task.baseCommit, FileManager.default.fileExists(atPath: worktree) {
             let stat = await offActor { [self] in changes(in: worktree, against: base).stat }
             if let i = tasks.firstIndex(where: { $0.id == taskId }) {
@@ -217,6 +231,10 @@ extension SessionManager {
             do {
                 let url = try await openPullRequest(forTask: taskId)
                 notifier?.notify(.done, body: "Pull request for \"\(task.title)\": \(url)")
+                if task.fixCI, let i = tasks.firstIndex(where: { $0.id == taskId }) {
+                    tasks[i].ci = TaskCI(state: .pending)
+                    saveTasks(); broadcastTasks()
+                }
             } catch {
                 if let i = tasks.firstIndex(where: { $0.id == taskId }) {
                     tasks[i].error = "Pull request: \(error)"

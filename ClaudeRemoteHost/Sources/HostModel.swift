@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import ClaudeRemoteDaemon
+import ClaudeRemoteCore
 import ClaudeCodeHost
 
 /// Owns the daemon and everything the menu-bar UI shows: its status, the pairing QR, the saved
@@ -28,6 +29,9 @@ final class HostModel {
     private(set) var recentLog: [String] = []
     /// Work sessions started from the phone, newest first (refreshed when the panel opens).
     private(set) var phoneSessions: [PhoneSessionRecord] = []
+    /// The newest release against this build, and an update in progress.
+    private(set) var update: HostUpdate?
+    private var updater: AppUpdater?
 
     var keepAwake: Bool {
         didSet {
@@ -72,7 +76,40 @@ final class HostModel {
                 if self.recentLog.count > 300 { self.recentLog.removeFirst(self.recentLog.count - 300) }
             }
         }
+        let updater = AppUpdater(log: log.write)
+        self.updater = updater
+        HostControl.shared.updater = updater
         start()
+        Task { [weak self] in
+            // Look for a new release now and twice a day.
+            while !Task.isCancelled {
+                await self?.checkForUpdate()
+                try? await Task.sleep(nanoseconds: 12 * 3600 * 1_000_000_000)
+            }
+        }
+    }
+
+    // MARK: updates
+
+    func checkForUpdate() async {
+        guard let updater else { return }
+        let result = await updater.check()
+        if update?.state != .updating { update = result }
+    }
+
+    func installUpdate() {
+        guard let updater else { return }
+        Task {
+            await updater.update { [weak self] progress in
+                Task { @MainActor [weak self] in self?.update = progress }
+            }
+        }
+    }
+
+    /// The relay this Mac is on, as a link another Mac (through a phone) can join with.
+    var relaySetup: RelaySetup? {
+        guard config.relayEnabled, let url = config.relayURL, let secret = config.relaySecret, !secret.isEmpty else { return nil }
+        return RelaySetup(url: url, secret: secret)
     }
 
     // MARK: derived
@@ -139,6 +176,15 @@ final class HostModel {
             let d = try Daemon(config: config, log: log.write)
             d.onStatus = { [weak self] status in
                 Task { @MainActor [weak self] in self?.apply(status) }
+            }
+            // A phone set the relay: config.json has it, so reload and start over.
+            d.onRestartRequest = { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.config = DaemonConfig.load()
+                    self.log.write("settings changed from a phone — restarting")
+                    self.restart()
+                }
             }
             daemon = d
             apply(d.status)
