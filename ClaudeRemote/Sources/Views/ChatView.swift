@@ -33,6 +33,8 @@ struct ChatView: View {
     /// The block the find bar wants on screen; `scrollPosition` (unlike `scrollTo`) lays lazy rows out
     /// on the way there instead of landing in unmeasured space.
     @State private var findTarget: String?
+    /// A file the agent linked in its reply (`[Bar.tsx:42](src/Bar.tsx:42)`), opened from the Mac.
+    @State private var linkedFile: LinkedFile?
     @FocusState private var composerFocused: Bool
     @FocusState private var findFocused: Bool
 
@@ -210,6 +212,12 @@ struct ChatView: View {
         .sheet(isPresented: $showTerminals) { TerminalsView(sessionId: isChat ? nil : sessionId) }
         .sheet(isPresented: $showShareLink) { ShareLinkSheet(sessionId: sessionId) }
         .sheet(isPresented: $showReview) { ReviewView(sessionId: sessionId) }
+        .sheet(item: $linkedFile) { file in
+            NavigationStack {
+                RemoteFileContent(path: file.link.path, line: file.link.line, sessionId: isChat ? nil : sessionId, attachPath: file.link.relativePath)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { linkedFile = nil } } }
+            }
+        }
         .confirmationDialog(confirmHandoff?.label ?? "", isPresented: Binding(get: { confirmHandoff != nil }, set: { if !$0 { confirmHandoff = nil } }), titleVisibility: .visible) {
             Button("Continue there") {
                 if let target = confirmHandoff { model.handoff(sessionId, to: target) }
@@ -453,6 +461,11 @@ struct ChatView: View {
             // also re-pins the bottom whenever a lazy row gets measured, which would drag every jump back down.
             .defaultScrollAnchor(showFind ? .top : .bottom)
             .scrollDismissesKeyboard(.interactively)
+            .environment(\.openURL, OpenURLAction { url in
+                guard let link = FileLink.parse(url.absoluteString, cwd: state?.cwd ?? summary?.cwd ?? "") else { return .systemAction }
+                linkedFile = LinkedFile(link: link)
+                return .handled
+            })
             .overlay(alignment: .bottom) {
                 LinearGradient(colors: [CDS.surface0.opacity(0), CDS.surface0], startPoint: .top, endPoint: .bottom)
                     .frame(height: 24)
@@ -1563,4 +1576,9 @@ struct LevelMeter: View {
         let weight = 1 - abs(Double(i) - centre) / (centre + 1)
         return 4 + CGFloat(Double(level) * weight) * 14
     }
+}
+
+private struct LinkedFile: Identifiable {
+    let link: FileLink
+    var id: String { "\(link.path):\(link.line ?? 0)" }
 }

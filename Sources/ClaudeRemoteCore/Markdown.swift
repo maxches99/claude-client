@@ -267,3 +267,59 @@ public enum MarkdownParser {
         return Array(result.prefix(count))
     }
 }
+
+/// A link in an agent's reply that points at a file on the Mac rather than a web page — the Anthropic CLI
+/// writes `[Bar.tsx:42](app/Bar.tsx:42)` relative to the project, Codex `[Bar.tsx](/abs/app/Bar.tsx#L42)`.
+/// `path` is absolute (resolved against the session's folder), `relativePath` is how the composer
+/// should mention it, `line` is the 1-based line the link pointed at, if any.
+public struct FileLink: Equatable {
+    public var path: String
+    public var relativePath: String
+    public var line: Int?
+
+    public init(path: String, relativePath: String, line: Int?) {
+        self.path = path
+        self.relativePath = relativePath
+        self.line = line
+    }
+
+    /// `nil` for web, mail and app links — those go to the system as usual.
+    public static func parse(_ destination: String, cwd: String) -> FileLink? {
+        var s = destination.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("<"), s.hasSuffix(">") { s = String(s.dropFirst().dropLast()) }
+        if s.lowercased().hasPrefix("file://") {
+            s = String(s.dropFirst("file://".count))
+            if let slash = s.firstIndex(of: "/") { s = String(s[slash...]) } else { return nil }  // file://host/path
+        } else if let colon = s.firstIndex(of: ":") {
+            // A real scheme (https:, mailto:, vscode://…) — as opposed to "Bar.tsx:42", whose
+            // "scheme" has a dot in it, or "src/Bar.tsx:42", where a slash comes first.
+            let scheme = s[..<colon]
+            let looksLikeScheme = !scheme.isEmpty && scheme.allSatisfy { $0.isLetter || $0.isNumber || $0 == "+" || $0 == "-" }
+                && scheme.first!.isLetter
+            if looksLikeScheme, !s[s.index(after: colon)...].allSatisfy({ $0.isNumber || $0 == ":" || $0 == "-" }) { return nil }
+        }
+        s = s.removingPercentEncoding ?? s
+
+        var line: Int?
+        if let hash = s.range(of: "#L", options: .backwards) {
+            line = Int(s[hash.upperBound...].prefix { $0.isNumber })
+            s = String(s[..<hash.lowerBound])
+        } else if let hash = s.firstIndex(of: "#") {
+            s = String(s[..<hash])
+        }
+        // ":42", ":42:7" or ":42-50" after the file name.
+        if let match = s.range(of: #":(\d+)(?::\d+|-\d+)?$"#, options: .regularExpression) {
+            line = line ?? Int(s[match].dropFirst().prefix { $0.isNumber })
+            s = String(s[..<match.lowerBound])
+        }
+        while s.hasPrefix("./") { s.removeFirst(2) }
+        guard !s.isEmpty, s != "/" else { return nil }
+
+        let root = cwd.hasSuffix("/") ? String(cwd.dropLast()) : cwd
+        if s.hasPrefix("/") || s.hasPrefix("~") {
+            let relative = !root.isEmpty && s.hasPrefix(root + "/") ? String(s.dropFirst(root.count + 1)) : s
+            return FileLink(path: s, relativePath: relative, line: line)
+        }
+        return FileLink(path: root.isEmpty ? s : root + "/" + s, relativePath: s, line: line)
+    }
+}
