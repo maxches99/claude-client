@@ -54,9 +54,12 @@ struct QRScannerView: View {
             #endif
         }
         .sensoryFeedback(.impact(weight: .light), trigger: tracker.lockCount)
-        .sensoryFeedback(.success, trigger: tracker.phase) { _, new in new == .done }
-        .sensoryFeedback(.error, trigger: tracker.phase) { _, new in new == .rejected }
+        .sensoryFeedback(.success, trigger: tracker.phase, condition: Self.becameDone)
+        .sensoryFeedback(.error, trigger: tracker.phase, condition: Self.becameRejected)
     }
+
+    private static func becameDone(_ old: ScanTracker.Phase, _ new: ScanTracker.Phase) -> Bool { new == .done }
+    private static func becameRejected(_ old: ScanTracker.Phase, _ new: ScanTracker.Phase) -> Bool { new == .rejected }
 
     private var chrome: some View {
         VStack {

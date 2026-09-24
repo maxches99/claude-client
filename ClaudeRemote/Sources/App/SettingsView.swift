@@ -79,7 +79,11 @@ struct SettingsView: View {
                 if let host = model.connection.host {
                     Section("Connected Mac") {
                         LabeledContent("Host", value: host.hostName)
-                        if let v = host.cliVersion { LabeledContent("claude", value: v) }
+                        if !host.claudeInstalled {
+                            LabeledContent("claude", value: "not installed")
+                        } else if let v = host.cliVersion {
+                            LabeledContent("claude", value: v)
+                        }
                     }
                 }
             }

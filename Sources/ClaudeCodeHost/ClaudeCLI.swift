@@ -9,10 +9,16 @@ public struct ClaudeCLI: Sendable {
         self.path = path
     }
 
+    /// A Mac with Codex and no Claude CLI: the daemon still runs, Claude sessions are refused.
+    public static let missing = ClaudeCLI(path: "")
+    public var isInstalled: Bool { !path.isEmpty }
+
     /// Search order: explicit env override, the binary bundled with Claude Desktop
     /// (newest version), then the usual CLI install locations.
     public static func locate(environment: [String: String] = ProcessInfo.processInfo.environment) -> ClaudeCLI? {
         let fm = FileManager.default
+        // `none` runs the daemon with Codex alone even where Claude is installed.
+        if environment["CCREMOTE_CLAUDE_PATH"] == "none" { return nil }
         if let override = environment["CCREMOTE_CLAUDE_PATH"], fm.isExecutableFile(atPath: override) {
             return ClaudeCLI(path: override)
         }
@@ -58,6 +64,7 @@ public struct ClaudeCLI: Sendable {
     /// Runs a short CLI query. stdin is /dev/null: a child that inherits the terminal gets
     /// stopped by SIGTTIN when the daemon runs in a terminal, and we'd wait forever.
     private func run(_ args: [String], timeout: TimeInterval = 20) -> String? {
+        guard isInstalled else { return nil }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args

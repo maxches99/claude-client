@@ -77,7 +77,7 @@ extension SessionManager {
                 guard let codex else { throw HandoffError.unavailable("Codex is not installed on this Mac.") }
                 command = "\(SessionManager.shellQuote(codex.cli.path)) resume \(SessionManager.shellQuote(sessionId))"
             } else {
-                command = "\(SessionManager.shellQuote(cli.path)) --resume \(SessionManager.shellQuote(sessionId))"
+                command = "\(SessionManager.shellQuote(try claudePath())) --resume \(SessionManager.shellQuote(sessionId))"
             }
             try openInTerminal(cwd: cwd, command: command, name: "resume-\(sessionId.prefix(8))")
         case "finder":

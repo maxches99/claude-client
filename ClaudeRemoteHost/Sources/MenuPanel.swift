@@ -127,7 +127,13 @@ struct MenuPanel: View {
             Image(systemName: "terminal")
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
-            if let claude = model.status?.claude {
+            if let claude = model.status?.claude, !claude.installed {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Claude not installed").font(.callout)
+                    Text("Codex sessions and chats work without it").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+            } else if let claude = model.status?.claude {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Claude CLI \(claude.version ?? "…")").font(.callout)
                     Group {

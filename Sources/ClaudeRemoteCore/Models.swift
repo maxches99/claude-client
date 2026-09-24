@@ -58,10 +58,16 @@ public struct HostInfo: Codable, Equatable, Sendable {
     public var workspaceRoot: String?
     /// GitHub's `gh` is installed (pull requests, repository list).
     public var hasGitHubCLI: Bool?
+    /// `false` on a Mac with Codex and no Claude CLI. Absent from hosts that always had it.
+    public var hasClaude: Bool?
+
+    /// Claude sessions can be started here.
+    public var claudeInstalled: Bool { hasClaude ?? true }
 
     public init(hostName: String, daemonVersion: String, cliVersion: String?, cliPath: String, loggedIn: Bool?,
                 protocolVersion: Int = ClaudeRemoteCore.protocolVersion, codex: CodexInfo? = nil, livePush: Bool? = nil,
-                canShare: Bool? = nil, workspaceRoot: String? = nil, hasGitHubCLI: Bool? = nil) {
+                canShare: Bool? = nil, workspaceRoot: String? = nil, hasGitHubCLI: Bool? = nil,
+                hasClaude: Bool? = nil) {
         self.hostName = hostName
         self.daemonVersion = daemonVersion
         self.cliVersion = cliVersion
@@ -73,6 +79,7 @@ public struct HostInfo: Codable, Equatable, Sendable {
         self.canShare = canShare
         self.workspaceRoot = workspaceRoot
         self.hasGitHubCLI = hasGitHubCLI
+        self.hasClaude = hasClaude
     }
 }
 

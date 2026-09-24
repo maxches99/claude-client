@@ -31,7 +31,7 @@ struct NewSessionView: View {
     var body: some View {
         NavigationStack {
             Form {
-                if model.hasCodex {
+                if model.hasBothAgents {
                     Section {
                         Picker("Agent", selection: $agent) {
                             ForEach(AgentKind.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -72,6 +72,7 @@ struct NewSessionView: View {
             }
             .onAppear {
                 // Default to the most recent project once; "Custom path…" must survive coming back from the picker.
+                if !model.hasBothAgents { agent = model.defaultAgent }
                 if cwd.isEmpty, let initialCwd, !initialCwd.isEmpty { cwd = initialCwd }
                 if cwd.isEmpty, let first = model.projects.first { cwd = first.path }
                 if model.projects.isEmpty { model.refresh() }

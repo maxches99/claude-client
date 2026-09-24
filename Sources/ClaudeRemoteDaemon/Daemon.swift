@@ -12,6 +12,8 @@ public struct ClaudeStatus: Equatable, Sendable {
     /// `nil` while unknown (the check runs the CLI and takes a moment).
     public var loggedIn: Bool?
     public var email: String?
+    /// A Mac can run Codex alone; then there is no `claude` at all.
+    public var installed: Bool { !path.isEmpty }
 }
 
 /// A snapshot of the running daemon for a UI or a status printout.
@@ -62,7 +64,7 @@ public enum DaemonError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case .claudeNotFound: return "claude binary not found. Install Claude Code (or Claude Desktop), or set the path in the config."
+        case .claudeNotFound: return "Neither claude nor codex was found. Install Claude (Desktop or the CLI) or Codex, or set the path in the config."
         case .relaySecretMissing: return "A relay URL is configured without a relay secret."
         }
     }
@@ -137,18 +139,22 @@ public final class Daemon: @unchecked Sendable {
         self.supportDirectory = supportDirectory
         self.log = log
 
-        if let p = config.claudePath, !p.isEmpty {
-            cli = ClaudeCLI(path: p)
-        } else if let found = ClaudeCLI.locate() {
-            cli = found
-        } else {
-            throw DaemonError.claudeNotFound
-        }
-
         if let p = config.codexPath, !p.isEmpty {
             codex = CodexCLI(path: p)
         } else {
             codex = CodexCLI.locate()
+        }
+
+        // Either agent is enough: a Mac with only Codex runs Codex sessions and chats.
+        if let p = config.claudePath, !p.isEmpty {
+            cli = ClaudeCLI(path: p)
+        } else if let found = ClaudeCLI.locate() {
+            cli = found
+        } else if codex != nil {
+            cli = .missing
+            log("claude not found — running with Codex only")
+        } else {
+            throw DaemonError.claudeNotFound
         }
 
         try? FileManager.default.createDirectory(atPath: supportDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -469,7 +475,8 @@ public final class Daemon: @unchecked Sendable {
             let codexVersion = self.codex?.version()
             Task { await self.manager.refreshAuth() }
             self.update { s in
-                s.claude = ClaudeStatus(path: self.cli.path, version: version, loggedIn: auth?.loggedIn ?? false, email: auth?.email)
+                s.claude = ClaudeStatus(path: self.cli.path, version: version,
+                                        loggedIn: self.cli.isInstalled ? auth?.loggedIn ?? false : nil, email: auth?.email)
                 s.codex = self.codex.map { CodexStatus(path: $0.path, version: codexVersion, loggedIn: CodexCLI.hasCredentials()) }
             }
         }

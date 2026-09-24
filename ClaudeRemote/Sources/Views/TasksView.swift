@@ -57,7 +57,7 @@ struct TasksView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    if model.supportsPipelines && model.hasCodex {
+                    if model.supportsPipelines && model.hasBothAgents {
                         Menu {
                             Button("New task", systemImage: "plus") { showNew = true }
                             Button("New duel: Claude vs Codex", systemImage: "figure.fencing") { showNewDuel = true }
@@ -228,6 +228,11 @@ struct TasksView: View {
 
 /// Add or edit one task: what to do, where, and when.
 struct TaskEditor: View {
+    /// Nobody watches a queued task: Claude edits without asking, Codex never stops to ask.
+    static func defaultMode(for agent: AgentKind) -> String {
+        agent == .claude ? PermissionMode.acceptEdits.rawValue : CodexApprovalPolicy.never.rawValue
+    }
+
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let task: AgentTask?
@@ -272,7 +277,7 @@ struct TaskEditor: View {
                             Text(project.name).tag(project.path)
                         }
                     }
-                    if model.hasCodex {
+                    if model.hasBothAgents {
                         Picker("Agent", selection: $agent) {
                             ForEach(AgentKind.allCases, id: \.self) { Text($0.label).tag($0) }
                         }
@@ -330,6 +335,11 @@ struct TaskEditor: View {
             }
         }
         .onAppear(perform: load)
+        .onChange(of: agent) { _, new in
+            // Claude's modes and Codex's approval policies are different vocabularies.
+            let valid = new == .claude ? PermissionMode.allCases.map(\.rawValue) : CodexApprovalPolicy.allCases.map(\.rawValue)
+            if !valid.contains(permissionMode) { permissionMode = TaskEditor.defaultMode(for: new) }
+        }
         .sheet(isPresented: $showClone) { CloneRepositoryView { path in cwd = path } }
         .onChange(of: model.projects) { _, projects in
             if cwd.isEmpty { cwd = projects.first?.path ?? "" }
@@ -354,8 +364,8 @@ struct TaskEditor: View {
             }
         } else {
             cwd = model.projects.first?.path ?? ""
-            agent = .claude
-            permissionMode = PermissionMode.acceptEdits.rawValue
+            agent = model.defaultAgent
+            permissionMode = TaskEditor.defaultMode(for: agent)
         }
         if model.projects.isEmpty { model.refresh() }
     }
