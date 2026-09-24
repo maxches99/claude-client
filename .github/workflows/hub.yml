@@ -1,0 +1,76 @@
+name: Hub binary
+
+# Builds the Linux hub (the linux-hub branch with a release's tag merged in) and attaches
+# ccremote-linux-x86_64.tar.gz + .sha256 to that release; hubs update themselves from it. Called by the
+# release workflow, or run by hand for a release that is already out.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, e.g. v1.4.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build the Linux hub
+    runs-on: ubuntu-latest
+    # The same compiler and static SDK the hub is deployed with, so the binary runs on any x86_64 Linux.
+    container: swift:6.3.3-noble
+    steps:
+      - name: Tools the image lacks
+        run: apt-get update -q && apt-get install -y -q curl git >/dev/null
+      - uses: actions/checkout@v4
+        with:
+          ref: linux-hub
+          fetch-depth: 0
+      - name: The hub branch with the release merged in
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "Max Chesnikov"
+          git config user.email "maxches99@gmail.com"
+          git fetch -q --tags origin
+          git merge-base --is-ancestor "$TAG" HEAD || git merge --no-edit "$TAG"
+      - name: Static Linux SDK
+        run: |
+          curl -fsSL -o sdk.tar.gz https://download.swift.org/swift-6.3.3-release/static-sdk/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE_static-linux-0.1.0.artifactbundle.tar.gz
+          swift sdk install "$PWD/sdk.tar.gz"
+      - name: Build
+        run: swift build -c release --swift-sdk x86_64-swift-linux-musl --product ccremote
+      - name: Package
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir -p dist/pkg
+          cp .build/x86_64-swift-linux-musl/release/ccremote dist/pkg/
+          echo "${TAG#v}" > dist/pkg/VERSION
+          tar -C dist/pkg -czf dist/ccremote-linux-x86_64.tar.gz ccremote VERSION
+          (cd dist && sha256sum ccremote-linux-x86_64.tar.gz > ccremote-linux-x86_64.tar.gz.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hub
+          path: dist/ccremote-linux-x86_64.tar.gz*
+
+  upload:
+    name: Attach the hub to the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hub
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" ccremote-linux-x86_64.tar.gz ccremote-linux-x86_64.tar.gz.sha256 --clobber --repo "$GITHUB_REPOSITORY"

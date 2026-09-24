@@ -118,49 +118,8 @@ jobs:
           git push
 
   hub:
-    name: Build the Linux hub
+    name: Linux hub
     needs: build
-    runs-on: ubuntu-latest
-    # The same compiler and static SDK the hub is deployed with, so the binary runs on any x86_64 Linux.
-    container: swift:6.3.3-noble
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: linux-hub
-          fetch-depth: 0
-      - name: The hub branch with this release merged in
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config user.name "Max Chesnikov"
-          git config user.email "maxches99@gmail.com"
-          git merge-base --is-ancestor "$GITHUB_SHA" HEAD || git merge --no-edit "$GITHUB_SHA"
-      - name: Static Linux SDK
-        run: |
-          curl -fsSL -o sdk.tar.gz https://download.swift.org/swift-6.3.3-release/static-sdk/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE_static-linux-0.1.0.artifactbundle.tar.gz
-          swift sdk install "$PWD/sdk.tar.gz"
-      - name: Build
-        run: swift build -c release --swift-sdk x86_64-swift-linux-musl --product ccremote
-      - name: Package
-        run: |
-          mkdir -p dist/pkg
-          cp .build/x86_64-swift-linux-musl/release/ccremote dist/pkg/
-          echo "${GITHUB_REF_NAME#v}" > dist/pkg/VERSION
-          tar -C dist/pkg -czf dist/ccremote-linux-x86_64.tar.gz ccremote VERSION
-          (cd dist && sha256sum ccremote-linux-x86_64.tar.gz > ccremote-linux-x86_64.tar.gz.sha256)
-      - uses: actions/upload-artifact@v4
-        with:
-          name: hub
-          path: dist/ccremote-linux-x86_64.tar.gz*
-
-  hub-upload:
-    name: Attach the hub to the release
-    needs: hub
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: hub
-      - name: Upload
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" ccremote-linux-x86_64.tar.gz ccremote-linux-x86_64.tar.gz.sha256 --clobber --repo "${GITHUB_REPOSITORY}"
+    uses: ./.github/workflows/hub.yml
+    with:
+      tag: ${{ github.ref_name }}
