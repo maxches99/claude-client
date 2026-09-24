@@ -32,6 +32,7 @@ final class HostModel {
     /// The newest release against this build, and an update in progress.
     private(set) var update: HostUpdate?
     private var updater: AppUpdater?
+    private(set) var checkingUpdate = false
 
     var keepAwake: Bool {
         didSet {
@@ -81,10 +82,10 @@ final class HostModel {
         HostControl.shared.updater = updater
         start()
         Task { [weak self] in
-            // Look for a new release now and twice a day.
+            // Look for a new release now and every half hour.
             while !Task.isCancelled {
                 await self?.checkForUpdate()
-                try? await Task.sleep(nanoseconds: 12 * 3600 * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: 30 * 60 * 1_000_000_000)
             }
         }
     }
@@ -95,6 +96,21 @@ final class HostModel {
         guard let updater else { return }
         let result = await updater.check()
         if update?.state != .updating { update = result }
+    }
+
+    /// "Check for updates" from the menu: asks now and says what it found.
+    func checkForUpdateNow() {
+        guard !checkingUpdate else { return }
+        checkingUpdate = true
+        Task {
+            await checkForUpdate()
+            checkingUpdate = false
+            switch update?.state {
+            case .upToDate?: show("You have the newest version (\(update?.current ?? "?")).")
+            case .failed?: show(update?.message ?? "Could not check for updates.")
+            default: break   // .available shows its own banner with Update
+            }
+        }
     }
 
     func installUpdate() {

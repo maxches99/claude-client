@@ -42,7 +42,9 @@ final class OperationsTests: XCTestCase {
     }
 
     func testEventRoundTrip() throws {
-        let event = HostEvent(kind: .ci, severity: .warning, title: "CI failed", detail: "build", taskId: "t", url: "https://x")
+        // Whole milliseconds: the wire format keeps no more.
+        let event = HostEvent(date: Date(timeIntervalSince1970: 1_790_000_000.123), kind: .ci, severity: .warning, title: "CI failed",
+                              detail: "build", taskId: "t", url: "https://x")
         let decoded = try ProtocolCoding.decode(HostEvent.self, from: try ProtocolCoding.encode(event))
         XCTAssertEqual(decoded, event)
     }

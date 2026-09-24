@@ -249,6 +249,9 @@ struct MenuPanel: View {
             OpenWindowButton(id: WindowID.settings) { Text("Settings…") }
             OpenWindowButton(id: WindowID.log) { Text("Log") }
             Button("Approvals…") { model.openApprovalLog() }
+            Button(model.checkingUpdate ? "Checking…" : "Updates") { model.checkForUpdateNow() }
+                .disabled(model.checkingUpdate || model.update?.state == .updating)
+                .help("Check for a newer ClaudeRemote Host — it also looks every half hour")
             Spacer()
             Button("Quit") { model.quit() }
         }

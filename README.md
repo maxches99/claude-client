@@ -711,7 +711,8 @@ TestFlight for the phone; the Homebrew and AltStore channels keep working as the
 
 ### Updating a host
 
-The Host app looks for a newer release on launch and twice a day and offers **Update** in its menu;
+The Host app looks for a newer release on launch and every half hour (or now: **Updates** at the bottom
+of its menu) and offers **Update** in the menu when there is one;
 the phone offers the same (Settings → Connected Mac → Version → **Update to …**). The app downloads
 `ClaudeRemote-Host.zip`, checks it against the release's `SHA256SUMS`, swaps its own bundle and
 relaunches — when it may write where it is installed (a Homebrew install is; `brew upgrade` stays an
