@@ -89,7 +89,9 @@ public final class CodexAppServer: @unchecked Sendable {
                 self.stderrTail.append(text)
                 if self.stderrTail.count > 50 { self.stderrTail.removeFirst(self.stderrTail.count - 50) }
             }
-            self.log?("stderr: \(text.trimmingCharacters(in: .whitespacesAndNewlines))")
+            // Refused requests dump a whole HTML page into the error; the first lines say what happened.
+            let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.log?("stderr: \(line.count > 400 ? line.prefix(400) + "…" : line)")
         }
         process.terminationHandler = { [weak self] p in
             guard let self else { return }

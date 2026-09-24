@@ -186,4 +186,17 @@ extension CodexRolloutTests {
         let truncated = "<recommended_plugins>\nlist without a closing tag"
         XCTAssertEqual(CodexRollout.stripContextBlocks(truncated), "")
     }
+
+    func testForbiddenConnectionIsExplained() {
+        var tr = CodexTranslator()
+        let events = tr.translate(method: "error", params: .object([
+            "threadId": "t", "willRetry": .bool(true),
+            "error": .object(["message": "failed to connect to websocket: HTTP error: 403 Forbidden"]),
+        ]))
+        let text = events.first?["error"]?.string ?? ""
+        XCTAssertTrue(text.contains("403 Forbidden"))
+        XCTAssertTrue(text.contains("VPN"))
+        XCTAssertTrue(text.hasSuffix("(retrying)"))
+        XCTAssertEqual(CodexTranslator.explained("stream disconnected"), "stream disconnected")
+    }
 }
