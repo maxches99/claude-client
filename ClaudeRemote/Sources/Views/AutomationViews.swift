@@ -241,7 +241,19 @@ struct HostControlRows: View {
             .sheet(isPresented: $showGitHub) { GitHubHostView(macId: macId) }
             .onAppear {
                 if model.githubByMac[macId] == nil { model.requestGitHub(mac: macId) }
+                if model.supportsOperations(mac: macId), model.healthByMac[macId] == nil { model.requestHealth(mac: macId) }
                 if model.hostUpdates[macId] == nil, host.canUpdate == true { model.checkHostUpdate(mac: macId) }
+            }
+            if model.supportsOperations(mac: macId) {
+                NavigationLink {
+                    HealthView(macId: macId)
+                } label: {
+                    LabeledContent("Health") {
+                        let warnings = model.healthByMac[macId]?.warnings ?? []
+                        Text(model.healthByMac[macId] == nil ? "…" : (warnings.isEmpty ? "fine" : "\(warnings.count) warning\(warnings.count == 1 ? "" : "s")"))
+                            .foregroundStyle(warnings.isEmpty ? CDS.textSecondary : CDS.warning)
+                    }
+                }
             }
         }
     }

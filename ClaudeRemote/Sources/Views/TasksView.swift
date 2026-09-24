@@ -10,6 +10,7 @@ struct TasksView: View {
     @State private var editing: AgentTask?
     @State private var showNew = false
     @State private var confirmDelete: AgentTask?
+    @State private var confirmUndo: AgentTask?
 
     @State private var showNewDuel = false
     @State private var reviewing: String?
@@ -82,6 +83,14 @@ struct TasksView: View {
                     if let task = confirmDelete { model.taskAction(task.id, .delete) }
                     confirmDelete = nil
                 }
+            }
+            .confirmationDialog("Put the project back as it was before this task?", isPresented: Binding(get: { confirmUndo != nil }, set: { if !$0 { confirmUndo = nil } }), titleVisibility: .visible) {
+                Button("Undo the changes", role: .destructive) {
+                    if let task = confirmUndo { model.taskAction(task.id, .restoreSnapshot) }
+                    confirmUndo = nil
+                }
+            } message: {
+                Text("Every file goes back to how it was when the task started — its edits, new files and commits are gone. Ignored files are left alone.")
             }
             .refreshable { model.requestTasks() }
         }
@@ -191,6 +200,10 @@ struct TasksView: View {
             } else if task.fixCI, task.pullRequestURL != nil {
                 Label("watching CI", systemImage: "eye").font(CDS.caption).foregroundStyle(CDS.textMuted)
             }
+            if let preview = task.preview { TaskPreviewStrip(preview: preview, title: task.title) }
+            if let snapshot = task.snapshot, snapshot.restoredAt != nil {
+                Label("rolled back", systemImage: "arrow.uturn.backward").font(CDS.caption).foregroundStyle(CDS.textMuted)
+            }
             if let issue = task.issue {
                 Label("#\(issue.number) \(issue.title)", systemImage: "smallcircle.filled.circle").font(CDS.caption).foregroundStyle(CDS.textMuted).lineLimit(1)
             }
@@ -232,6 +245,9 @@ struct TasksView: View {
             if model.supportsPipelines, task.status == .done, task.worktreePath != nil, task.pullRequestURL == nil {
                 Button("Open a draft pull request", systemImage: "arrow.triangle.pull") { model.taskAction(task.id, .openPullRequest) }
             }
+            if model.supportsOperations, let snapshot = task.snapshot, snapshot.restoredAt == nil, task.status.isFinished {
+                Button("Undo the task's changes", systemImage: "arrow.uturn.backward", role: .destructive) { confirmUndo = task }
+            }
             if model.supportsAutomation, task.pullRequestURL != nil, task.worktreePath != nil {
                 if task.ci?.state == .fixReady {
                     Button("Push the CI fix", systemImage: "arrow.up.circle") { model.taskAction(task.id, .pushFix) }
@@ -272,6 +288,8 @@ struct TasksView: View {
 
 /// Add or edit one task: what to do, where, and when.
 struct TaskEditor: View {
+    /// A new task's prompt to start from (shared into the app).
+    var initialPrompt: String? = nil
     /// Nobody watches a queued task: Claude edits without asking, Codex never stops to ask.
     static func defaultMode(for agent: AgentKind) -> String {
         agent == .claude ? PermissionMode.acceptEdits.rawValue : CodexApprovalPolicy.never.rawValue
@@ -291,6 +309,7 @@ struct TaskEditor: View {
     @State private var showClone = false
     @State private var issue: IssueRef?
     @State private var fixCI = false
+    @State private var wantsPreview = false
     @State private var showIssues = false
     @State private var template: PromptTemplate?
     @State private var schedule = Schedule.now
@@ -368,6 +387,10 @@ struct TaskEditor: View {
                             Toggle("Fix CI failures on it", isOn: $fixCI)
                                 .tint(CDS.brand)
                                 .disabled(!inWorktree || !openPullRequest)
+                        }
+                        if model.supportsOperations {
+                            Toggle("Screenshot before and after", isOn: $wantsPreview)
+                                .tint(CDS.brand)
                         }
                         Button("Clone a repository…", systemImage: "square.and.arrow.down.on.square") { showClone = true }
                     }
@@ -450,6 +473,7 @@ struct TaskEditor: View {
             openPullRequest = task.openPullRequest
             issue = task.issue
             fixCI = task.fixCI
+            wantsPreview = task.wantsPreview
             if let minutes = task.dailyAtMinutes {
                 schedule = .daily
                 time = Calendar.current.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: Date()) ?? Date()
@@ -459,6 +483,7 @@ struct TaskEditor: View {
             }
         } else {
             cwd = model.projects.first?.path ?? ""
+            if let initialPrompt, prompt.isEmpty { prompt = initialPrompt }
             agent = model.defaultAgent
             permissionMode = TaskEditor.defaultMode(for: agent)
         }
@@ -478,6 +503,7 @@ struct TaskEditor: View {
         built.openPullRequest = inWorktree && openPullRequest
         built.issue = issue
         built.fixCI = built.openPullRequest && fixCI
+        built.wantsPreview = wantsPreview
         switch schedule {
         case .now:
             built.dailyAtMinutes = nil

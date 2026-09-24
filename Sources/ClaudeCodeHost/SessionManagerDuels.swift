@@ -127,7 +127,7 @@ extension SessionManager {
         let names = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0.sideLabel) })
         let line = winner.flatMap { names[$0] }.map { "\($0) won" } ?? "a tie"
         let totals = duels[i].taskIds.compactMap { id in scores[id].map { "\(names[id] ?? "?") \(String(format: "%.1f", $0.total))" } }.joined(separator: " · ")
-        notifier?.notify(.done, body: "Duel \"\(duels[i].title)\": \(line) (\(totals))")
+        announce(.duel, .success, "Duel \"\(duels[i].title)\": \(line)", detail: totals, notify: .done)
         log("duel \(duelId.prefix(6)) decided: \(line)")
     }
 

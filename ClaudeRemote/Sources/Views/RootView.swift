@@ -70,7 +70,10 @@ struct RootView: View {
             // A session found in Spotlight.
             if let id = SpotlightIndex.sessionId(from: activity) { model.openDeepLink(sessionId: id) }
         }
+        .sheet(item: Bindable(model).incomingShare) { draft in ShareDraftView(draft: draft) }
         .onOpenURL { url in
+            // ccremote://share?text=… — the share extension handing over text or a link.
+            if model.receiveShare(url) { return }
             // ccremote://session/<id> — a Live Activity tap; go straight to that session.
             if url.host == "session", let id = url.pathComponents.dropFirst().first, !id.isEmpty {
                 model.openDeepLink(sessionId: id)

@@ -182,7 +182,8 @@ extension SessionManager {
         tasks[idx].ci?.state = .repairing
         tasks[idx].ci?.attempts += 1
         tasks[idx].ci?.repairTaskId = repair.id
-        notifier?.notify(.error, body: "CI failed on \"\(original.title)\" — starting a repair")
+        announce(.ci, .warning, "CI failed on \"\(original.title)\" — starting a repair", detail: failing.map(\.name).joined(separator: ", "),
+                 taskId: original.id, url: url, notify: .error)
         log("ci: \(original.id.prefix(6)) failing (\(failing.map(\.name).joined(separator: ", "))) → repair \(repair.id.prefix(6))")
         await addTask(repair)
     }
@@ -207,11 +208,11 @@ extension SessionManager {
         tasks[i].ci?.repairTaskId = nil
         if committed {
             tasks[i].ci?.state = .fixReady
-            notifier?.notify(.done, body: "CI fix for \"\(tasks[i].title)\" is ready — push it from the phone")
+            announce(.ci, .success, "CI fix for \"\(tasks[i].title)\" is ready — push it from the phone", taskId: originalId, notify: .done)
         } else {
             let attempts = tasks[i].ci?.attempts ?? 0
             tasks[i].ci?.state = attempts >= TaskCI.maxAttempts ? .gaveUp : .failing
-            notifier?.notify(.error, body: "The CI repair for \"\(tasks[i].title)\" changed nothing")
+            announce(.ci, .error, "The CI repair for \"\(tasks[i].title)\" changed nothing", taskId: originalId, notify: .error)
         }
         saveTasks()
         broadcastTasks()
@@ -230,6 +231,7 @@ extension SessionManager {
             tasks[i].ci?.checkedAt = Date()
         }
         log("ci: pushed the fix for \(taskId.prefix(6))")
+        recordEvent(HostEvent(kind: .ci, severity: .info, title: "Pushed the CI fix for \"\(task.title)\"", taskId: taskId, url: task.pullRequestURL))
     }
 
     // MARK: GitHub login on the host

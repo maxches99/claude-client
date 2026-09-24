@@ -76,6 +76,9 @@ struct SettingsView: View {
                         Text("Links to transcripts this phone published. Revoking one deletes the page from the relay.")
                     }
                 }
+                Section {
+                    NavigationLink { SettingsBackupView() } label: { Label("Back up or restore settings", systemImage: "externaldrive") }
+                }
                 if let host = model.connection.host {
                     Section("Connected Mac") {
                         LabeledContent("Host", value: host.hostName)

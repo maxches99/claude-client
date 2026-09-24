@@ -101,6 +101,13 @@ extension SessionManager {
         case .toggleFixCI:
             tasks[idx].fixCI.toggle()
             if tasks[idx].fixCI { Task { await self.checkCI() } }
+        case .restoreSnapshot:
+            let taskId = tasks[idx].id
+            do {
+                try await restoreTaskSnapshot(taskId: taskId)
+            } catch {
+                if let i = tasks.firstIndex(where: { $0.id == taskId }) { tasks[i].error = "\(error)" }
+            }
         }
         saveTasks()
         broadcastTasks()
@@ -156,6 +163,15 @@ extension SessionManager {
                 cwd = try addWorktree(repo: task.cwd, name: name, branch: "task/\(name)", base: nil)
                 task.worktreePath = cwd
                 task.branch = "task/\(name)"
+            } else {
+                // Working in the project itself: keep how it was, to put back in one tap.
+                let repo = cwd, id = task.id
+                task.snapshot = await offActor { [self] in takeSnapshot(repo: repo, id: id) }
+            }
+            if task.wantsPreview {
+                tasks[index] = task
+                await takePreview(taskId: task.id, phase: .before)
+                if let i = tasks.firstIndex(where: { $0.id == task.id }) { task.preview = tasks[i].preview }
             }
             // A task is there to change the project: Codex gets write access to its folder (its own
             // default can be read-only, which leaves it describing the fix instead of making it).
@@ -166,12 +182,13 @@ extension SessionManager {
             tasks[index] = task
             try await prompt(sessionId: state.id, text: task.prompt)
             log("task started: \(task.title.prefix(60)) → \(state.id.prefix(8))")
+            recordEvent(HostEvent(kind: .task, title: "Started \"\(task.title)\"", detail: task.projectName, sessionId: state.id, taskId: task.id))
         } catch {
             task.status = .failed
             task.error = "\(error)"
             task.finishedAt = Date()
             log("task failed to start: \(task.title.prefix(60)): \(error)")
-            notifier?.notify(.error, body: "Task \"\(task.title)\" could not start: \(error)")
+            announce(.task, .error, "Task \"\(task.title)\" could not start", detail: "\(error)", taskId: task.id, notify: .error)
         }
         if let idx = tasks.firstIndex(where: { $0.id == task.id }) { tasks[idx] = task }
     }
@@ -194,7 +211,8 @@ extension SessionManager {
         } else {
             task.status = .done
         }
-        notifier?.notify(isError ? .error : .done, body: "Task \"\(task.title)\" \(isError ? "failed" : "finished")")
+        announce(.task, isError ? .error : .success, "Task \"\(task.title)\" \(isError ? "failed" : "finished")",
+                 detail: task.resultSummary.map { String($0.prefix(200)) }, sessionId: sessionId, taskId: task.id, notify: isError ? .error : .done)
         if let minutes = task.dailyAtMinutes, !isError {
             // A daily task keeps its row: it is armed again for tomorrow with the last result on it.
             task.status = .scheduled
@@ -217,6 +235,7 @@ extension SessionManager {
             await repairFinished(task, succeeded: succeeded)
             return
         }
+        if task.wantsPreview { await takePreview(taskId: taskId, phase: .after) }
         if let worktree = task.worktreePath, let base = task.baseCommit, FileManager.default.fileExists(atPath: worktree) {
             let stat = await offActor { [self] in changes(in: worktree, against: base).stat }
             if let i = tasks.firstIndex(where: { $0.id == taskId }) {
@@ -230,7 +249,7 @@ extension SessionManager {
         } else if succeeded, task.openPullRequest, task.worktreePath != nil {
             do {
                 let url = try await openPullRequest(forTask: taskId)
-                notifier?.notify(.done, body: "Pull request for \"\(task.title)\": \(url)")
+                announce(.task, .success, "Pull request for \"\(task.title)\"", detail: url, taskId: taskId, url: url, notify: .done)
                 if task.fixCI, let i = tasks.firstIndex(where: { $0.id == taskId }) {
                     tasks[i].ci = TaskCI(state: .pending)
                     saveTasks(); broadcastTasks()

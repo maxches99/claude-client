@@ -183,6 +183,11 @@ public actor SessionManager {
     /// The Host app / hub version and whether it can update itself (set by the daemon).
     var hostAppVersion: String?
     var hostCanUpdate = false
+    /// The event feed, oldest first (SessionManagerOperations.swift), kept in `events.json`.
+    var events: [HostEvent] = []
+    var healthTimer: Task<Void, Never>?
+    /// Health warnings already announced, so each is told once until it clears.
+    var announcedHealth: Set<String> = []
 
     public init(cli: ClaudeCLI, codex: CodexBackend? = nil, store: TranscriptStore = TranscriptStore(), registry: LiveSessionRegistry = LiveSessionRegistry(),
                 notifier: Notifier? = nil, livePusher: LiveActivityPusher? = nil, approvalLog: String? = nil, taskStore: String? = nil,
@@ -210,6 +215,8 @@ public actor SessionManager {
             await self?.loadTasks()
             await self?.startTaskTimer()
             await self?.startCIWatch()
+            await self?.loadEvents()
+            await self?.startHealthWatch()
             await self?.loadDigestSchedule()
             await self?.loadPhoneSessions()
         }
@@ -315,6 +322,15 @@ public actor SessionManager {
         relayRoute = relay
         hostAppVersion = appVersion
         hostCanUpdate = canUpdate
+    }
+
+    /// A work session finished a turn: into the feed (chats and judges stay out of it).
+    func noteTurn(_ h: Hosted, sessionId: String, isError: Bool, text: String?) {
+        guard h.state.kind != .chat, judgeSessions[sessionId] == nil else { return }
+        let snippet = text.map { SessionManager.notifySnippet($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        recordEvent(HostEvent(kind: .session, severity: isError ? .error : .success,
+                              title: notifyName(h) + (isError ? " — turn failed" : " — turn finished"),
+                              detail: snippet?.isEmpty == false ? snippet : nil, sessionId: sessionId))
     }
 
     /// The Claude CLI is optional (a Mac can run Codex alone): everything that starts `claude` asks here.
@@ -1743,13 +1759,14 @@ public actor SessionManager {
         return (p.terminationStatus, String(decoding: outData, as: UTF8.self), String(decoding: errData, as: UTF8.self))
     }
 
-    nonisolated func runGit(_ args: [String], timeout: TimeInterval = 15) -> (code: Int32, out: String, err: String) {
+    nonisolated func runGit(_ args: [String], timeout: TimeInterval = 15, env extra: [String: String] = [:]) -> (code: Int32, out: String, err: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         p.arguments = ["-c", "core.pager=cat"] + args
         var env = ClaudeCLI.childEnvironment()
         env["GIT_TERMINAL_PROMPT"] = "0"   // fail fast instead of waiting for a password nobody can type
         env["GIT_EDITOR"] = "true"
+        env.merge(extra) { _, new in new }
         p.environment = env
         p.standardInput = FileHandle.nullDevice
         let outPipe = Pipe(), errPipe = Pipe()
@@ -1802,6 +1819,7 @@ public actor SessionManager {
         taskTimer?.cancel()
         digestTimer?.cancel()
         ciTimer?.cancel()
+        healthTimer?.cancel()
         githubLoginRun?.terminate()
         terminateAllProcesses()
         terminateAllTerminals()
@@ -1849,6 +1867,7 @@ public actor SessionManager {
             update(h, status: .idle)
             broadcast(.sessions(items: listSessions()))
             flushQueue(sessionId: sessionId)
+            noteTurn(h, sessionId: sessionId, isError: isError, text: message["result"]?.string)
             if let notifier {
                 let name = notifyName(h)
                 if isError {
@@ -1963,6 +1982,7 @@ public actor SessionManager {
             update(h, status: .idle)
             broadcast(.sessions(items: listSessions()))
             flushQueue(sessionId: threadId)
+            noteTurn(h, sessionId: threadId, isError: isError, text: summary)
             if let notifier {
                 let name = notifyName(h)
                 if isError {
@@ -2104,6 +2124,8 @@ public actor SessionManager {
         let summary = ToolSummary.line(name: permission.toolName, input: permission.input)
         let body = "\(name) · \(permission.toolName)" + (summary.isEmpty ? "" : ": \(summary)")
         notifier.notify(.permission, body: body)
+        recordEvent(HostEvent(kind: .permission, severity: .warning, title: "\(name) is waiting for approval",
+                              detail: "\(permission.toolName)" + (summary.isEmpty ? "" : ": \(summary)"), sessionId: sessionId))
     }
 }
 #endif
