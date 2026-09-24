@@ -23,8 +23,8 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
 
 | Path | What |
 |---|---|
-| `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, `CodexTranslator` / `CodexRollout` (Codex events and session files → the same reducer), WebSocket channel (TLS roles), the queue / palette / worktree / turn-review / digest / review / duel models (`DuelJudge`: the blind brief and verdict parser), the Telegram digest (`DigestTelegram`), the terminal emulator (`TerminalScreen`) and the share page (`TranscriptHTML`) |
-| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` and its feature files (`…Rewind`, `…Palette`, `…Worktrees`, `…Tasks`, `…Digest`, `…DigestSchedule`, `…PullRequests`, `…Review`, `…Duels`, `…Workspace`, `…Handoff`, `…Share`, `BackgroundProcesses`, `TerminalSessions` — the pseudo-terminal itself is the small C target `CPTY`) |
+| `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, `CodexTranslator` / `CodexRollout` (Codex events and session files → the same reducer), WebSocket channel (TLS roles), the queue / palette / worktree / turn-review / digest / review / duel models (`DuelJudge`: the blind brief and verdict parser), the Telegram digest (`DigestTelegram`), `Automation` (issues, CI state, model duels, templates, the audit rules, relay setup, updates), the terminal emulator (`TerminalScreen`) and the share page (`TranscriptHTML`) |
+| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` and its feature files (`…Rewind`, `…Palette`, `…Worktrees`, `…Tasks`, `…Digest`, `…DigestSchedule`, `…PullRequests`, `…Review`, `…Duels`, `…Workspace`, `…Automation` (issues, CI repair, templates, audit, GitHub login), `…Handoff`, `…Share`, `BackgroundProcesses`, `TerminalSessions` — the pseudo-terminal itself is the small C target `CPTY`) |
 | `Sources/ClaudeRemoteDaemon` | The daemon as a library: `Daemon` (config → listener + Bonjour, relay dial-out, notifier, phone tracking, status), `DaemonConfig` (`config.json`), `PhoneSession`, `WebSocketServer`, `HookServer` (hook socket), `RelayClient`, `DeviceRegistry`, pairing URL + QR |
 | `Sources/ccremote` | Thin CLI front-end for the daemon (flags, terminal QR) |
 | `ClaudeRemoteHost/` | **Mac menu-bar app** hosting the daemon: status, paired phones, QR, settings, open-at-login, keep-awake (Tuist project) |
@@ -194,6 +194,17 @@ session turns into an ordinary one the phone can resume. It cannot be driven fro
 message you send is handed to `codex queue`, so the session picks it up in the app. Closed threads
 open the normal way (resume), or "Continue a copy on the phone" forks them.
 
+### Phone sessions in the desktop apps
+
+A Codex thread started from the phone in a folder that is a project in the Codex app shows up under
+that project in the app's sidebar on its own; the new-session sheet marks those folders. Claude
+Desktop only lists sessions it started, so the Host menu keeps "Started on the phone" — one click
+imports a session into Desktop's Code tab (`claude://resume`) and opens it. The experimental
+setting "Show phone sessions in Claude Desktop and the Codex app" does it without clicking by
+writing the apps' own state files: a record in Desktop's session list after each turn (Desktop reads
+the list at launch, so it appears after Desktop's next start), and the project for a folder the Codex
+app does not have yet (written only while the Codex app is closed, since it saves over the file).
+
 ## Questions, plans, and the queue
 
 * **Questions** — when the agent asks something (`AskUserQuestion`), the card above the composer
@@ -304,7 +315,9 @@ daemon running the hook exits quietly. `--uninstall-hook` (or the toggle) remove
 * **Read aloud / hands-free.** Any reply can be read out (message menu, or "Read last reply aloud").
   **Hands-free voice** in the session menu turns the chat into a conversation: each finished reply
   is read aloud, then the mic opens; stop talking for a couple of seconds and the prompt is sent.
-  Code blocks are skipped when reading.
+  Code blocks are skipped when reading. When the agent stops to ask, the request is read out too
+  ("Claude wants to run swift test. Say yes or no.") and a spoken yes / no — or да / нет — answers
+  it; Face ID still guards Allow when it is on, and an unclear answer leaves the card for a tap.
 * **Sub-agents.** An `Agent` row shows what its sub-agent is doing ("Reading a file"), and expands
   into the sub-agent's own transcript — its prose and tool steps, nested as deep as agents go. Works
   live for sessions the phone hosts and, from the `subagents/` files, for Desktop / terminal ones.
@@ -359,6 +372,21 @@ branch's merge-base, or any ref you type — with a per-file diff. Select lines,
 change, repeat across files, add general remarks; **Send N remarks** puts one numbered review in the
 session's composer (each remark with its file, lines and quote) to read over and send.
 
+**From a GitHub issue.** "Start from → From a GitHub issue…" in the task editor lists the project's
+open issues (`gh issue list`); picking one makes the prompt from the issue, runs it in a worktree and
+opens a draft PR whose body says `Fixes #N`. Templates show up in the same menu (below).
+
+**Fix CI failures on it.** With this on, the host watches the task's pull request (`gh pr view`, every
+three minutes). When a check fails it starts a repair task in the same worktree, told which checks
+failed and the end of their log (`gh run view --log-failed`); the repair's change is committed but not
+pushed — the task shows **Push the fix**, and only that updates the pull request. At most three tries
+per pull request; a new push of your own resets the watch, and a merged or closed PR ends it.
+
+**Prompt templates.** A project's `.ccremote.json` can carry `"templates": [{"name": "New screen",
+"prompt": "Add a {screen} screen like {existing}", "description": "…"}]`, and the host its own in
+`templates.json` in the support directory. They appear in the composer's launch palette and in the
+task editor; the phone asks for each `{field}` and fills the prompt in.
+
 ### Claude vs Codex
 
 **New duel** (the queue's + menu, when the Mac has Codex) gives the same prompt to Claude and Codex,
@@ -372,13 +400,29 @@ result; **Keep** one removes the other's worktree and branch, **Rejudge** asks a
 agent as judge, if you like), and either side can become a draft PR. Codex duel tasks run with the
 workspace-write sandbox so they can actually edit.
 
+**Model vs model.** The duel editor also pits any two agent / model / reasoning combinations against
+each other — Opus against Sonnet, or one Codex model at medium against high — to see what a kind of
+job is worth. The judge is still blind; on a Mac with only one agent that is the only kind of duel.
+
 ### Code on the hub
 
 **Clone a repository…** (list menu) clones into the host's workspace — `~/work` by default,
 `--workspace DIR` to change it — from `owner/name` or any git URL, or picks from your GitHub
 repositories when `gh` is logged in there. Everything in the workspace shows up as a project, so a
 Mac or the Linux hub can take tasks on repositories that were never checked out on it. PRs and
-private repositories need `gh auth login` and a git identity (`user.name` / `user.email`) on the host.
+private repositories need a GitHub login and a git identity on the host — both set from the phone:
+Settings → Connected Mac → **GitHub** runs `gh auth login --web` on the host and shows the one-time
+code (type it at github.com/login/device on any device; then `gh auth setup-git` lets git push with it),
+and takes the name and email commits are signed with. With that, the hub works from GitHub alone:
+clone, task from an issue, draft PR, CI repair — no Mac awake.
+
+## Audit
+
+**Audit…** (list menu) lists what agents did on the Mac in the last hour, day or week: every command,
+file write or delete, web fetch and MCP tool call, read from the transcripts (Claude's and Codex's).
+**Only what stands out** keeps the ones worth a look — writes outside the project, `sudo`, recursive
+deletes, piping a download into a shell, the network, force pushes, credentials and `.env` files,
+system settings, installs, CI workflow files. Tapping one opens its session.
 
 ## Find, share, dictate
 
@@ -516,6 +560,11 @@ Then pick a route to reach it:
 * **Relay you run (no VPN client on the phone):** run a small relay on a VPS and point the Mac at it
   (Host app → Settings → Remote access, or `--relay wss://vps --relay-secret …`). The Mac dials out
   (NAT-friendly); the phone reaches the relay. See [`relay/README.md`](relay/README.md).
+  **Another Mac onto the same relay** without typing the secret: on a Mac that is on it, Host app →
+  Settings → Remote access → **Relay setup QR…**; on the phone, Settings → the other Mac →
+  **Join a relay** → scan it (or pick a paired Mac that is on the relay). The phone sends the setting,
+  the Host app restarts onto the relay and the phone picks up the new route by itself — every host
+  now reports its relay route, so pairings stay current without a new QR.
 * **Not recommended:** forwarding port 7811 on the router — CGNAT often breaks it and it exposes the
   daemon directly.
 
@@ -657,6 +706,16 @@ Keep tags above the versions people already have installed: the first one should
 because dev builds from Xcode report `1.0` and AltStore only offers updates that compare newer. When an
 Apple developer account shows up, the same workflow grows `TEAM_ID` + `notarytool` for the Mac and
 TestFlight for the phone; the Homebrew and AltStore channels keep working as they are.
+
+### Updating a host
+
+The Host app looks for a newer release on launch and twice a day and offers **Update** in its menu;
+the phone offers the same (Settings → Connected Mac → Version → **Update to …**). The app downloads
+`ClaudeRemote-Host.zip`, checks it against the release's `SHA256SUMS`, swaps its own bundle and
+relaunches — when it may write where it is installed (a Homebrew install is; `brew upgrade` stays an
+option). The Linux hub does the same with `ccremote-linux-x86_64.tar.gz`, which the release workflow
+builds from the `linux-hub` branch with the tag merged in: the hub checks the `.sha256`, replaces its
+binary and exits, and systemd starts the new one.
 
 ## Protocol drift
 

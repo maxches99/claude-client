@@ -26,7 +26,7 @@ extension SessionManager {
         ("zed", "Zed", "Zed"),
     ]
 
-    static func applicationPath(_ name: String) -> String? {
+    public static func applicationPath(_ name: String) -> String? {
         for dir in ["/Applications", NSHomeDirectory() + "/Applications", "/System/Applications"] {
             let path = "\(dir)/\(name).app"
             if FileManager.default.fileExists(atPath: path) { return path }

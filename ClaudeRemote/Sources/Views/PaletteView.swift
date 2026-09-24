@@ -14,6 +14,15 @@ struct PaletteView: View {
     @State private var search = ""
     @State private var savingSnippet = false
     @State private var snippetTitle = ""
+    @State private var template: PromptTemplate?
+
+    private var cwd: String? { model.summary(for: sessionId)?.cwd ?? model.states[sessionId]?.cwd }
+    private var templates: [PromptTemplate] {
+        let all = cwd.flatMap { model.templatesByCwd[$0] } ?? []
+        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return all }
+        return all.filter { $0.name.lowercased().contains(q) || $0.prompt.lowercased().contains(q) }
+    }
 
     private var items: [PaletteItem] { model.palettes[sessionId] ?? [] }
 
@@ -32,6 +41,22 @@ struct PaletteView: View {
     var body: some View {
         NavigationStack {
             List {
+                if !templates.isEmpty {
+                    Section("Templates") {
+                        ForEach(templates) { t in
+                            Button { template = t } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text(t.name).font(CDS.bodyMedium).foregroundStyle(CDS.textPrimary)
+                                        if !t.fields.isEmpty { Text("\(t.fields.count) field\(t.fields.count == 1 ? "" : "s")").font(CDS.caption).foregroundStyle(CDS.textMuted) }
+                                    }
+                                    Text(t.description ?? t.prompt).font(CDS.caption).foregroundStyle(CDS.textMuted).lineLimit(2)
+                                }
+                            }
+                            .listRowBackground(CDS.surface0)
+                        }
+                    }
+                }
                 if !snippets.isEmpty {
                     Section("Saved prompts") {
                         ForEach(snippets) { snippet in
@@ -101,7 +126,16 @@ struct PaletteView: View {
                 Text("It stays on the phone and shows up here for every session.")
             }
         }
-        .onAppear { if items.isEmpty { model.requestPalette(sessionId) } }
+        .onAppear {
+            if items.isEmpty { model.requestPalette(sessionId) }
+            if model.supportsAutomation, let cwd { model.requestTemplates(cwd: cwd) }
+        }
+        .sheet(item: $template) { t in
+            TemplateForm(template: t) { filled in
+                onPick(filled)
+                dismiss()
+            }
+        }
     }
 
     private func row(_ item: PaletteItem) -> some View {

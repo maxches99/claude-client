@@ -25,6 +25,7 @@ struct SessionListView: View {
     @State private var showDigest = false
     @State private var showTerminals = false
     @State private var showClone = false
+    @State private var showAudit = false
 
     private var isChats: Bool { scope == .chats }
     /// One list across every paired Mac (only worth it when there is more than one).
@@ -236,6 +237,9 @@ struct SessionListView: View {
                     if !isChats, model.supportsPipelines {
                         Button("Clone a repository…", systemImage: "square.and.arrow.down.on.square") { showClone = true }
                     }
+                    if !isChats, model.supportsAutomation {
+                        Button("Audit…", systemImage: "checklist.checked") { showAudit = true }
+                    }
                     Divider()
                     Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
                     if model.macs.count > 1 {
@@ -279,6 +283,7 @@ struct SessionListView: View {
         .sheet(isPresented: $showProcesses) { ProcessesView(sessionId: nil) }
         .sheet(isPresented: $showDigest) { DigestView() }
         .sheet(isPresented: $showTerminals) { TerminalsView(sessionId: nil) }
+        .sheet(isPresented: $showAudit) { AuditView() }
         .sheet(isPresented: $showClone) { CloneRepositoryView() }
         .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Title", text: $renameText)

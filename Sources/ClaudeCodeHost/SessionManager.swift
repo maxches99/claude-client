@@ -104,7 +104,7 @@ public actor SessionManager {
     let cli: ClaudeCLI
     let codex: CodexBackend?
     let store: TranscriptStore
-    private let registry: LiveSessionRegistry
+    let registry: LiveSessionRegistry
     let notifier: Notifier?
     private let livePusher: LiveActivityPusher?
     private let approvalLog: String?
@@ -137,6 +137,13 @@ public actor SessionManager {
     /// hub). `nil` = keep them until closed. Reopening resumes from the transcript.
     private var idleTimeout: TimeInterval?
     private var idleReaper: DispatchSourceTimer?
+    // MARK: desktop apps (logic in SessionManagerDesktopApps.swift)
+
+    /// Work sessions started from the phone, kept in `phone-sessions.json`.
+    var phoneSessions: [PhoneSessionRecord] = []
+    /// Experimental: write phone sessions into Claude Desktop's and the Codex app's own lists.
+    var mirrorsToDesktopApps = false
+    var codexAppQuitObserver: NSObjectProtocol?
 
     // MARK: queue & processes (logic in SessionManagerTasks.swift / BackgroundProcesses.swift)
 
@@ -166,6 +173,16 @@ public actor SessionManager {
     var taskTimer: Task<Void, Never>?
     /// `tasks.json` in the support directory, when the daemon gave us one.
     let taskStorePath: String?
+    /// Watches the pull requests of tasks that fix their own CI (SessionManagerAutomation.swift).
+    var ciTimer: Task<Void, Never>?
+    /// A `gh auth login --web` the phone started, while it waits for the browser.
+    var githubLoginRun: Process?
+    var githubLoginState: GitHubLoginState?
+    /// How phones reach this host through the relay (set by the daemon).
+    var relayRoute: RelayRoute?
+    /// The Host app / hub version and whether it can update itself (set by the daemon).
+    var hostAppVersion: String?
+    var hostCanUpdate = false
 
     public init(cli: ClaudeCLI, codex: CodexBackend? = nil, store: TranscriptStore = TranscriptStore(), registry: LiveSessionRegistry = LiveSessionRegistry(),
                 notifier: Notifier? = nil, livePusher: LiveActivityPusher? = nil, approvalLog: String? = nil, taskStore: String? = nil,
@@ -192,7 +209,9 @@ public actor SessionManager {
         Task { [weak self] in
             await self?.loadTasks()
             await self?.startTaskTimer()
+            await self?.startCIWatch()
             await self?.loadDigestSchedule()
+            await self?.loadPhoneSessions()
         }
     }
 
@@ -287,7 +306,15 @@ public actor SessionManager {
         return HostInfo(hostName: HostPaths.machineName, daemonVersion: daemonVersion,
                         cliVersion: cachedCliVersion, cliPath: cli.path, loggedIn: cachedLoggedIn, codex: codexInfo, livePush: livePusher != nil,
                         canShare: shareConfig != nil, workspaceRoot: workspaceRoot, hasGitHubCLI: SessionManager.locateGh() != nil,
-                        hasClaude: cli.isInstalled)
+                        hasClaude: cli.isInstalled, mirrorsToDesktopApps: mirrorsToDesktopApps, relay: relayRoute,
+                        appVersion: hostAppVersion, canUpdate: hostCanUpdate)
+    }
+
+    /// What the daemon knows and the manager reports to phones: the relay route and the app version.
+    public func setHostIdentity(relay: RelayRoute?, appVersion: String?, canUpdate: Bool) {
+        relayRoute = relay
+        hostAppVersion = appVersion
+        hostCanUpdate = canUpdate
     }
 
     /// The Claude CLI is optional (a Mac can run Codex alone): everything that starts `claude` asks here.
@@ -309,6 +336,7 @@ public actor SessionManager {
     /// Fetches what `listSessions` cannot read synchronously (the Codex thread list). Call before
     /// answering an explicit list request; broadcasts reuse the last fetch.
     public func refreshSources() async {
+        if mirrorsToDesktopApps { await yieldSessionsOpenedInDesktop() }
         guard let codex else { return }
         codexLoadedElsewhere = await codex.threadsLoadedElsewhere()
         // On a shared server every loaded thread's lock is held by that one process, so the lock
@@ -342,8 +370,17 @@ public actor SessionManager {
     public func listProjects() -> [ProjectInfo] {
         var projects = store.projects().filter { $0.path != SessionManager.chatDirectory }
         // Repositories cloned into the workspace count as projects before any session has run in them.
-        let known = Set(projects.map(\.path))
+        var known = Set(projects.map(\.path))
         for repo in workspaceRepositories() where !known.contains(repo.path) { projects.append(repo) }
+        // So do the Codex app's projects; the phone marks them, since threads started there show in the app.
+        let codexRoots = codexAppProjectRoots()
+        guard !codexRoots.isEmpty else { return projects }
+        known = Set(projects.map(\.path))
+        for i in projects.indices { projects[i].inCodexApp = CodexAppState.contains(projects[i].path, roots: codexRoots) }
+        for root in codexRoots where !known.contains(root) && FileManager.default.fileExists(atPath: root) {
+            let mtime = (try? FileManager.default.attributesOfItem(atPath: root)[.modificationDate] as? Date) ?? .distantPast
+            projects.append(ProjectInfo(path: root, lastUsed: mtime, sessionCount: 0, inCodexApp: true))
+        }
         return projects
     }
 
@@ -1764,6 +1801,8 @@ public actor SessionManager {
     public func shutdown() async {
         taskTimer?.cancel()
         digestTimer?.cancel()
+        ciTimer?.cancel()
+        githubLoginRun?.terminate()
         terminateAllProcesses()
         terminateAllTerminals()
         for id in Array(hosted.keys) { await close(sessionId: id) }
@@ -1822,6 +1861,7 @@ public actor SessionManager {
                 }
             }
             taskTurnFinished(sessionId: sessionId, isError: isError, summary: message["result"]?.string)
+            phoneTurnFinished(sessionId: sessionId)
         default:
             break
         }
@@ -1933,6 +1973,7 @@ public actor SessionManager {
                 }
             }
             taskTurnFinished(sessionId: threadId, isError: isError, summary: summary)
+            phoneTurnFinished(sessionId: threadId)
         case .approval(let threadId, let request):
             guard let h = hosted[threadId] else {
                 Task { await codex?.decide(requestId: request.id, allow: false) }

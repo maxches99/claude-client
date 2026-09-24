@@ -57,10 +57,10 @@ struct TasksView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    if model.supportsPipelines && model.hasBothAgents {
+                    if model.supportsPipelines && (model.hasBothAgents || model.supportsAutomation) {
                         Menu {
                             Button("New task", systemImage: "plus") { showNew = true }
-                            Button("New duel: Claude vs Codex", systemImage: "figure.fencing") { showNewDuel = true }
+                            Button(model.hasBothAgents ? "New duel: Claude vs Codex" : "New duel: model vs model", systemImage: "figure.fencing") { showNewDuel = true }
                         } label: { Image(systemName: "plus") }
                         .disabled(!model.isConnected)
                     } else {
@@ -113,6 +113,25 @@ struct TasksView: View {
         .listRowBackground(CDS.surface0)
     }
 
+    private func ciSymbol(_ state: TaskCI.State) -> String {
+        switch state {
+        case .pending: return "clock"
+        case .passing: return "checkmark.circle.fill"
+        case .failing, .gaveUp: return "xmark.circle.fill"
+        case .repairing: return "wrench.and.screwdriver"
+        case .fixReady: return "arrow.up.circle.fill"
+        }
+    }
+
+    private func ciColor(_ state: TaskCI.State) -> Color {
+        switch state {
+        case .passing: return CDS.success
+        case .failing, .gaveUp: return CDS.danger
+        case .fixReady: return CDS.brand
+        default: return CDS.textMuted
+        }
+    }
+
     private func section(_ title: String, _ items: [AgentTask]) -> some View {
         Section(title) {
             ForEach(items) { task in row(task) }
@@ -158,6 +177,23 @@ struct TasksView: View {
                     }
                 }
             }
+            if let ci = task.ci {
+                HStack(spacing: 6) {
+                    Image(systemName: ciSymbol(ci.state)).foregroundStyle(ciColor(ci.state))
+                    Text(ci.label).foregroundStyle(ciColor(ci.state)).lineLimit(1)
+                    if ci.state == .fixReady {
+                        Spacer(minLength: 0)
+                        Button("Push the fix") { model.taskAction(task.id, .pushFix) }
+                            .buttonStyle(CDSButtonStyle(variant: .primary))
+                    }
+                }
+                .font(CDS.caption)
+            } else if task.fixCI, task.pullRequestURL != nil {
+                Label("watching CI", systemImage: "eye").font(CDS.caption).foregroundStyle(CDS.textMuted)
+            }
+            if let issue = task.issue {
+                Label("#\(issue.number) \(issue.title)", systemImage: "smallcircle.filled.circle").font(CDS.caption).foregroundStyle(CDS.textMuted).lineLimit(1)
+            }
             if let error = task.error, !error.isEmpty {
                 Text(error).font(CDS.caption).foregroundStyle(CDS.danger).lineLimit(3)
             }
@@ -195,6 +231,14 @@ struct TasksView: View {
             }
             if model.supportsPipelines, task.status == .done, task.worktreePath != nil, task.pullRequestURL == nil {
                 Button("Open a draft pull request", systemImage: "arrow.triangle.pull") { model.taskAction(task.id, .openPullRequest) }
+            }
+            if model.supportsAutomation, task.pullRequestURL != nil, task.worktreePath != nil {
+                if task.ci?.state == .fixReady {
+                    Button("Push the CI fix", systemImage: "arrow.up.circle") { model.taskAction(task.id, .pushFix) }
+                }
+                Button(task.fixCI ? "Stop fixing CI" : "Fix CI failures", systemImage: task.fixCI ? "eye.slash" : "wrench.and.screwdriver") {
+                    model.taskAction(task.id, .toggleFixCI)
+                }
             }
             Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete = task }
         }
@@ -245,6 +289,10 @@ struct TaskEditor: View {
     @State private var inWorktree = false
     @State private var openPullRequest = false
     @State private var showClone = false
+    @State private var issue: IssueRef?
+    @State private var fixCI = false
+    @State private var showIssues = false
+    @State private var template: PromptTemplate?
     @State private var schedule = Schedule.now
     @State private var time = Date()
 
@@ -266,10 +314,37 @@ struct TaskEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Prompt") {
+                Section {
                     TextField("What should the agent do?", text: $prompt, axis: .vertical)
                         .lineLimit(3...10)
                         .font(CDS.prose)
+                    if let issue {
+                        HStack {
+                            Label("Resolves #\(issue.number)", systemImage: "smallcircle.filled.circle").font(CDS.caption).foregroundStyle(CDS.success)
+                            Text(issue.title).font(CDS.caption).foregroundStyle(CDS.textMuted).lineLimit(1)
+                            Spacer()
+                            Button { self.issue = nil } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(CDS.textMuted)
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Prompt")
+                        Spacer()
+                        if model.supportsAutomation {
+                            Menu {
+                                if model.host?.hasGitHubCLI == true {
+                                    Button("From a GitHub issue…", systemImage: "smallcircle.filled.circle") { showIssues = true }
+                                }
+                                let templates = model.templatesByCwd[cwd] ?? []
+                                if !templates.isEmpty {
+                                    Section("Templates") {
+                                        ForEach(templates) { t in Button(t.name, systemImage: "text.badge.plus") { template = t } }
+                                    }
+                                }
+                            } label: { Label("Start from", systemImage: "plus.circle") }
+                            .font(CDS.caption).textCase(nil)
+                        }
+                    }
                 }
                 Section("Project") {
                     Picker("Folder", selection: $cwd) {
@@ -289,6 +364,11 @@ struct TaskEditor: View {
                         Toggle("Open a draft pull request when done", isOn: $openPullRequest)
                             .tint(CDS.brand)
                             .disabled(!inWorktree || model.host?.hasGitHubCLI != true)
+                        if model.supportsAutomation {
+                            Toggle("Fix CI failures on it", isOn: $fixCI)
+                                .tint(CDS.brand)
+                                .disabled(!inWorktree || !openPullRequest)
+                        }
                         Button("Clone a repository…", systemImage: "square.and.arrow.down.on.square") { showClone = true }
                     }
                 }
@@ -341,6 +421,19 @@ struct TaskEditor: View {
             if !valid.contains(permissionMode) { permissionMode = TaskEditor.defaultMode(for: new) }
         }
         .sheet(isPresented: $showClone) { CloneRepositoryView { path in cwd = path } }
+        .sheet(isPresented: $showIssues) {
+            IssuePicker(cwd: cwd) { picked in
+                issue = IssueRef(number: picked.number, title: picked.title, url: picked.url)
+                prompt = picked.taskPrompt
+                if title.trimmingCharacters(in: .whitespaces).isEmpty { title = "#\(picked.number) \(picked.title)" }
+                inWorktree = true
+                if model.host?.hasGitHubCLI == true { openPullRequest = true }
+            }
+        }
+        .sheet(item: $template) { t in
+            TemplateForm(template: t) { filled in prompt = filled }
+        }
+        .onChange(of: cwd) { _, new in if model.supportsAutomation, !new.isEmpty { model.requestTemplates(cwd: new) } }
         .onChange(of: model.projects) { _, projects in
             if cwd.isEmpty { cwd = projects.first?.path ?? "" }
         }
@@ -355,6 +448,8 @@ struct TaskEditor: View {
             permissionMode = task.permissionMode ?? PermissionMode.acceptEdits.rawValue
             inWorktree = task.inWorktree
             openPullRequest = task.openPullRequest
+            issue = task.issue
+            fixCI = task.fixCI
             if let minutes = task.dailyAtMinutes {
                 schedule = .daily
                 time = Calendar.current.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: Date()) ?? Date()
@@ -368,6 +463,7 @@ struct TaskEditor: View {
             permissionMode = TaskEditor.defaultMode(for: agent)
         }
         if model.projects.isEmpty { model.refresh() }
+        if model.supportsAutomation, !cwd.isEmpty { model.requestTemplates(cwd: cwd) }
     }
 
     private func save() {
@@ -380,6 +476,8 @@ struct TaskEditor: View {
         built.permissionMode = permissionMode
         built.inWorktree = inWorktree
         built.openPullRequest = inWorktree && openPullRequest
+        built.issue = issue
+        built.fixCI = built.openPullRequest && fixCI
         switch schedule {
         case .now:
             built.dailyAtMinutes = nil

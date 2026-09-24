@@ -103,6 +103,10 @@ do {
 }
 if arguments.help { usage() }
 
+#if os(Linux)
+// The hub updates itself from the newest release when a phone asks.
+HostControl.shared.updater = HubUpdater(log: log)
+#endif
 let daemon: Daemon
 do {
     daemon = try Daemon(config: arguments.config, tokenOverride: arguments.tokenOverride, rotateToken: arguments.rotateToken, log: log)

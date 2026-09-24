@@ -43,13 +43,24 @@ struct NewSessionView: View {
                     Picker("Recent", selection: $cwd) {
                         Text("Custom path…").tag(Self.customTag)
                         ForEach(model.projects) { p in
-                            Text("\(p.name)  (\(ToolSummary.shortPath(p.path)))").tag(p.path)
+                            HStack {
+                                Text("\(p.name)  (\(ToolSummary.shortPath(p.path)))")
+                                if agent == .codex, p.inCodexApp == true {
+                                    Spacer()
+                                    Image(systemName: "macwindow").foregroundStyle(CDS.agentCodex)
+                                        .accessibilityLabel("In the Codex app")
+                                }
+                            }
+                            .tag(p.path)
                         }
                     }
                     .pickerStyle(.navigationLink)
                     if isCustom {
                         TextField("/Users/you/project", text: $customPath)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }
+                    if let desktopHint {
+                        Text(desktopHint).font(.footnote).foregroundStyle(CDS.textSecondary)
                     }
                 }
                 if agent == .codex { codexSections } else { claudeSections }
@@ -87,6 +98,24 @@ struct NewSessionView: View {
                 // Efforts differ per model; keep the choice if the new model has it, else its default.
                 if let m = codexModel, !m.efforts.contains(codexEffort) { codexEffort = m.defaultEffort ?? m.efforts.first ?? "" }
             }
+        }
+    }
+
+    /// Whether the session will also be visible in the agent's own app on the Mac.
+    private var desktopHint: String? {
+        let mirrors = model.host?.mirrorsToDesktopApps == true
+        switch agent {
+        case .claude:
+            return mirrors ? "Also shows up in Claude Desktop on the Mac the next time Desktop is opened." : nil
+        case .codex:
+            // Hosts that don't report Codex projects leave every flag nil — say nothing then.
+            guard model.projects.contains(where: { $0.inCodexApp != nil }) else { return nil }
+            if isCustom || model.projects.first(where: { $0.path == cwd })?.inCodexApp != true {
+                return mirrors
+                    ? "Not a project in the Codex app yet — the Mac adds it (as soon as the Codex app is closed)."
+                    : "Not a project in the Codex app — the thread won't appear in its sidebar. Folders marked with the Mac icon are."
+            }
+            return "Shows up in the Codex app on the Mac under this project."
         }
     }
 

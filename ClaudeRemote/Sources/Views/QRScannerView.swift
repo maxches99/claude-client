@@ -4,6 +4,8 @@ import SwiftUI
 struct QRScannerView: View {
     var accept: (String) -> Bool = { _ in true }
     var onScan: (String) -> Void
+    var hint = ""
+    var rejectedHint = ""
     var body: some View {
         ContentUnavailableView("No camera scanner on Mac", systemImage: "link",
                                description: Text("Use “Copy link” in the Host app's menu and paste it below, or pick the Mac from the list."))

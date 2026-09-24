@@ -26,7 +26,7 @@ let project = Project(
             ],
             settings: .settings(base: SettingsDictionary.common.merging([
                 "PRODUCT_NAME": "ClaudeRemote Host",
-                "MARKETING_VERSION": "0.2.0",
+                "MARKETING_VERSION": "1.2.1",
                 "CURRENT_PROJECT_VERSION": "2",
                 "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
                 // No sandbox: the app runs the claude CLI, reads ~/.claude and talks to launchd.

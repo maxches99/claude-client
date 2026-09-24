@@ -55,7 +55,7 @@ public struct CodexTranslator: Sendable {
         case "turn/completed":
             let turn = params["turn"] ?? .object([:])
             let status = turn["status"]?.string ?? "completed"
-            let error = turn["error"]?["message"]?.string
+            let error = turn["error"]?["message"]?.string.map(Self.explained)
             var result: [String: JSONValue] = [
                 "type": "result",
                 "subtype": .string(status == "completed" ? "success" : status),
@@ -85,7 +85,7 @@ public struct CodexTranslator: Sendable {
             streamed[id, default: ""] += "\n\n"
             return [Self.delta(id, ["type": "thinking_delta", "thinking": "\n\n"])]
         case "error":
-            var text = params["error"]?["message"]?.string ?? "Codex error"
+            var text = params["error"]?["message"]?.string.map(Self.explained) ?? "Codex error"
             if params["willRetry"]?.bool == true { text += " (retrying)" }
             return [.object(["type": "system", "subtype": "api_error", "error": .string(text), "timestamp": .string(Self.iso(Date()))])]
         case "thread/compacted":
@@ -332,6 +332,14 @@ public struct CodexTranslator: Sendable {
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
+
+    /// OpenAI answers 403 to connections from regions it does not serve, before any auth — the raw
+    /// error says nothing about that, and it is almost always the network (a VPN that is off or exits
+    /// in the wrong country), not the account.
+    static func explained(_ message: String) -> String {
+        guard message.contains("403") else { return message }
+        return message + " — OpenAI refused this Mac's connection, which usually means its traffic leaves from a region OpenAI blocks. Check the VPN on the Mac."
+    }
 
     static func iso(_ date: Date) -> String { formatter.string(from: date) }
     static func iso(ms: Double) -> String { iso(Date(timeIntervalSince1970: ms / 1000)) }

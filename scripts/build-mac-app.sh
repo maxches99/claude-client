@@ -9,7 +9,8 @@
 # have one, SIGN_IDENTITY="Developer ID Application" — then notarize the zip with `xcrun notarytool`.
 #
 # Version: MARKETING_VERSION=1.2.3 BUILD_NUMBER=45 override the defaults from the Tuist manifest
-# (the release workflow sets them from the git tag and the run number).
+# (the release workflow sets them from the git tag and the run number). Without an override the
+# version comes from the newest v* tag, so a local build shows what it really is.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -29,6 +30,7 @@ DIST="dist"
 
 tuist generate --no-open >/dev/null
 
+[ -z "$MARKETING_VERSION" ] && MARKETING_VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null | sed 's/^v//')
 VERSION_SETTINGS=""
 [ -n "$MARKETING_VERSION" ] && VERSION_SETTINGS="MARKETING_VERSION=$MARKETING_VERSION"
 [ -n "$BUILD_NUMBER" ] && VERSION_SETTINGS="$VERSION_SETTINGS CURRENT_PROJECT_VERSION=$BUILD_NUMBER"

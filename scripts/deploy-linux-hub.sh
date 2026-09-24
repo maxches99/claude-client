@@ -63,10 +63,12 @@ echo "Uploading to $HOST…"
 scp -q "$BIN" "$HOST:/tmp/ccremote.new"
 
 # ssh joins its arguments into one command line, so quote them for the remote shell.
-REMOTE_ARGS="$(printf '%q ' "$SVCUSER" "$DIR" "$PORT" "$NAME" "$RELAY_PUBLIC" "$CODEX" "$IDLE")"
+# The release this build is (VERSION next to the binary): the hub updates itself from newer ones.
+VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+REMOTE_ARGS="$(printf '%q ' "$SVCUSER" "$DIR" "$PORT" "$NAME" "$RELAY_PUBLIC" "$CODEX" "$IDLE" "${VERSION:-0}")"
 ssh "$HOST" "bash -s -- $REMOTE_ARGS" <<'REMOTE'
 set -euo pipefail
-SVCUSER="$1"; DIR="$2"; PORT="$3"; NAME="$4"; RELAY_PUBLIC="$5"; CODEX="$6"; IDLE="$7"
+SVCUSER="$1"; DIR="$2"; PORT="$3"; NAME="$4"; RELAY_PUBLIC="$5"; CODEX="$6"; IDLE="$7"; VERSION="$8"
 [ -f /etc/ccremote-relay.env ] || { echo "/etc/ccremote-relay.env not found — deploy the relay first (relay/deploy.sh)" >&2; exit 1; }
 # shellcheck disable=SC1091
 . /etc/ccremote-relay.env
@@ -130,6 +132,9 @@ EOF
 systemctl daemon-reload
 systemctl stop ccremote-hub 2>/dev/null || true
 mv -f "$DIR/ccremote.new" "$DIR/ccremote"
+echo "$VERSION" > "$DIR/VERSION"
+# The hub replaces its own binary when a phone asks it to update, so its user owns the folder.
+chown -R "$SVCUSER": "$DIR"
 systemctl enable --now ccremote-hub
 sleep 2
 systemctl --no-pager --lines=8 status ccremote-hub || true

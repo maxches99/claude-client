@@ -76,6 +76,7 @@ extension SessionManager {
         var text = "## Task\n\n" + task.prompt
         if let summary = task.resultSummary, !summary.isEmpty { text += "\n\n## Summary\n\n" + summary }
         if let stat = task.diffStat { text += "\n\n" + stat.label }
+        if let issue = task.issue { text += "\n\nFixes #\(issue.number)" }
         let body = text
         let prompt = task.prompt
         let base = task.baseCommit

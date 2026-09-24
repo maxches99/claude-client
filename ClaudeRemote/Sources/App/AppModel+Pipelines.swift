@@ -46,8 +46,10 @@ extension AppModel {
 
     // MARK: duels
 
-    func startDuel(title: String, prompt: String, cwd: String, claudeMode: String?, codexPolicy: String?, judge: AgentKind) {
-        sendMessage(.startDuel(title: title, prompt: prompt, cwd: cwd, claudeMode: claudeMode, codexPolicy: codexPolicy, judge: judge))
+    func startDuel(title: String, prompt: String, cwd: String, claudeMode: String?, codexPolicy: String?, judge: AgentKind,
+                   contestants: [DuelContestant]? = nil) {
+        sendMessage(.startDuel(title: title, prompt: prompt, cwd: cwd, claudeMode: claudeMode, codexPolicy: codexPolicy, judge: judge,
+                               contestants: contestants))
     }
 
     func duelAction(_ id: String, _ action: DuelAction) {

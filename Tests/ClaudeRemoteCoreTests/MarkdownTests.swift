@@ -81,4 +81,23 @@ final class MarkdownTests: XCTestCase {
         let blocks = MarkdownParser.parse("2024 was fine\n3.5 GB used\n-not a bullet")
         XCTAssertEqual(blocks, [.paragraph("2024 was fine\n3.5 GB used\n-not a bullet")])
     }
+
+    func testFileLinksResolveAgainstTheProject() {
+        let cwd = "/Users/me/app"
+        XCTAssertEqual(FileLink.parse("src/Bar.tsx", cwd: cwd), FileLink(path: "/Users/me/app/src/Bar.tsx", relativePath: "src/Bar.tsx", line: nil))
+        XCTAssertEqual(FileLink.parse("app/Bar.tsx:42", cwd: cwd), FileLink(path: "/Users/me/app/app/Bar.tsx", relativePath: "app/Bar.tsx", line: 42))
+        XCTAssertEqual(FileLink.parse("Bar.tsx:42:7", cwd: cwd + "/"), FileLink(path: "/Users/me/app/Bar.tsx", relativePath: "Bar.tsx", line: 42))
+        XCTAssertEqual(FileLink.parse("./README.md", cwd: cwd)?.path, "/Users/me/app/README.md")
+        XCTAssertEqual(FileLink.parse("/Users/me/app/Sources/A%20B.swift#L12-L20", cwd: cwd),
+                       FileLink(path: "/Users/me/app/Sources/A B.swift", relativePath: "Sources/A B.swift", line: 12))
+        XCTAssertEqual(FileLink.parse("file:///tmp/out.log", cwd: cwd), FileLink(path: "/tmp/out.log", relativePath: "/tmp/out.log", line: nil))
+        XCTAssertEqual(FileLink.parse("docs/guide.md#setup", cwd: cwd)?.line, nil)
+        XCTAssertEqual(FileLink.parse("Makefile:3", cwd: cwd)?.line, 3)
+    }
+
+    func testWebAndAppLinksAreNotFiles() {
+        for link in ["https://example.com/a.swift", "http://x", "mailto:me@example.com", "tel:+123", "vscode://file/a.swift", "#anchor", ""] {
+            XCTAssertNil(FileLink.parse(link, cwd: "/p"), link)
+        }
+    }
 }

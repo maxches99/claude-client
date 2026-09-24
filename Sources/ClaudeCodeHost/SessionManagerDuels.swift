@@ -11,25 +11,37 @@ extension SessionManager {
         broadcast(.duels(items: duels))
     }
 
-    public func startDuel(title: String, prompt: String, cwd: String, claudeMode: String?, codexPolicy: String?, judge: AgentKind) async throws -> Duel {
-        guard codex != nil else { throw GitError.refused("Codex is not installed on this host — a duel needs both agents.") }
-        guard hasClaude else { throw GitError.refused("The Claude CLI is not installed on this host — a duel needs both agents.") }
+    public func startDuel(title: String, prompt: String, cwd: String, claudeMode: String?, codexPolicy: String?, judge: AgentKind,
+                          contestants: [DuelContestant]? = nil) async throws -> Duel {
+        // Without contestants it is the classic duel: Claude against Codex with the given settings.
+        let sides = contestants ?? [
+            DuelContestant(agent: .claude, mode: claudeMode ?? PermissionMode.acceptEdits.rawValue, label: "Claude"),
+            DuelContestant(agent: .codex, mode: codexPolicy ?? CodexApprovalPolicy.never.rawValue, label: "Codex"),
+        ]
+        guard sides.count == 2 else { throw GitError.refused("A duel has two sides.") }
+        for side in sides {
+            if side.agent == .codex, codex == nil { throw GitError.refused("Codex is not installed on this host.") }
+            if side.agent == .claude, !hasClaude { throw GitError.refused("The Claude CLI is not installed on this host.") }
+        }
         guard FileManager.default.fileExists(atPath: cwd), runGit(["-C", cwd, "rev-parse", "--is-inside-work-tree"]).code == 0 else {
             throw GitError.refused("A duel runs in two worktrees, so the project has to be a git repository.")
         }
         let name = title.trimmingCharacters(in: .whitespaces).isEmpty ? AgentTask.title(fromPrompt: prompt) : title
         let duelId = UUID().uuidString.lowercased()
-        let claudeTask = AgentTask(title: "\(name) · Claude", prompt: prompt, cwd: cwd, agent: .claude,
-                                   permissionMode: claudeMode ?? PermissionMode.acceptEdits.rawValue, inWorktree: true, duelId: duelId)
-        let codexTask = AgentTask(title: "\(name) · Codex", prompt: prompt, cwd: cwd, agent: .codex,
-                                  permissionMode: codexPolicy ?? CodexApprovalPolicy.never.rawValue, inWorktree: true, duelId: duelId)
-        let duel = Duel(id: duelId, title: name, prompt: prompt, cwd: cwd, taskIds: [claudeTask.id, codexTask.id], judge: judge)
+        // Two sides with the same label (two Codex runs, say) still need telling apart.
+        var labels = sides.map(\.label)
+        if labels[0] == labels[1] { labels = [labels[0] + " A", labels[1] + " B"] }
+        let taskList = zip(sides, labels).map { side, label in
+            AgentTask(title: "\(name) · \(label)", prompt: prompt, cwd: cwd, agent: side.agent, model: side.model,
+                      permissionMode: side.mode ?? (side.agent == .claude ? PermissionMode.acceptEdits.rawValue : CodexApprovalPolicy.never.rawValue),
+                      inWorktree: true, duelId: duelId, effort: side.effort, label: label)
+        }
+        let duel = Duel(id: duelId, title: name, prompt: prompt, cwd: cwd, taskIds: taskList.map(\.id), judge: judge)
         duels.insert(duel, at: 0)
         saveTasks()
         broadcastDuels()
-        await addTask(claudeTask)
-        await addTask(codexTask)
-        log("duel \(duelId.prefix(6)) started: \(name.prefix(60))")
+        for task in taskList { await addTask(task) }
+        log("duel \(duelId.prefix(6)) started: \(labels.joined(separator: " vs ")) · \(name.prefix(60))")
         return duel
     }
 
@@ -112,7 +124,7 @@ extension SessionManager {
         duels[i].decidedAt = Date()
         saveTasks()
         broadcastDuels()
-        let names = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0.agent.label) })
+        let names = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0.sideLabel) })
         let line = winner.flatMap { names[$0] }.map { "\($0) won" } ?? "a tie"
         let totals = duels[i].taskIds.compactMap { id in scores[id].map { "\(names[id] ?? "?") \(String(format: "%.1f", $0.total))" } }.joined(separator: " · ")
         notifier?.notify(.done, body: "Duel \"\(duels[i].title)\": \(line) (\(totals))")

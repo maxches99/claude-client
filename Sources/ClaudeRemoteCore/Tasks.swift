@@ -67,12 +67,25 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
     public var diffStat: DiffStat?
     /// The project's tests, run in the worktree after the task (duels).
     public var check: TaskCheck?
+    /// Codex reasoning effort for the task's session.
+    public var effort: String?
+    /// What a duel calls this side ("Opus", "GPT-5 high"); nil = the agent's name.
+    public var label: String?
+    /// The GitHub issue the task resolves; its pull request says `Fixes #…`.
+    public var issue: IssueRef?
+    /// Watch the pull request's CI and start a repair when it fails.
+    public var fixCI: Bool
+    /// The pull request's CI as the host last saw it.
+    public var ci: TaskCI?
+    /// A CI repair: the task whose pull request it fixes (it runs in that task's worktree).
+    public var repairOf: String?
 
     public init(id: String = UUID().uuidString.lowercased(), title: String, prompt: String, cwd: String, agent: AgentKind = .claude,
                 model: String? = nil, permissionMode: String? = nil, status: Status = .queued, sessionId: String? = nil,
                 createdAt: Date = Date(), startedAt: Date? = nil, finishedAt: Date? = nil, resultSummary: String? = nil,
                 error: String? = nil, runAt: Date? = nil, dailyAtMinutes: Int? = nil, inWorktree: Bool = false, worktreePath: String? = nil,
-                openPullRequest: Bool = false, duelId: String? = nil) {
+                openPullRequest: Bool = false, duelId: String? = nil, effort: String? = nil, label: String? = nil,
+                issue: IssueRef? = nil, fixCI: Bool = false, repairOf: String? = nil) {
         self.id = id
         self.title = title
         self.prompt = prompt
@@ -93,6 +106,11 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
         self.worktreePath = worktreePath
         self.openPullRequest = openPullRequest
         self.duelId = duelId
+        self.effort = effort
+        self.label = label
+        self.issue = issue
+        self.fixCI = fixCI
+        self.repairOf = repairOf
     }
 
     public init(from decoder: Decoder) throws {
@@ -122,7 +140,16 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
         duelId = try c.decodeIfPresent(String.self, forKey: .duelId)
         diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)
         check = try c.decodeIfPresent(TaskCheck.self, forKey: .check)
+        effort = try c.decodeIfPresent(String.self, forKey: .effort)
+        label = try c.decodeIfPresent(String.self, forKey: .label)
+        issue = try c.decodeIfPresent(IssueRef.self, forKey: .issue)
+        fixCI = try c.decodeIfPresent(Bool.self, forKey: .fixCI) ?? false
+        ci = try c.decodeIfPresent(TaskCI.self, forKey: .ci)
+        repairOf = try c.decodeIfPresent(String.self, forKey: .repairOf)
     }
+
+    /// The name a duel screen or notification uses for this task's side.
+    public var sideLabel: String { label ?? agent.label }
 
     public var projectName: String { (cwd as NSString).lastPathComponent }
     public var repeats: Bool { dailyAtMinutes != nil }
@@ -215,6 +242,10 @@ public enum TaskAction: String, Codable, Sendable {
     case delete
     /// Commit, push and open a draft pull request for a finished worktree task.
     case openPullRequest
+    /// Push a CI repair that is committed and waiting (`TaskCI.State.fixReady`) to the pull request.
+    case pushFix
+    /// Stop (or start) watching the pull request's CI.
+    case toggleFixCI
 }
 
 /// The same prompt given to Claude and to Codex, each in its own worktree, and a judge's verdict on

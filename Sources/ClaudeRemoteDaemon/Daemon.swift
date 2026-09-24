@@ -96,7 +96,15 @@ final class TokenStore: @unchecked Sendable {
 /// listener (+ Bonjour), the optional relay link and notifier, tracks phones, and publishes a
 /// `DaemonStatus` whenever something changes. Hosted by the CLI and by the menu-bar app.
 public final class Daemon: @unchecked Sendable {
-    public static let version = "0.2.0"
+    /// The app bundle's version when hosted by the menu-bar app (release builds stamp it from the
+    /// git tag); the bare CLI has no bundle and reports the fallback.
+    public static let version: String = {
+        #if os(Linux)
+        // The hub is a bare binary: its release writes VERSION next to it.
+        if let v = HubUpdater.installedVersion { return v }
+        #endif
+        return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.1"
+    }()
 
     public let config: DaemonConfig
     public let supportDirectory: String
@@ -115,6 +123,14 @@ public final class Daemon: @unchecked Sendable {
         get { lock.withLock { _onStatus } }
         set { lock.withLock { _onStatus = newValue } }
     }
+
+    /// A phone changed a setting that needs a restart (the relay): the app reloads `config.json` and
+    /// starts a new daemon. Without it (the CLI) the setting waits for the next start.
+    public var onRestartRequest: (@Sendable () -> Void)? {
+        get { lock.withLock { _onRestartRequest } }
+        set { lock.withLock { _onRestartRequest = newValue } }
+    }
+    private var _onRestartRequest: (@Sendable () -> Void)?
 
     private let log: @Sendable (String) -> Void
     private let tokenStore: TokenStore
@@ -215,6 +231,11 @@ public final class Daemon: @unchecked Sendable {
         if let minutes = config.idleTimeoutMinutes, minutes > 0 {
             Task { [manager] in await manager.setIdleTimeout(TimeInterval(minutes * 60)) }
         }
+        #if os(macOS)
+        if config.mirrorToDesktopApps {
+            Task { [manager] in await manager.setMirrorsToDesktopApps(true) }
+        }
+        #endif
         if config.relayEnabled, let relay = config.relayURL.flatMap(URL.init(string:)), let endpoint = ShareConfig.httpBase(fromRelay: relay),
            let room, let secret = config.relaySecret {
             // The relay may be dialed on loopback (the hub runs next to it); links need the address
@@ -227,6 +248,12 @@ public final class Daemon: @unchecked Sendable {
         SimulatorStreamer.log = log
         SimulatorInput.log = log
         #endif
+
+        // What phones may change about the host itself (HostControl), and what they are told about it.
+        let relayRoom = room
+        let route: RelayRoute? = config.relayEnabled ? config.relayURLForPhones.flatMap { url in relayRoom.map { RelayRoute(url: url, room: $0) } } : nil
+        let canUpdate = HostControl.shared.updater != nil
+        Task { [manager] in await manager.setHostIdentity(relay: route, appVersion: Daemon.version, canUpdate: canUpdate) }
 
         let addresses = NetworkInfo.lanAddresses()
         _status = DaemonStatus(paired: registry.all, addresses: addresses,
@@ -277,6 +304,12 @@ public final class Daemon: @unchecked Sendable {
     public func start() throws {
         guard lock.withLock({ !started }) else { return }
         lock.withLock { started = true }
+        // Another host joins by the address phones use (the hub itself may dial the relay on loopback).
+        let relaySetup = config.relayEnabled ? config.relayURLForPhones.flatMap { url in config.relaySecret.map { RelaySetup(url: url, secret: $0) } } : nil
+        // Only a host that can restart itself (the Mac app) takes the relay live; the CLI saves it for next time.
+        var restart: (@Sendable () -> Void)?
+        if onRestartRequest != nil { restart = { [weak self] in self?.onRestartRequest?() } }
+        HostControl.shared.configure(relay: relaySetup, supportDirectory: supportDirectory, restart: restart)
 
         #if os(macOS)
         let serverTLS: TLSRole = tlsIdentity.map { .server(identity: $0.identity) } ?? .none

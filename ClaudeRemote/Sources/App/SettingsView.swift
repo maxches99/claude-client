@@ -84,6 +84,7 @@ struct SettingsView: View {
                         } else if let v = host.cliVersion {
                             LabeledContent("claude", value: v)
                         }
+                        if let macId = model.activeMacId { HostControlRows(macId: macId) }
                     }
                 }
             }
