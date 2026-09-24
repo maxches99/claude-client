@@ -167,6 +167,11 @@ public enum ClientMessage: Codable, Sendable {
     case checkHostUpdate
     /// Download the newest release and restart into it; progress and errors come as `hostUpdate`.
     case updateHost
+    /// The host's event feed since `since` (nil = its whole kept history); answered with `events`.
+    /// New events follow on their own as `events(live: true)`.
+    case listEvents(since: Date?)
+    /// Disk, memory, load, power and logins; answered with `health`.
+    case health
     /// Register (or, with `pushToken == nil`, drop) this phone's Live Activity for a session. When the
     /// Mac has APNs configured it pushes `SessionActivityState` updates to the token, so the activity
     /// keeps moving while the app is in the background. `approvalNeedsApp` mirrors the phone's Face ID
@@ -240,6 +245,9 @@ public enum ServerMessage: Codable, Sendable {
     case relayConfigured(error: String?)
     case github(account: GitHubAccount, login: GitHubLoginState?, error: String?)
     case hostUpdate(update: HostUpdate)
+    /// Events newest last; `live` for ones that just happened.
+    case events(items: [HostEvent], live: Bool)
+    case health(report: HostHealth)
     case simulators(items: [SimulatorInfo])
     case simulatorActionResult(udid: String, action: SimulatorAction, error: String?)
     case simulatorApps(udid: String, items: [SimulatorApp], error: String?)

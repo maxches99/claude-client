@@ -25,6 +25,7 @@ let project = Project(
                 .target(name: "ClaudeRemoteWatch", condition: .when([.ios])),
                 // ActivityKit has no Catalyst counterpart.
                 .target(name: "ClaudeRemoteWidget", condition: .when([.ios])),
+                .target(name: "ClaudeRemoteShare", condition: .when([.ios])),
             ],
             settings: .signed(extra: [
                 "SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD": "NO",
@@ -43,6 +44,17 @@ let project = Project(
             dependencies: [
                 .package(product: "ClaudeRemoteCore"),
             ],
+            settings: .signed()
+        ),
+        // "Send to Mac" in the share sheet: text and links become a task or a prompt in the app.
+        .target(
+            name: "ClaudeRemoteShare",
+            destinations: [.iPhone, .iPad],
+            product: .appExtension,
+            bundleId: "dev.maxches.ClaudeRemote.share",
+            deploymentTargets: .iOS("17.0"),
+            infoPlist: .file(path: "ClaudeRemoteShare/Info.plist"),
+            sources: ["ClaudeRemoteShare/Sources/**"],
             settings: .signed()
         ),
         .target(

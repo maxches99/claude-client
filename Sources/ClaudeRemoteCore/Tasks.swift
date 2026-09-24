@@ -79,13 +79,18 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
     public var ci: TaskCI?
     /// A CI repair: the task whose pull request it fixes (it runs in that task's worktree).
     public var repairOf: String?
+    /// Take a Simulator screenshot before and after (the project's `"preview"` command).
+    public var wantsPreview: Bool
+    public var preview: TaskPreview?
+    /// The working tree before a task that ran in it (not in a worktree), to put back in one tap.
+    public var snapshot: TaskSnapshot?
 
     public init(id: String = UUID().uuidString.lowercased(), title: String, prompt: String, cwd: String, agent: AgentKind = .claude,
                 model: String? = nil, permissionMode: String? = nil, status: Status = .queued, sessionId: String? = nil,
                 createdAt: Date = Date(), startedAt: Date? = nil, finishedAt: Date? = nil, resultSummary: String? = nil,
                 error: String? = nil, runAt: Date? = nil, dailyAtMinutes: Int? = nil, inWorktree: Bool = false, worktreePath: String? = nil,
                 openPullRequest: Bool = false, duelId: String? = nil, effort: String? = nil, label: String? = nil,
-                issue: IssueRef? = nil, fixCI: Bool = false, repairOf: String? = nil) {
+                issue: IssueRef? = nil, fixCI: Bool = false, repairOf: String? = nil, wantsPreview: Bool = false) {
         self.id = id
         self.title = title
         self.prompt = prompt
@@ -111,6 +116,7 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
         self.issue = issue
         self.fixCI = fixCI
         self.repairOf = repairOf
+        self.wantsPreview = wantsPreview
     }
 
     public init(from decoder: Decoder) throws {
@@ -146,6 +152,9 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
         fixCI = try c.decodeIfPresent(Bool.self, forKey: .fixCI) ?? false
         ci = try c.decodeIfPresent(TaskCI.self, forKey: .ci)
         repairOf = try c.decodeIfPresent(String.self, forKey: .repairOf)
+        wantsPreview = try c.decodeIfPresent(Bool.self, forKey: .wantsPreview) ?? false
+        preview = try c.decodeIfPresent(TaskPreview.self, forKey: .preview)
+        snapshot = try c.decodeIfPresent(TaskSnapshot.self, forKey: .snapshot)
     }
 
     /// The name a duel screen or notification uses for this task's side.
@@ -246,6 +255,8 @@ public enum TaskAction: String, Codable, Sendable {
     case pushFix
     /// Stop (or start) watching the pull request's CI.
     case toggleFixCI
+    /// Put the working tree back as it was before the task (its snapshot).
+    case restoreSnapshot
 }
 
 /// The same prompt given to Claude and to Codex, each in its own worktree, and a judge's verdict on

@@ -59,6 +59,8 @@ final class AppModel {
     var supportsPipelines: Bool { (host?.protocolVersion ?? 1) >= 6 }
     /// Issues, CI repair, model duels, templates, audit, relay setup, GitHub login, updates (protocol 7).
     var supportsAutomation: Bool { (host?.protocolVersion ?? 1) >= 7 }
+    /// Event feed, health, before/after screenshots, task snapshots (protocol 8).
+    var supportsOperations: Bool { (host?.protocolVersion ?? 1) >= 8 }
     func supportsMacTools(_ macId: String) -> Bool { (hostByMac[macId]?.protocolVersion ?? 1) >= 5 }
     /// Models Codex on the Mac can run, fetched once per connection.
     var codexModels: [ModelOption] = []
@@ -984,6 +986,11 @@ final class AppModel {
     var relayJoins: [String: RelayJoin] = [:]
     var githubByMac: [String: GitHubPanel] = [:]
     var hostUpdates: [String: HostUpdate] = [:]
+    /// Per Mac: its event feed (oldest first) and its last health report (AppModel+Operations.swift).
+    var eventsByMac: [String: [HostEvent]] = [:]
+    var healthByMac: [String: HostHealth] = [:]
+    /// Something shared into the app (text, a link) waiting to become a task or a prompt.
+    var incomingShare: SharedDraft?
 
     // MARK: inbound
 
@@ -1001,6 +1008,7 @@ final class AppModel {
             if let route = host.relay, macs.first(where: { $0.id == macId }).map({ $0.relayURL != route.url || $0.room != route.room }) == true {
                 updateMac(macId) { $0.relayURL = route.url; $0.room = route.room }
             }
+            if (host.protocolVersion) >= 8 { connections[macId]?.send(.listEvents(since: eventsByMac[macId]?.last?.date)) }
             if relayJoins[macId]?.state == .restarting { relayJoins[macId] = RelayJoin(state: host.relay != nil ? .joined : .failed,
                                                                                         message: host.relay != nil ? nil : "The Mac restarted without the relay.") }
             requestDigestIfAway(macId)
@@ -1254,6 +1262,8 @@ final class AppModel {
             digestScheduleError = error
         case .issues, .templates, .audit, .relaySetup, .relayConfigured, .github, .hostUpdate:
             receiveAutomation(message, from: macId, isActive: isActive)
+        case .events, .health:
+            receiveOperations(message, from: macId)
         case .pong:
             break
         }

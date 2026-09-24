@@ -3,8 +3,9 @@
 # those tools re-sign the app with the user's own Apple ID, so no developer account is needed here.
 #
 #   scripts/build-ios-ipa.sh                       # → dist/ClaudeRemote.ipa
-#   STRIP_EXTENSIONS=1 scripts/build-ios-ipa.sh    # → dist/ClaudeRemote-no-widget.ipa (one App ID, and
-#                                                  #   no App Group, which a free Apple ID can't create)
+#   STRIP_EXTENSIONS=1 scripts/build-ios-ipa.sh    # → dist/ClaudeRemote-no-widget.ipa (no widget, so no App
+#                                                  #   Group, which a free Apple ID can't create; the share
+#                                                  #   extension stays — it needs none)
 #
 # The Watch app is always left out: sideloaders can't install watchOS apps, and a free Personal Team
 # gets only 10 App IDs a week (each embedded app / extension is one). Entitlements are re-applied with
@@ -44,11 +45,15 @@ STAGED="$STAGE/Payload/$APP_NAME.app"
 
 rm -rf "$STAGED/Watch"
 if [ "${STRIP_EXTENSIONS:-0}" = 1 ]; then
-    rm -rf "$STAGED/PlugIns"
+    # Only the widget needs the App Group a free Apple ID can't sign; the share extension stays.
+    rm -rf "$STAGED/PlugIns/ClaudeRemoteWidget.appex"
 fi
 
 # Ad-hoc sign inside-out so the entitlements travel with the bundle (the sideloader replaces the
 # signature itself, but reads the entitlements it finds here).
+if [ -d "$STAGED/PlugIns/ClaudeRemoteShare.appex" ]; then
+    codesign --force --sign - "$STAGED/PlugIns/ClaudeRemoteShare.appex"
+fi
 if [ -d "$STAGED/PlugIns/ClaudeRemoteWidget.appex" ]; then
     codesign --force --sign - --entitlements ClaudeRemote/ClaudeRemoteWidget/ClaudeRemoteWidget.entitlements \
         "$STAGED/PlugIns/ClaudeRemoteWidget.appex"

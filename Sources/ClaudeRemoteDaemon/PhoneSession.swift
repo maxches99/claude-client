@@ -409,6 +409,7 @@ final class PhoneSession: @unchecked Sendable {
                 do {
                     try HostControl.shared.setRelay(setup)
                     log("relay set from \(deviceLabel): \(setup.url) — restarting")
+                    await manager.recordEvent(HostEvent(kind: .host, title: "Joined a relay", detail: setup.url))
                     send(.relayConfigured(error: nil))
                 } catch {
                     send(.relayConfigured(error: "\(error)"))
@@ -444,7 +445,12 @@ final class PhoneSession: @unchecked Sendable {
                     break
                 }
                 log("update requested by \(deviceLabel)")
+                await manager.recordEvent(HostEvent(kind: .host, title: "Update requested", detail: deviceLabel))
                 await updater.update { [weak self] progress in self?.send(.hostUpdate(update: progress)) }
+            case .listEvents(let since):
+                send(.events(items: await manager.eventList(since: since), live: false))
+            case .health:
+                send(.health(report: await manager.health()))
             case .listSimulators:
                 send(.simulators(items: await SimulatorStreamer.shared.list()))
             case .simulatorStream(let udid, let enabled, let maxPixelSize, let fps, let codec):

@@ -24,7 +24,7 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
 | Path | What |
 |---|---|
 | `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, `CodexTranslator` / `CodexRollout` (Codex events and session files → the same reducer), WebSocket channel (TLS roles), the queue / palette / worktree / turn-review / digest / review / duel models (`DuelJudge`: the blind brief and verdict parser), the Telegram digest (`DigestTelegram`), `Automation` (issues, CI state, model duels, templates, the audit rules, relay setup, updates), the terminal emulator (`TerminalScreen`) and the share page (`TranscriptHTML`) |
-| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` and its feature files (`…Rewind`, `…Palette`, `…Worktrees`, `…Tasks`, `…Digest`, `…DigestSchedule`, `…PullRequests`, `…Review`, `…Duels`, `…Workspace`, `…Automation` (issues, CI repair, templates, audit, GitHub login), `…Handoff`, `…Share`, `BackgroundProcesses`, `TerminalSessions` — the pseudo-terminal itself is the small C target `CPTY`) |
+| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` and its feature files (`…Rewind`, `…Palette`, `…Worktrees`, `…Tasks`, `…Digest`, `…DigestSchedule`, `…PullRequests`, `…Review`, `…Duels`, `…Workspace`, `…Automation` (issues, CI repair, templates, audit, GitHub login), `…Operations` (event feed, snapshots, before/after screenshots, health), `…Handoff`, `…Share`, `BackgroundProcesses`, `TerminalSessions` — the pseudo-terminal itself is the small C target `CPTY`) |
 | `Sources/ClaudeRemoteDaemon` | The daemon as a library: `Daemon` (config → listener + Bonjour, relay dial-out, notifier, phone tracking, status), `DaemonConfig` (`config.json`), `PhoneSession`, `WebSocketServer`, `HookServer` (hook socket), `RelayClient`, `DeviceRegistry`, pairing URL + QR |
 | `Sources/ccremote` | Thin CLI front-end for the daemon (flags, terminal QR) |
 | `ClaudeRemoteHost/` | **Mac menu-bar app** hosting the daemon: status, paired phones, QR, settings, open-at-login, keep-awake (Tuist project) |
@@ -382,6 +382,18 @@ failed and the end of their log (`gh run view --log-failed`); the repair's chang
 pushed — the task shows **Push the fix**, and only that updates the pull request. At most three tries
 per pull request; a new push of your own resets the watch, and a merged or closed PR ends it.
 
+**Before and after.** "Screenshot before and after" on a task runs the project's preview command when
+the task starts and again when it ends, and takes a Simulator still each time; the task shows both
+side by side (tap for full screen). The command lives in `.ccremote.json`:
+`"preview": {"command": "scripts/run-in-simulator.sh", "device": "<simulator name or UDID>", "settle": 4}`
+(or just a string) — it should build, install and launch the app; `device` matters when more than one
+Simulator is booted, `settle` is how long the app gets to draw.
+
+**Undo a task.** A task that runs in the project itself (not a worktree) first takes a snapshot: the
+working tree — tracked and untracked files, ignored ones left out — as a commit under
+`refs/ccremote/snapshots/<task>`, without touching the tree, the index or the branch. **Undo the task's
+changes** in its menu puts everything back: its edits, new files and commits are gone.
+
 **Prompt templates.** A project's `.ccremote.json` can carry `"templates": [{"name": "New screen",
 "prompt": "Add a {screen} screen like {existing}", "description": "…"}]`, and the host its own in
 `templates.json` in the support directory. They appear in the composer's launch palette and in the
@@ -415,6 +427,29 @@ Settings → Connected Mac → **GitHub** runs `gh auth login --web` on the host
 code (type it at github.com/login/device on any device; then `gh auth setup-git` lets git push with it),
 and takes the name and email commits are signed with. With that, the hub works from GitHub alone:
 clone, task from an issue, draft PR, CI repair — no Mac awake.
+
+## Feed and health
+
+**Feed…** (list menu) is one timeline of every paired Mac and the hub: turns that finished or failed,
+approvals waiting, tasks started and done, pull requests, CI failures and fixes, duels decided, host
+warnings — filter by kind and Mac, search, tap to open the session (or the link). Each host keeps the
+last 1500 events in `events.json`; the phone asks for what it missed on every connect.
+
+**Health** (Settings → Connected Mac) shows the host's disk, memory, load, battery and uptime and
+whether Claude, Codex and GitHub are still logged in. The host checks every ten minutes and, the first
+time something needs attention — the disk nearly full, memory nearly full, the battery running down
+off power, an agent logged out — says so once in the feed and as a notification.
+
+## Share into the app and back up settings
+
+**Send to Mac** in any app's share sheet (Safari, Notes, Mail…) hands the page title and link, or the
+text, to the app: make it a task on the Mac, or drop it into a session's composer. It needs no App
+Group, so it is in the widget-less build as well.
+
+**Back up or restore settings** (Settings) writes every paired Mac with its token, saved prompts, pins
+and archives, share links and preferences to one file — sealed with a passphrase (AES-GCM, key from
+PBKDF2) unless you leave it empty — and restores them on a new phone; Macs already there are refreshed,
+not doubled.
 
 ## Audit
 
