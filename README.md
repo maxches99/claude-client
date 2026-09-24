@@ -194,6 +194,17 @@ session turns into an ordinary one the phone can resume. It cannot be driven fro
 message you send is handed to `codex queue`, so the session picks it up in the app. Closed threads
 open the normal way (resume), or "Continue a copy on the phone" forks them.
 
+### Phone sessions in the desktop apps
+
+A Codex thread started from the phone in a folder that is a project in the Codex app shows up under
+that project in the app's sidebar on its own; the new-session sheet marks those folders. Claude
+Desktop only lists sessions it started, so the Host menu keeps "Started on the phone" — one click
+imports a session into Desktop's Code tab (`claude://resume`) and opens it. The experimental
+setting "Show phone sessions in Claude Desktop and the Codex app" does it without clicking by
+writing the apps' own state files: a record in Desktop's session list after each turn (Desktop reads
+the list at launch, so it appears after Desktop's next start), and the project for a folder the Codex
+app does not have yet (written only while the Codex app is closed, since it saves over the file).
+
 ## Questions, plans, and the queue
 
 * **Questions** — when the agent asks something (`AskUserQuestion`), the card above the composer
