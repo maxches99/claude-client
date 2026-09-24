@@ -13,6 +13,7 @@ extension SessionManager {
 
     public func startDuel(title: String, prompt: String, cwd: String, claudeMode: String?, codexPolicy: String?, judge: AgentKind) async throws -> Duel {
         guard codex != nil else { throw GitError.refused("Codex is not installed on this host — a duel needs both agents.") }
+        guard hasClaude else { throw GitError.refused("The Claude CLI is not installed on this host — a duel needs both agents.") }
         guard FileManager.default.fileExists(atPath: cwd), runGit(["-C", cwd, "rev-parse", "--is-inside-work-tree"]).code == 0 else {
             throw GitError.refused("A duel runs in two worktrees, so the project has to be a git repository.")
         }
@@ -43,6 +44,9 @@ extension SessionManager {
     func runJudge(duelId: String, judge: AgentKind?) async {
         guard let i = duels.firstIndex(where: { $0.id == duelId }) else { return }
         if let judge { duels[i].judge = judge }
+        // The judge is a quick chat; with only one agent installed, that one judges.
+        if duels[i].judge == .claude, !hasClaude { duels[i].judge = .codex }
+        if duels[i].judge == .codex, codex == nil { duels[i].judge = .claude }
         duels[i].status = .judging
         duels[i].error = nil
         duels[i].verdict = nil

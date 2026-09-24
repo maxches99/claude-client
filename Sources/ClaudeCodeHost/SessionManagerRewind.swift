@@ -19,7 +19,7 @@ extension SessionManager {
         guard FileManager.default.fileExists(atPath: stored.cwd) else { throw ManagerError.cwdMissing(stored.cwd) }
         let newId = UUID().uuidString.lowercased()
         let cut = try SessionManager.writeRewound(from: stored.path, upTo: uuid, newSessionId: newId)
-        var config = CLIProcess.Config(cliPath: cli.path, cwd: stored.cwd)
+        var config = CLIProcess.Config(cliPath: try claudePath(), cwd: stored.cwd)
         config.resume = newId
         if let h = hosted[sessionId] {
             config.model = h.state.model

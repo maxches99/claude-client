@@ -148,13 +148,17 @@ do {
     exit(1)
 }
 
-let version = daemon.cli.version() ?? "?"
-let auth = daemon.cli.authStatus()
-print("ccremote \(Daemon.version) · claude \(version) at \(daemon.cli.path)")
-if auth?.loggedIn == true {
-    print("claude auth: logged in" + (auth?.email.map { " (\($0))" } ?? ""))
+if !daemon.cli.isInstalled {
+    print("ccremote \(Daemon.version) · claude not installed — Codex only")
 } else {
-    print("claude auth: NOT logged in — run:  \(daemon.loginCommand)")
+    let version = daemon.cli.version() ?? "?"
+    let auth = daemon.cli.authStatus()
+    print("ccremote \(Daemon.version) · claude \(version) at \(daemon.cli.path)")
+    if auth?.loggedIn == true {
+        print("claude auth: logged in" + (auth?.email.map { " (\($0))" } ?? ""))
+    } else {
+        print("claude auth: NOT logged in — run:  \(daemon.loginCommand)")
+    }
 }
 if let codex = daemon.codex {
     print("codex \(codex.version() ?? "?") at \(codex.path)" + (CodexCLI.hasCredentials() ? "" : " — not logged in (run `codex login`)"))

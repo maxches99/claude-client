@@ -310,7 +310,7 @@ struct SessionListView: View {
     @ViewBuilder
     private var newChatRow: some View {
         Group {
-            if model.hasCodex {
+            if model.hasBothAgents {
                 Menu {
                     Button("Chat with Claude") { model.startChat(.claude) }
                     Button("Chat with Codex") { model.startChat(.codex) }
@@ -318,7 +318,7 @@ struct SessionListView: View {
                     newRowLabel("New chat", systemImage: "bubble.left.and.bubble.right")
                 }
             } else {
-                Button { model.startChat(.claude) } label: {
+                Button { model.startChat(model.defaultAgent) } label: {
                     newRowLabel("New chat", systemImage: "bubble.left.and.bubble.right")
                 }
             }

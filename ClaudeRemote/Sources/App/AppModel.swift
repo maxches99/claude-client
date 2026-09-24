@@ -31,6 +31,20 @@ final class AppModel {
     /// What the connected Mac told us in `welcome` (CLI versions, whether Codex is installed).
     var host: HostInfo? { connection.host }
     var hasCodex: Bool { host?.codex != nil }
+    /// A Mac can have Codex and no Claude CLI; hosts from before that always had it.
+    var hasClaude: Bool { host?.claudeInstalled ?? true }
+    /// Both agents on the Mac: pickers offer the choice, otherwise there is nothing to pick.
+    var hasBothAgents: Bool { hasClaude && hasCodex }
+    /// What a new session, chat or task runs when there is no choice to make.
+    var defaultAgent: AgentKind { hasClaude || !hasCodex ? .claude : .codex }
+    /// The agent a shortcut asked for, or the one the Mac has when it lacks that one.
+    func resolvedAgent(_ asked: AgentKind) -> AgentKind {
+        switch asked {
+        case .claude where !hasClaude && hasCodex: return .codex
+        case .codex where !hasCodex: return .claude
+        default: return asked
+        }
+    }
     /// Chats (and everything else added in protocol 2) need a Mac app new enough to understand them;
     /// an older daemon would just reject the request with a confusing error.
     var supportsChats: Bool { (host?.protocolVersion ?? 1) >= 2 }

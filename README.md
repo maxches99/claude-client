@@ -166,6 +166,12 @@ access) and the **reasoning effort** of the model — all changeable per session
 composer chips, applied to the next turn. Login is shared with the Codex app (`~/.codex/auth.json`),
 so nothing to log in.
 
+**Codex without the Claude CLI** works too: a Mac with only Codex runs the daemon as usual, the phone
+starts every session, chat and task with Codex and shows no agent picker, and the Host app's menu
+says The Claude CLI is not installed. A chat asked of Claude (a Siri shortcut, an older app) goes to
+Codex; a Claude work session is refused with a message. `CCREMOTE_CLAUDE_PATH=none` runs a Mac
+that has both as Codex-only.
+
 ### Sharing the app-server with the Codex app
 
 The Codex app normally runs a private `codex app-server` over stdio, which is why a session open in

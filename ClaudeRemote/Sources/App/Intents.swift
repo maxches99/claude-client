@@ -28,7 +28,7 @@ struct AskAgentIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
         guard let model = AppModel.shared else { throw IntentFailure.noApp }
-        let reply = try await model.askChat(question, agent: agent.kind)
+        let reply = try await model.askChat(question, agent: model.resolvedAgent(agent.kind))
         return .result(value: reply, dialog: IntentDialog(stringLiteral: reply))
     }
 }
@@ -231,8 +231,9 @@ struct AddTaskIntent: AppIntent {
         guard model.supportsQueue else { throw IntentFailure.hostTooOld }
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw IntentFailure.emptyPrompt }
-        let task = AgentTask(title: AgentTask.title(fromPrompt: text), prompt: text, cwd: project.id, agent: agent.kind,
-                             permissionMode: agent == .codex ? CodexApprovalPolicy.never.rawValue : PermissionMode.acceptEdits.rawValue,
+        let kind = model.resolvedAgent(agent.kind)
+        let task = AgentTask(title: AgentTask.title(fromPrompt: text), prompt: text, cwd: project.id, agent: kind,
+                             permissionMode: kind == .codex ? CodexApprovalPolicy.never.rawValue : PermissionMode.acceptEdits.rawValue,
                              inWorktree: inWorktree, openPullRequest: inWorktree && openPullRequest && model.supportsPipelines)
         model.addTask(task)
         let waiting = model.tasks.filter { $0.status == .queued || $0.status == .running }.count

@@ -14,6 +14,7 @@ public actor SessionManager {
         case notDrivable(String)
         case cwdMissing(String)
         case spawnFailed(String)
+        case claudeMissing
 
         public var description: String {
             switch self {
@@ -21,6 +22,7 @@ public actor SessionManager {
             case .notDrivable(let why): return why
             case .cwdMissing(let p): return p.isEmpty ? "No project directory was given" : "Directory does not exist: \(p)"
             case .spawnFailed(let why): return "Could not start claude: \(why)"
+            case .claudeMissing: return "The Claude CLI is not installed on this Mac — start a Codex session instead."
             }
         }
     }
@@ -284,7 +286,16 @@ public actor SessionManager {
         }
         return HostInfo(hostName: HostPaths.machineName, daemonVersion: daemonVersion,
                         cliVersion: cachedCliVersion, cliPath: cli.path, loggedIn: cachedLoggedIn, codex: codexInfo, livePush: livePusher != nil,
-                        canShare: shareConfig != nil, workspaceRoot: workspaceRoot, hasGitHubCLI: SessionManager.locateGh() != nil)
+                        canShare: shareConfig != nil, workspaceRoot: workspaceRoot, hasGitHubCLI: SessionManager.locateGh() != nil,
+                        hasClaude: cli.isInstalled)
+    }
+
+    /// The Claude CLI is optional (a Mac can run Codex alone): everything that starts `claude` asks here.
+    public var hasClaude: Bool { cli.isInstalled }
+
+    func claudePath() throws -> String {
+        guard cli.isInstalled else { throw ManagerError.claudeMissing }
+        return cli.path
     }
 
     public var hasCodex: Bool { codex != nil }
@@ -465,7 +476,7 @@ public actor SessionManager {
             return
         }
         guard FileManager.default.fileExists(atPath: stored.cwd) else { throw ManagerError.cwdMissing(stored.cwd) }
-        var config = CLIProcess.Config(cliPath: cli.path, cwd: stored.cwd)
+        var config = CLIProcess.Config(cliPath: try claudePath(), cwd: stored.cwd)
         config.resume = sessionId
         let kind = SessionManager.kind(cwd: stored.cwd)
         if kind == .chat {
@@ -490,6 +501,10 @@ public actor SessionManager {
     }
 
     public func create(_ options: NewSessionOptions) async throws -> SessionState {
+        var options = options
+        // A quick chat from a phone that asked for Claude (or an older app that always does) goes to
+        // Codex on a Mac without the Claude CLI; a work session has Claude-only settings, so it is refused.
+        if options.kind == .chat, options.agent == .claude, !cli.isInstalled, codex != nil { options.agent = .codex }
         let isChat = options.kind == .chat
         let cwd = isChat ? SessionManager.chatDirectory : options.cwd
         if isChat {
@@ -510,7 +525,7 @@ public actor SessionManager {
             return h.state
         }
         let sessionId = UUID().uuidString.lowercased()
-        var config = CLIProcess.Config(cliPath: cli.path, cwd: cwd)
+        var config = CLIProcess.Config(cliPath: try claudePath(), cwd: cwd)
         config.sessionId = sessionId
         config.model = options.model ?? (isChat ? "claude-sonnet-5" : nil)
         config.effort = options.effort
@@ -539,7 +554,7 @@ public actor SessionManager {
         guard let stored = store.session(id: sessionId) else { throw ManagerError.unknownSession(sessionId) }
         guard FileManager.default.fileExists(atPath: stored.cwd) else { throw ManagerError.cwdMissing(stored.cwd) }
         let newId = UUID().uuidString.lowercased()
-        var config = CLIProcess.Config(cliPath: cli.path, cwd: stored.cwd)
+        var config = CLIProcess.Config(cliPath: try claudePath(), cwd: stored.cwd)
         config.resume = sessionId
         config.forkSession = true
         config.sessionId = newId
@@ -1205,7 +1220,7 @@ public actor SessionManager {
         // read the account's plan limits, then tear it down. Rate limits are account-global.
         let resolved = cwdFor(sessionId) ?? NSHomeDirectory()
         let cwd = FileManager.default.fileExists(atPath: resolved) ? resolved : NSHomeDirectory()
-        var config = CLIProcess.Config(cliPath: cli.path, cwd: cwd)
+        var config = CLIProcess.Config(cliPath: try claudePath(), cwd: cwd)
         config.sessionId = UUID().uuidString.lowercased()
         let probe = CLIProcess(config: config)
         probe.log = { [weak self] line in self?.log("[usage] \(line)") }

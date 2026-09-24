@@ -94,7 +94,7 @@ struct SettingsWindow: View {
                 }
                 if let claude = model.status?.claude {
                     LabeledContent("Using") {
-                        Text(claude.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled).lineLimit(2)
+                        Text(claude.installed ? claude.path : "not installed — Codex only").font(.system(.caption, design: .monospaced)).textSelection(.enabled).lineLimit(2)
                     }
                 }
                 LabeledContent("codex binary") {
