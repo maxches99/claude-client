@@ -4,7 +4,8 @@ import Foundation
 /// 4: rewind, palette, worktrees, the task queue and background processes.
 /// 5: the digest, terminals, handoff to the Mac and share links.
 /// 6: pull requests from tasks, branch review, cloning into the workspace, duels, the scheduled digest.
-public let protocolVersion = 10
+/// 11: tasks that repeat on weekdays or every N hours, pause / skip the next run, run history.
+public let protocolVersion = 11
 
 /// Which coding agent runs a session. Claude Code is the default everywhere a field is missing,
 /// so messages from an older build still decode.

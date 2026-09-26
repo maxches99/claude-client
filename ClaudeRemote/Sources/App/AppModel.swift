@@ -65,6 +65,8 @@ final class AppModel {
     var supportsPeople: Bool { (host?.protocolVersion ?? 1) >= 9 }
     /// Answering review comments on a task's pull request (protocol 10).
     var supportsReviewAnswers: Bool { (host?.protocolVersion ?? 1) >= 10 }
+    /// Tasks on weekdays / every N hours, pause and skip, run history.
+    var supportsSchedules: Bool { (host?.protocolVersion ?? 1) >= 11 }
     /// This phone is a member of the host, not its owner.
     var isMember: Bool { host?.me.map { !$0.isOwner } ?? false }
     /// Chats, sessions and tasks only — for someone who wants just that, and for a host's members.

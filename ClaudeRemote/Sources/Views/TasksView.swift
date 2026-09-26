@@ -13,6 +13,7 @@ struct TasksView: View {
     @State private var confirmUndo: AgentTask?
 
     @State private var showNewDuel = false
+    @State private var history: AgentTask?
     /// Offline a task can still be written (it waits in the outbox) as long as the projects are known.
     private var canAddTask: Bool { model.isConnected || !model.projects.isEmpty }
     @State private var reviewing: String?
@@ -75,6 +76,7 @@ struct TasksView: View {
             }
             .sheet(isPresented: $showNew) { TaskEditor(task: nil) }
             .sheet(isPresented: $showNewDuel) { DuelEditor() }
+            .sheet(item: $history) { task in RunHistoryView(task: task) }
             .sheet(item: Binding(get: { reviewing.map { ReviewTarget(sessionId: $0) } }, set: { reviewing = $0?.sessionId })) { target in
                 ReviewView(sessionId: target.sessionId)
             }
@@ -165,15 +167,20 @@ struct TasksView: View {
                     Text("·")
                     Label("worktree", systemImage: "arrow.triangle.branch").labelStyle(.titleAndIcon)
                 }
-                if let daily = task.dailyLabel {
+                if let schedule = task.scheduleLabel() {
                     Text("·")
-                    Label("daily \(daily)", systemImage: "clock.arrow.circlepath").labelStyle(.titleAndIcon)
+                    Label(task.paused ? "\(schedule) · paused" : schedule,
+                          systemImage: task.paused ? "pause.circle" : "clock.arrow.circlepath").labelStyle(.titleAndIcon)
                 } else if task.status == .scheduled, let at = task.runAt {
                     Text("·")
                     Text(at, style: .time)
                 }
             }
             .font(CDS.caption).foregroundStyle(CDS.textMuted)
+            if task.repeats, !task.paused, task.status == .scheduled, let at = task.runAt {
+                (Text("next ") + Text(at, style: .relative)).font(CDS.caption).foregroundStyle(CDS.textMuted)
+            }
+            if let runs = task.runs, !runs.isEmpty { RunHistoryDots(runs: runs) }
             if let summary = task.resultSummary, !summary.isEmpty, task.status != .running {
                 Text(summary).font(CDS.caption).foregroundStyle(CDS.textSecondary).lineLimit(3)
             }
@@ -260,6 +267,19 @@ struct TasksView: View {
             if task.status == .queued || task.status == .scheduled {
                 Button("Run now", systemImage: "play.fill") { model.taskAction(task.id, .runNow) }
                 Button("Edit…", systemImage: "pencil") { editing = task }
+            }
+            if model.supportsSchedules, task.repeats {
+                if task.paused {
+                    Button("Resume", systemImage: "play.circle") { model.taskAction(task.id, .resume) }
+                } else {
+                    Button("Pause", systemImage: "pause.circle") { model.taskAction(task.id, .pause) }
+                    if task.status == .scheduled {
+                        Button("Skip the next run", systemImage: "forward.end") { model.taskAction(task.id, .skipNext) }
+                    }
+                }
+                if task.runs?.isEmpty == false {
+                    Button("Run history…", systemImage: "list.bullet.rectangle") { history = task }
+                }
             }
             if task.status == .running || task.status == .queued || task.status == .scheduled {
                 Button("Cancel", systemImage: "stop.fill", role: .destructive) { model.taskAction(task.id, .cancel) }
@@ -352,17 +372,24 @@ struct TaskEditor: View {
     @State private var template: PromptTemplate?
     @State private var schedule = Schedule.now
     @State private var time = Date()
+    /// `Calendar` weekdays for `.weekdays`; Monday to Friday to start with.
+    @State private var weekdays: Set<Int> = [2, 3, 4, 5, 6]
+    @State private var everyHours = 4
 
     private enum Schedule: String, CaseIterable, Identifiable {
-        case now, once, daily
+        case now, once, daily, weekdays, interval
         var id: String { rawValue }
         var label: String {
             switch self {
             case .now: return "As soon as there's a slot"
             case .once: return "At a time today"
             case .daily: return "Every day"
+            case .weekdays: return "On some days of the week"
+            case .interval: return "Every few hours"
             }
         }
+        /// Needs a host on protocol 11.
+        var isNew: Bool { self == .weekdays || self == .interval }
     }
 
     private var projects: [ProjectInfo] { model.projects }
@@ -464,9 +491,12 @@ struct TaskEditor: View {
                 }
                 Section("When") {
                     Picker("Start", selection: $schedule) {
-                        ForEach(Schedule.allCases) { option in Text(option.label).tag(option) }
+                        ForEach(Schedule.allCases.filter { !$0.isNew || model.supportsSchedules }) { option in Text(option.label).tag(option) }
                     }
-                    if schedule != .now {
+                    if schedule == .weekdays { WeekdayPicker(selection: $weekdays) }
+                    if schedule == .interval {
+                        Stepper(everyHours == 1 ? "Every hour" : "Every \(everyHours) hours", value: $everyHours, in: 1...24)
+                    } else if schedule != .now {
                         DatePicker("Time", selection: $time, displayedComponents: .hourAndMinute)
                     }
                 }
@@ -525,8 +555,16 @@ struct TaskEditor: View {
             wantsPreview = task.wantsPreview
             planFirst = task.planFirst
             answerReviews = task.answerReviews
-            if let minutes = task.dailyAtMinutes {
-                schedule = .daily
+            if let every = task.repeatEveryMinutes {
+                schedule = .interval
+                everyHours = max(1, every / 60)
+            } else if let minutes = task.dailyAtMinutes {
+                if let days = task.weekdays {
+                    schedule = .weekdays
+                    weekdays = Set(days)
+                } else {
+                    schedule = .daily
+                }
                 time = Calendar.current.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: Date()) ?? Date()
             } else if let at = task.runAt {
                 schedule = .once
@@ -557,6 +595,8 @@ struct TaskEditor: View {
         built.wantsPreview = wantsPreview
         built.planFirst = planFirst
         built.answerReviews = built.openPullRequest && answerReviews
+        built.repeatWeekdays = nil
+        built.repeatEveryMinutes = nil
         switch schedule {
         case .now:
             built.dailyAtMinutes = nil
@@ -567,6 +607,14 @@ struct TaskEditor: View {
         case .daily:
             built.dailyAtMinutes = minutes
             built.runAt = TaskEditor.nextOccurrence(minutes: minutes)
+        case .weekdays:
+            built.dailyAtMinutes = minutes
+            built.repeatWeekdays = weekdays.sorted()
+            built.runAt = AgentTask.nextTime(minutes: minutes, weekdays: built.weekdays, after: Date())
+        case .interval:
+            built.dailyAtMinutes = nil
+            built.repeatEveryMinutes = everyHours * 60
+            built.runAt = Date()   // the first run goes as soon as there is a slot
         }
         if task == nil { model.addTask(built) } else { model.updateTask(built) }
         dismiss()
@@ -588,4 +636,119 @@ struct TaskEditor: View {
 struct ReviewTarget: Identifiable {
     let sessionId: String
     var id: String { sessionId }
+}
+
+/// Seven toggles, Monday first, for the days a repeating task runs on.
+struct WeekdayPicker: View {
+    @Binding var selection: Set<Int>
+
+    /// Calendar weekdays in the order a week reads here (Monday first).
+    private let order = [2, 3, 4, 5, 6, 7, 1]
+
+    var body: some View {
+        let symbols = Calendar.current.veryShortWeekdaySymbols
+        HStack(spacing: 6) {
+            ForEach(order, id: \.self) { day in
+                let on = selection.contains(day)
+                Button {
+                    // At least one day stays on; an empty set would mean "every day".
+                    if on, selection.count > 1 { selection.remove(day) } else { selection.insert(day) }
+                } label: {
+                    Text(symbols[day - 1])
+                        .font(CDS.captionMedium)
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                        .foregroundStyle(on ? Color.white : CDS.textSecondary)
+                        .background(on ? CDS.brand : CDS.fillNeutral, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Calendar.current.weekdaySymbols[day - 1])
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// The last runs of a repeating task as a row of dots, oldest first.
+struct RunHistoryDots: View {
+    let runs: [TaskRun]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(runs.suffix(10).enumerated()), id: \.offset) { _, run in
+                Circle().fill(RunHistoryView.color(run.outcome)).frame(width: 7, height: 7)
+            }
+            if let last = runs.last {
+                Text(RunHistoryView.label(last.outcome) + " ").font(CDS.caption).foregroundStyle(CDS.textMuted)
+                    + Text(last.finishedAt, style: .relative).font(CDS.caption).foregroundStyle(CDS.textMuted)
+                    + Text(" ago").font(CDS.caption).foregroundStyle(CDS.textMuted)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Every remembered run of a repeating task: when, how it ended, what it said, its pull request.
+struct RunHistoryView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let task: AgentTask
+
+    static func color(_ outcome: TaskRun.Outcome) -> Color {
+        switch outcome {
+        case .done: return CDS.success
+        case .failed: return CDS.danger
+        case .noChanges: return CDS.textMuted
+        }
+    }
+
+    static func label(_ outcome: TaskRun.Outcome) -> String {
+        switch outcome {
+        case .done: return "Done"
+        case .failed: return "Failed"
+        case .noChanges: return "Nothing to change"
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(Array((task.runs ?? []).reversed().enumerated()), id: \.offset) { _, run in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Circle().fill(Self.color(run.outcome)).frame(width: 8, height: 8)
+                            Text(Self.label(run.outcome)).font(CDS.bodyMedium).foregroundStyle(CDS.textPrimary)
+                            Spacer(minLength: 0)
+                            Text(run.finishedAt, format: .dateTime.weekday(.abbreviated).day().month().hour().minute())
+                                .font(CDS.caption).foregroundStyle(CDS.textMuted)
+                        }
+                        if let summary = run.summary, !summary.isEmpty {
+                            Text(summary).font(CDS.caption).foregroundStyle(CDS.textSecondary).lineLimit(4)
+                        }
+                        HStack(spacing: 10) {
+                            if let stat = run.diffStat, stat.files > 0 { Text(stat.label).font(CDS.caption).foregroundStyle(CDS.textMuted) }
+                            if let pr = run.pullRequestURL, let url = URL(string: pr) {
+                                Link(destination: url) { Label("Pull request", systemImage: "arrow.triangle.pull").font(CDS.caption.weight(.medium)) }
+                            }
+                            if let sessionId = run.sessionId {
+                                Button("Open the session") {
+                                    dismiss()
+                                    model.present(sessionId, kind: .agent)
+                                }
+                                .font(CDS.caption.weight(.medium))
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                    .listRowBackground(CDS.surface0)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(CDS.surface0)
+            .navigationTitle(task.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+    }
 }

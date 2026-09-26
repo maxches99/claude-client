@@ -48,8 +48,17 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
     public var error: String?
     /// When a scheduled task runs next (nil = as soon as a slot frees up).
     public var runAt: Date?
-    /// Minutes since local midnight for a task that repeats every day.
+    /// Minutes since local midnight for a task that repeats every day (or on `repeatWeekdays`).
     public var dailyAtMinutes: Int?
+    /// With `dailyAtMinutes`: the days it runs on, as `Calendar` weekdays (1 = Sunday … 7 = Saturday).
+    /// Nil or empty = every day.
+    public var repeatWeekdays: [Int]?
+    /// Runs again this many minutes after each run finishes (instead of at a time of day).
+    public var repeatEveryMinutes: Int?
+    /// A repeating task that is kept but not run until resumed.
+    public var paused: Bool
+    /// The last runs of a repeating task, newest last.
+    public var runs: [TaskRun]?
     /// Run in a fresh git worktree of `cwd` instead of the working tree, so parallel tasks don't collide.
     public var inWorktree: Bool
     /// The worktree the daemon made for it (so the phone can offer to remove it afterwards).
@@ -98,12 +107,16 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
     /// A follow-up for review comments (with `repairOf`), not a CI repair.
     public var isReviewFollowUp: Bool
 
+    /// How many runs a repeating task remembers.
+    public static let runHistoryLimit = 20
+
     public init(id: String = UUID().uuidString.lowercased(), title: String, prompt: String, cwd: String, agent: AgentKind = .claude,
                 model: String? = nil, permissionMode: String? = nil, status: Status = .queued, sessionId: String? = nil,
                 createdAt: Date = Date(), startedAt: Date? = nil, finishedAt: Date? = nil, resultSummary: String? = nil,
                 error: String? = nil, runAt: Date? = nil, dailyAtMinutes: Int? = nil, inWorktree: Bool = false, worktreePath: String? = nil,
                 openPullRequest: Bool = false, duelId: String? = nil, effort: String? = nil, label: String? = nil,
-                issue: IssueRef? = nil, fixCI: Bool = false, repairOf: String? = nil, wantsPreview: Bool = false, planFirst: Bool = false, answerReviews: Bool = false, isReviewFollowUp: Bool = false) {
+                issue: IssueRef? = nil, fixCI: Bool = false, repairOf: String? = nil, wantsPreview: Bool = false, planFirst: Bool = false, answerReviews: Bool = false, isReviewFollowUp: Bool = false,
+                repeatWeekdays: [Int]? = nil, repeatEveryMinutes: Int? = nil, paused: Bool = false) {
         self.id = id
         self.title = title
         self.prompt = prompt
@@ -133,6 +146,9 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
         self.planFirst = planFirst
         self.answerReviews = answerReviews
         self.isReviewFollowUp = isReviewFollowUp
+        self.repeatWeekdays = repeatWeekdays
+        self.repeatEveryMinutes = repeatEveryMinutes
+        self.paused = paused
     }
 
     public init(from decoder: Decoder) throws {
@@ -179,18 +195,73 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
         answerReviews = try c.decodeIfPresent(Bool.self, forKey: .answerReviews) ?? false
         reviews = try c.decodeIfPresent(TaskReviews.self, forKey: .reviews)
         isReviewFollowUp = try c.decodeIfPresent(Bool.self, forKey: .isReviewFollowUp) ?? false
+        repeatWeekdays = try c.decodeIfPresent([Int].self, forKey: .repeatWeekdays)
+        repeatEveryMinutes = try c.decodeIfPresent(Int.self, forKey: .repeatEveryMinutes)
+        paused = try c.decodeIfPresent(Bool.self, forKey: .paused) ?? false
+        runs = try c.decodeIfPresent([TaskRun].self, forKey: .runs)
     }
 
     /// The name a duel screen or notification uses for this task's side.
     public var sideLabel: String { label ?? agent.label }
 
     public var projectName: String { (cwd as NSString).lastPathComponent }
-    public var repeats: Bool { dailyAtMinutes != nil }
+    public var repeats: Bool { dailyAtMinutes != nil || repeatEveryMinutes != nil }
 
     /// "09:30" for a daily task.
     public var dailyLabel: String? {
         guard let m = dailyAtMinutes else { return nil }
         return String(format: "%02d:%02d", m / 60, m % 60)
+    }
+
+    /// The days a time-of-day task runs on, sorted; nil = every day.
+    public var weekdays: [Int]? {
+        guard let days = repeatWeekdays.map({ Array(Set($0.filter { (1...7).contains($0) })).sorted() }), !days.isEmpty, days.count < 7 else { return nil }
+        return days
+    }
+
+    /// "Daily 09:30", "Weekdays 09:30", "Mon, Thu 18:00", "Every 2 h" — nil for a one-off task.
+    public func scheduleLabel(calendar: Calendar = .current) -> String? {
+        if let every = repeatEveryMinutes {
+            if every % 60 == 0 { return every == 60 ? "Every hour" : "Every \(every / 60) h" }
+            return "Every \(every) min"
+        }
+        guard let time = dailyLabel else { return nil }
+        guard let days = weekdays else { return "Daily \(time)" }
+        if days == [2, 3, 4, 5, 6] { return "Weekdays \(time)" }
+        if days == [1, 7] { return "Weekends \(time)" }
+        let symbols = calendar.shortWeekdaySymbols
+        return days.map { symbols[$0 - 1] }.joined(separator: ", ") + " " + time
+    }
+
+    /// When a repeating task runs next after `now`: the next matching time of day (on its weekdays),
+    /// or `repeatEveryMinutes` from now. Nil for a one-off task.
+    public func nextRun(after now: Date = Date(), calendar: Calendar = .current) -> Date? {
+        if let every = repeatEveryMinutes {
+            return now.addingTimeInterval(TimeInterval(max(15, every) * 60))
+        }
+        guard let minutes = dailyAtMinutes else { return nil }
+        return AgentTask.nextTime(minutes: minutes, weekdays: weekdays, after: now, calendar: calendar)
+    }
+
+    /// The next moment `minutes` past local midnight, today or later, on one of `weekdays` (nil = any day).
+    public static func nextTime(minutes: Int, weekdays: [Int]?, after now: Date, calendar: Calendar = .current) -> Date {
+        let clamped = min(max(0, minutes), 24 * 60 - 1)
+        let startOfToday = calendar.startOfDay(for: now)
+        for offset in 0...7 {
+            guard let day = calendar.date(byAdding: .day, value: offset, to: startOfToday),
+                  let at = calendar.date(bySettingHour: clamped / 60, minute: clamped % 60, second: 0, of: day) else { continue }
+            guard at > now else { continue }
+            if let weekdays, !weekdays.contains(calendar.component(.weekday, from: at)) { continue }
+            return at
+        }
+        return now.addingTimeInterval(86_400)
+    }
+
+    /// Adds a finished run to the history, keeping the newest `runHistoryLimit`.
+    public mutating func record(_ run: TaskRun) {
+        var list = runs ?? []
+        list.append(run)
+        runs = Array(list.suffix(AgentTask.runHistoryLimit))
     }
 
     /// A title from the first line of the prompt when none was typed.
@@ -283,6 +354,40 @@ public enum TaskAction: String, Codable, Sendable {
     case restoreSnapshot
     /// Stop (or start) answering review comments on the pull request.
     case toggleAnswerReviews
+    /// Keep a repeating task but stop running it (protocol 11).
+    case pause
+    case resume
+    /// Leave out the next run of a repeating task; the one after goes ahead (protocol 11).
+    case skipNext
+}
+
+/// One run of a repeating task, kept on it as history.
+public struct TaskRun: Codable, Equatable, Sendable {
+    public enum Outcome: String, Codable, Sendable {
+        case done
+        case failed
+        /// Finished without changing anything (a worktree task with an empty diff) — no pull request.
+        case noChanges
+    }
+
+    public var startedAt: Date?
+    public var finishedAt: Date
+    public var outcome: Outcome
+    public var summary: String?
+    public var sessionId: String?
+    public var pullRequestURL: String?
+    public var diffStat: DiffStat?
+
+    public init(startedAt: Date?, finishedAt: Date, outcome: Outcome, summary: String? = nil, sessionId: String? = nil,
+                pullRequestURL: String? = nil, diffStat: DiffStat? = nil) {
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.outcome = outcome
+        self.summary = summary
+        self.sessionId = sessionId
+        self.pullRequestURL = pullRequestURL
+        self.diffStat = diffStat
+    }
 }
 
 /// The same prompt given to Claude and to Codex, each in its own worktree, and a judge's verdict on
