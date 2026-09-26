@@ -450,3 +450,38 @@ struct QueuedPromptsStrip: View {
         .padding(.horizontal, 2)
     }
 }
+
+/// Prompts written while the Mac was out of reach: they go out, in order, once it answers again.
+struct OutboxStrip: View {
+    @Environment(AppModel.self) private var model
+    let items: [OutboxItem]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "icloud.slash").font(.caption2)
+                Text(items.count == 1 ? "Not sent yet · goes out when the Mac is back" : "\(items.count) not sent yet · go out in order when the Mac is back")
+                    .font(CDS.caption)
+            }
+            .foregroundStyle(CDS.textMuted)
+            ForEach(items) { item in
+                HStack(alignment: .top, spacing: 8) {
+                    Text(item.preview)
+                        .font(CDS.body).foregroundStyle(CDS.textSecondary).lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button { model.cancelOutboxItem(item.id) } label: {
+                        Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(CDS.textMuted)
+                            .frame(width: 22, height: 22)
+                            .background(CDS.fillNeutral, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Don't send")
+                }
+                .padding(8)
+                .background(CDS.surface2, in: RoundedRectangle(cornerRadius: CDS.radius))
+                .overlay(RoundedRectangle(cornerRadius: CDS.radius).strokeBorder(CDS.border, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+            }
+        }
+        .padding(.horizontal, 2)
+    }
+}

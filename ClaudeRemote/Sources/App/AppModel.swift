@@ -101,6 +101,12 @@ final class AppModel {
         set { if let id = activeMacId { permissionsByMac[id] = newValue } }
     }
     var errorBanner: String?
+    /// Prompts and tasks written while a Mac was out of reach, per Mac (see Outbox.swift).
+    var outboxByMac: [String: [OutboxItem]] = [:]
+    /// "Sent 2 prompts written offline." — shown once the outbox went out.
+    var outboxNotice: String?
+    /// Sessions whose parked prompts wait for the Mac to attach them again.
+    var outboxAwaitingAttach: Set<String> = []
     /// Sessions and chats are separate tabs, each with its own navigation stack.
     var tab: AppTab = .sessions
     var sessionPath: [String] = []
@@ -157,6 +163,7 @@ final class AppModel {
         activeMacId = saved.activeId ?? saved.macs.first?.id
         loadCachedSessions()
         loadSessionFlags()
+        loadOutboxes()
         syncConnections()
     }
 
@@ -275,6 +282,8 @@ final class AppModel {
         sessionsByMac[id] = nil
         permissionsByMac[id] = nil
         hostByMac[id] = nil
+        outboxByMac[id] = nil
+        OutboxStore(macId: id).remove()
         guard id == activeMacId else { persistMacs(); return }
         resetHostState()
         activeMacId = nil
@@ -454,6 +463,7 @@ final class AppModel {
 
     private func loadCachedSessions() {
         guard let cache, sessions.isEmpty else { return }
+        if projects.isEmpty { projects = cache.loadProjects() }
         let cached = cache.loadSessions()
         if !cached.isEmpty {
             sessions = cached
@@ -625,7 +635,9 @@ final class AppModel {
     }
 
     func prompt(_ sessionId: String, text: String, images: [InlineImage] = [], attachments: [Attachment]? = nil) {
-        sendMessage(.prompt(sessionId: sessionId, text: text, images: images, attachments: attachments))
+        let preview = text.isEmpty ? "\((attachments?.count ?? 0) + images.count) attachment(s)" : text
+        guard sendOrPark(.prompt(sessionId: sessionId, text: text, images: images, attachments: attachments),
+                         kind: .prompt, preview: preview, session: sessionId) else { return }
         // Mid-turn the host queues it; the turn that is running keeps its own timer.
         let status = states[sessionId]?.status
         guard status != .running, status != .awaitingPermission else { return }
@@ -1052,6 +1064,7 @@ final class AppModel {
             requestDigestIfAway(macId)
             updateMac(macId) { $0.hostName = host.hostName; $0.lastConnectedAt = Date() }
             guard isActive else {
+                flushOutbox(macId)
                 connections[macId]?.send(.listSessions)
                 return
             }
@@ -1063,7 +1076,11 @@ final class AppModel {
             for id in openSessionIds { sendMessage(.open(sessionId: id, since: transcripts[id] != nil ? lastSeq[id] : nil)) }
             if let udid = simulatorFeed.watching { sendSimulatorStream(udid, enabled: true) }
             for id in liveActivities.activeSessionIds { registerActivityToken(id, token: liveActivities.pushToken(for: id)) }
-        case .error(let text, _):
+            let parkedTasks = outboxByMac[macId]?.contains { $0.kind == .task } ?? false
+            flushOutbox(macId)
+            if parkedTasks { requestTasks() }
+        case .error(let text, let sessionId):
+            if let sessionId, outboxAwaitingAttach.contains(sessionId) { parkedSessionFailed(sessionId) }
             if isActive { errorBanner = text }
         case .sessions(let items):
             sessionsByMac[macId] = items
@@ -1075,7 +1092,9 @@ final class AppModel {
         case .projects(let items):
             guard isActive else { return }
             projects = items
+            cache?.saveProjects(items)
         case .history(let sessionId, let entries):
+            defer { releaseParkedPrompts(sessionId, from: macId) }
             guard isActive else { return }
             var transcript = Transcript()
             transcript.apply(entries: entries)
@@ -1091,6 +1110,7 @@ final class AppModel {
                 if quietCreate { quietCreate = false } else { present(sessionId, kind: awaitingKind) }
             }
         case .catchUp(let sessionId, let entries, let seq):
+            defer { releaseParkedPrompts(sessionId, from: macId) }
             guard isActive else { return }
             guard transcripts[sessionId] != nil else { return }
             transcripts[sessionId]?.apply(entries: entries)

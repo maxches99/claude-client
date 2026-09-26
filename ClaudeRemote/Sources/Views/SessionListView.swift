@@ -125,6 +125,12 @@ struct SessionListView: View {
             if let error = model.errorBanner {
                 CDSBanner(kind: .danger, text: error, systemImage: "exclamationmark.triangle.fill") { model.errorBanner = nil }
             }
+            if !model.isConnected, !model.pendingOutbox.isEmpty {
+                let count = model.pendingOutbox.count
+                CDSBanner(kind: .info, text: count == 1 ? "1 message waits to be sent when the Mac is back." : "\(count) messages wait to be sent when the Mac is back.", systemImage: "icloud.slash")
+            } else if let notice = model.outboxNotice {
+                CDSBanner(kind: .info, text: notice, systemImage: "paperplane") { model.outboxNotice = nil }
+            }
             if model.hostNeedsUpdate {
                 CDSBanner(kind: .warning, text: "The ClaudeRemote Host app on the Mac is older than this app — update it to use chats and Codex.", systemImage: "arrow.down.circle")
             }

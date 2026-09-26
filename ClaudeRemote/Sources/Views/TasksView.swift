@@ -13,6 +13,8 @@ struct TasksView: View {
     @State private var confirmUndo: AgentTask?
 
     @State private var showNewDuel = false
+    /// Offline a task can still be written (it waits in the outbox) as long as the projects are known.
+    private var canAddTask: Bool { model.isConnected || !model.projects.isEmpty }
     @State private var reviewing: String?
 
     private var solo: [AgentTask] { model.tasks.filter { $0.duelId == nil } }
@@ -62,11 +64,12 @@ struct TasksView: View {
                         Menu {
                             Button("New task", systemImage: "plus") { showNew = true }
                             Button(model.hasBothAgents ? "New duel: Claude vs Codex" : "New duel: model vs model", systemImage: "figure.fencing") { showNewDuel = true }
+                                .disabled(!model.isConnected)
                         } label: { Image(systemName: "plus") }
-                        .disabled(!model.isConnected)
+                        .disabled(!canAddTask)
                     } else {
                         Button { showNew = true } label: { Image(systemName: "plus") }
-                            .disabled(!model.isConnected)
+                            .disabled(!canAddTask)
                     }
                 }
             }

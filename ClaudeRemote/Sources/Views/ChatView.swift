@@ -689,8 +689,9 @@ struct ComposerDock: View {
     // sessions receive all files (images included) staged to disk on the Mac and referenced by path.
     private var canAttach: Bool { model.isConnected }
     private var hasAttachments: Bool { !files.isEmpty || !macFiles.isEmpty }
+    /// Offline too: what is written then waits in the outbox and goes out when the Mac is back.
     private var canSend: Bool {
-        (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasAttachments) && model.isConnected
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasAttachments
     }
 
     var body: some View {
@@ -708,6 +709,8 @@ struct ComposerDock: View {
             if let queued = state?.queued, !queued.isEmpty {
                 QueuedPromptsStrip(sessionId: sessionId, queued: queued)
             }
+            let parked = model.pendingPrompts(for: sessionId)
+            if !parked.isEmpty { OutboxStrip(items: parked) }
             if handsFree { handsFreeStrip }
             if let error = state?.lastError, state?.status == .exited {
                 notice(error, tint: CDS.danger)
@@ -867,7 +870,6 @@ struct ComposerDock: View {
                 .font(CDS.prose)
                 .foregroundStyle(CDS.textPrimary)
                 .focused(focused)
-                .disabled(!model.isConnected)
                 .padding(.horizontal, 6).padding(.top, 6)
             HStack(spacing: 6) {
                 if canAttach {

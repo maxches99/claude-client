@@ -178,7 +178,7 @@ extension AppModel {
 
     func addTask(_ task: AgentTask) {
         tasks.append(task)   // optimistic; the Mac answers with the real queue
-        sendMessage(.addTask(task: task))
+        sendOrPark(.addTask(task: task), kind: .task, preview: task.title)
     }
 
     func updateTask(_ task: AgentTask) {
