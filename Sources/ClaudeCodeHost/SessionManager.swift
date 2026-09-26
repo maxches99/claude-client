@@ -159,6 +159,10 @@ public actor SessionManager {
     /// When the daily digest goes out (SessionManagerDigestSchedule.swift).
     var digestSchedule = DigestSchedule()
     var digestTimer: Task<Void, Never>?
+    /// Crash reporters (with their tokens) and the crashes they reported (SessionManagerCrashes.swift).
+    var crashSources: [CrashSource] = []
+    var crashIssues: [CrashIssue] = []
+    var crashTimer: Task<Void, Never>?
     /// Where cloned repositories go; also listed as projects.
     let workspaceRoot: String
     /// `digest-schedule.json` next to `tasks.json`.
@@ -218,6 +222,7 @@ public actor SessionManager {
             await self?.loadSessionOwners()
             await self?.startHealthWatch()
             await self?.loadDigestSchedule()
+            await self?.loadCrashes()
             await self?.loadPhoneSessions()
         }
     }

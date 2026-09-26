@@ -133,7 +133,7 @@ extension SessionManager {
             let own = items.filter { mine($0.sessionId) || ($0.taskId.map { id in tasks.first { $0.id == id }?.ownerId == user } ?? false) }
             return own.isEmpty && live ? nil : .events(items: own, live: live)
         case .projects: return .projects(items: projects(for: user))
-        case .duels, .processes, .terminals, .terminalOutput, .terminalExited, .digest, .simulators, .simulatorFrame, .simulatorVideo:
+        case .duels, .processes, .terminals, .terminalOutput, .terminalExited, .digest, .simulators, .simulatorFrame, .simulatorVideo, .crashes:
             return nil
         default:
             return message

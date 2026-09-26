@@ -27,6 +27,7 @@ struct SessionListView: View {
     @State private var showClone = false
     @State private var showAudit = false
     @State private var showFeed = false
+    @State private var showCrashes = false
     @State private var showTranslator = false
 
     private var isChats: Bool { scope == .chats }
@@ -255,6 +256,9 @@ struct SessionListView: View {
                     if model.supportsOperations, !model.isMember {
                         Button("Feed…", systemImage: "list.bullet.below.rectangle") { showFeed = true }
                     }
+                    if !isChats, model.supportsSchedules, !model.isMember, !model.simpleUI {
+                        Button("Crashes…", systemImage: "ant") { showCrashes = true }
+                    }
                     Divider()
                     Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
                     if model.macs.count > 1 {
@@ -300,6 +304,7 @@ struct SessionListView: View {
         .sheet(isPresented: $showTerminals) { TerminalsView(sessionId: nil) }
         .sheet(isPresented: $showAudit) { AuditView() }
         .sheet(isPresented: $showFeed) { FeedView() }
+        .sheet(isPresented: $showCrashes) { CrashesView() }
         .fullScreenCover(isPresented: $showTranslator) { TranslatorView() }
         .sheet(isPresented: $showClone) { CloneRepositoryView() }
         .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {

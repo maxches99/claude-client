@@ -1013,6 +1013,11 @@ final class AppModel {
 
     // MARK: protocol 7 state (AppModel+Automation.swift)
     var issuesByCwd: [String: IssueList] = [:]
+    /// Crash reporters the active Mac watches and what they reported (CrashesView).
+    var crashSources: [CrashSource] = []
+    var crashIssues: [CrashIssue] = []
+    var crashError: String?
+    var crashesLoaded = false
     var templatesByCwd: [String: [PromptTemplate]] = [:]
     var auditReport: AuditReport?
     var auditLoading = false
@@ -1320,7 +1325,7 @@ final class AppModel {
             guard isActive else { return }
             digestSchedule = schedule
             digestScheduleError = error
-        case .issues, .templates, .audit, .relaySetup, .relayConfigured, .github, .hostUpdate:
+        case .issues, .templates, .audit, .relaySetup, .relayConfigured, .github, .hostUpdate, .crashes:
             receiveAutomation(message, from: macId, isActive: isActive)
         case .events, .health:
             receiveOperations(message, from: macId)

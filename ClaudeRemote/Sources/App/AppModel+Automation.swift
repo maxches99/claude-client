@@ -107,10 +107,31 @@ extension AppModel {
         send(.updateHost, toMac: macId)
     }
 
+    // MARK: crashes
+
+    func requestCrashes() { sendMessage(.listCrashes) }
+    func saveCrashSource(_ source: CrashSource) { crashError = nil; sendMessage(.setCrashSource(source: source)) }
+    func removeCrashSource(_ id: String) { sendMessage(.removeCrashSource(id: id)) }
+    func checkCrashesNow() { sendMessage(.checkCrashes) }
+    func fixCrash(_ id: String) {
+        if let i = crashIssues.firstIndex(where: { $0.id == id }) { crashIssues[i].taskId = crashIssues[i].taskId ?? "pending" }
+        sendMessage(.fixCrash(id: id))
+    }
+    func ignoreCrash(_ id: String) {
+        crashIssues.removeAll { $0.id == id }
+        sendMessage(.ignoreCrash(id: id))
+    }
+
     // MARK: receiving
 
     func receiveAutomation(_ message: ServerMessage, from macId: String, isActive: Bool) {
         switch message {
+        case .crashes(let sources, let items, let error):
+            guard isActive else { return }
+            crashSources = sources
+            crashIssues = items
+            crashError = error
+            crashesLoaded = true
         case .issues(let cwd, let items, let error):
             guard isActive else { return }
             issuesByCwd[cwd] = IssueList(items: items, error: error, loading: false)

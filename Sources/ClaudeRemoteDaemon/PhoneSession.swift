@@ -442,6 +442,27 @@ final class PhoneSession: @unchecked Sendable {
                 }
             case .getDigestSchedule:
                 send(.digestSchedule(schedule: await manager.currentDigestSchedule(), error: nil))
+            case .listCrashes:
+                send(await manager.crashReport())
+            case .setCrashSource(let source):
+                do {
+                    try await manager.setCrashSource(source)
+                    send(await manager.crashReport())
+                } catch {
+                    send(await manager.crashReport(error: "\(error)"))
+                }
+            case .removeCrashSource(let id):
+                await manager.removeCrashSource(id: id)
+            case .checkCrashes:
+                await manager.checkCrashes()
+            case .fixCrash(let id):
+                do {
+                    try await manager.fixCrash(id: id)
+                } catch {
+                    send(await manager.crashReport(error: "\(error)"))
+                }
+            case .ignoreCrash(let id):
+                await manager.ignoreCrash(id: id)
             case .listIssues(let cwd):
                 do {
                     send(.issues(cwd: cwd, items: try await manager.listIssues(cwd: cwd), error: nil))

@@ -149,6 +149,17 @@ public enum ClientMessage: Codable, Sendable {
     case getDigestSchedule
     /// Open issues of the project's GitHub repository; answered with `issues`.
     case listIssues(cwd: String)
+    /// Crash reporters the host watches and the crashes it has seen; answered with `crashes` (protocol 11).
+    case listCrashes
+    /// Add or change a crash reporter (a nil `token` keeps the stored one); answered with `crashes`.
+    case setCrashSource(source: CrashSource)
+    case removeCrashSource(id: String)
+    /// Ask the reporters now instead of at the next 15-minute check.
+    case checkCrashes
+    /// Start a task that fixes this crash (worktree + draft pull request); answered with `crashes`.
+    case fixCrash(id: String)
+    /// Stop offering a fix for this crash.
+    case ignoreCrash(id: String)
     /// Prompt templates for a project (its `.ccremote.json` and the host's own); answered with `templates`.
     case listTemplates(cwd: String)
     /// What agents did on the machine since `since` (one project, or all); answered with `audit`.
@@ -255,6 +266,8 @@ public enum ServerMessage: Codable, Sendable {
     case duels(items: [Duel])
     case digestSchedule(schedule: DigestSchedule, error: String?)
     case issues(cwd: String, items: [GitHubIssue], error: String?)
+    /// Crash reporters (tokens left out) and the crashes seen, newest first. Also pushed when a check finds new ones.
+    case crashes(sources: [CrashSource], items: [CrashIssue], error: String?)
     case templates(cwd: String, items: [PromptTemplate])
     case audit(report: AuditReport)
     case relaySetup(setup: RelaySetup?, error: String?)
