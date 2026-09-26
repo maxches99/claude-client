@@ -22,6 +22,8 @@ final class PhoneSession: @unchecked Sendable {
     private var closed = false
     /// Who this is, for the approval log.
     private var deviceLabel = "phone"
+    /// Signed in with a member's token (nil = the owner's).
+    private var userId: String?
 
     init(channel: WebSocketChannel, route: PhoneRoute, remote: String?, manager: SessionManager, tokenStore: TokenStore, daemonVersion: String,
          log: @escaping @Sendable (String) -> Void,
@@ -88,11 +90,19 @@ final class PhoneSession: @unchecked Sendable {
         // A phone may open with an encryption handshake (it does through the relay): answer it and
         // switch the channel to sealed frames; everything after, hello included, is encrypted.
         if !authenticated, channel.secure == nil, text.hasPrefix("{\"e2e\"") {
-            let link = E2ELink(token: tokenStore.current, role: .responder)
-            do {
-                guard try link.accept(text) else { return }
-            } catch {
-                send(.error(message: "\(error)", sessionId: nil))
+            // Keyed by the pairing token — the owner's or a member's, whichever this phone has.
+            var accepted: E2ELink?
+            var lastError: Error?
+            for token in [tokenStore.current] + HostControl.shared.memberTokens {
+                let candidate = E2ELink(token: token, role: .responder)
+                do {
+                    if try candidate.accept(text) { accepted = candidate; break }
+                } catch {
+                    lastError = error
+                }
+            }
+            guard let link = accepted else {
+                if let lastError { send(.error(message: "\(lastError)", sessionId: nil)) }
                 return
             }
             channel.send(text: link.handshakeMessage())   // still plaintext: `secure` is set after
@@ -114,19 +124,24 @@ final class PhoneSession: @unchecked Sendable {
                 channel.close()
                 return
             }
-            if case .hello(let token, let client, let device, let deviceId) = message, token == tokenStore.current {
+            if case .hello(let token, let client, let device, let deviceId) = message,
+               token == tokenStore.current || HostControl.shared.member(forToken: token) != nil {
                 authenticated = true
+                let member = token == tokenStore.current ? nil : HostControl.shared.member(forToken: token)
+                userId = member?.id
+                if let member { HostControl.shared.touch(userId: member.id) }
                 log("client \(id.uuidString.prefix(8)) authenticated (\(device ?? client), \(route.rawValue))")
                 deviceLabel = device ?? client
                 onAuthenticated(PhoneLink(id: id, client: client, device: device, deviceId: deviceId, route: route, remote: remote))
                 Task { [weak self] in
                     guard let self else { return }
-                    await self.manager.subscribe(self.id) { [weak self] msg in self?.send(msg) }
-                    let info = await self.manager.hostInfo(daemonVersion: self.daemonVersion)
+                    await self.manager.subscribe(self.id, user: self.userId) { [weak self] msg in self?.send(msg) }
+                    var info = await self.manager.hostInfo(daemonVersion: self.daemonVersion)
+                    info.me = member?.public_ ?? HostUser(id: "owner", name: info.hostName, isOwner: true)
                     self.send(.welcome(host: info))
                     await self.manager.refreshSources()
-                    self.send(.sessions(items: await self.manager.listSessions()))
-                    await SimulatorStreamer.shared.attach(self.id) { [weak self] msg in self?.send(msg) }
+                    self.send(.sessions(items: await self.manager.sessions(for: self.userId)))
+                    if self.userId == nil { await SimulatorStreamer.shared.attach(self.id) { [weak self] msg in self?.send(msg) } }
                 }
             } else {
                 log("client \(id.uuidString.prefix(8)) rejected: bad token")
@@ -158,7 +173,40 @@ final class PhoneSession: @unchecked Sendable {
         }
     }
 
+    /// Why a member may not do this (nil = they may). The owner may do everything.
+    private func memberRefusal(_ message: ClientMessage, user: String) async -> String? {
+        if let sessionId = message.sessionId {
+            return await manager.canAccess(sessionId, user: user) ? nil : "That session belongs to someone else on this host."
+        }
+        switch message {
+        case .hello, .ping, .listSessions, .listProjects, .listModels, .listTasks, .setTaskSettings, .listEvents,
+             .exportSession, .setOwnClaudeToken, .listUsers, .writeFile:
+            return nil
+        case .create(let options):
+            if options.kind == .chat { return nil }
+            return await manager.inMemberWorkspace(options.cwd, user: user) ? nil : "Work sessions go in your own folder of the workspace."
+        case .addTask(let task), .updateTask(let task):
+            return await manager.inMemberWorkspace(task.cwd, user: user) ? nil : "Tasks run in your own folder of the workspace."
+        case .taskAction(let id, _):
+            return await manager.tasks(for: user).contains { $0.id == id } ? nil : "That task is someone else's."
+        case .fetchFile(let path):
+            return await manager.mayRead(path, user: user) ? nil : "That file is not in your folder."
+        case .listTemplates(let cwd), .listIssues(let cwd):
+            return await manager.inMemberWorkspace(cwd, user: user) ? nil : "That project is not in your folder."
+        case .importSession(_, let cwd):
+            if let cwd, await !manager.inMemberWorkspace(cwd, user: user) { return "That folder is not yours." }
+            return nil
+        default:
+            return "Only the host's owner can do that."
+        }
+    }
+
     private func dispatch(_ message: ClientMessage) async {
+        if let userId, let refusal = await memberRefusal(message, user: userId) {
+            if case .setTaskSettings = message { return }
+            send(.error(message: refusal, sessionId: message.sessionId))
+            return
+        }
         do {
             switch message {
             case .hello:
@@ -167,13 +215,13 @@ final class PhoneSession: @unchecked Sendable {
                 send(.pong)
             case .listSessions:
                 await manager.refreshSources()
-                send(.sessions(items: await manager.listSessions()))
+                send(.sessions(items: await manager.sessions(for: userId)))
             case .listProjects:
-                send(.projects(items: await manager.listProjects()))
+                send(.projects(items: await manager.projects(for: userId)))
             case .open(let sessionId, let since):
                 try await manager.open(sessionId: sessionId, since: since) { [weak self] msg in self?.send(msg) }
             case .create(let options):
-                let state = try await manager.create(options)
+                let state = try await manager.create(options, owner: userId)
                 await manager.notePhoneSession(state)
                 send(.history(sessionId: state.id, entries: []))
                 send(.state(state: state))
@@ -299,9 +347,11 @@ final class PhoneSession: @unchecked Sendable {
                 }
             case .listTasks:
                 let list = await manager.taskList()
-                send(.tasks(items: list.items, settings: list.settings))
-                send(.duels(items: await manager.duelList()))
+                send(.tasks(items: await manager.tasks(for: userId), settings: list.settings))
+                if userId == nil { send(.duels(items: await manager.duelList())) }
             case .addTask(let task):
+                var task = task
+                task.ownerId = userId
                 await manager.addTask(task)
             case .updateTask(let task):
                 await manager.updateTask(task)
@@ -448,7 +498,57 @@ final class PhoneSession: @unchecked Sendable {
                 await manager.recordEvent(HostEvent(kind: .host, title: "Update requested", detail: deviceLabel))
                 await updater.update { [weak self] progress in self?.send(.hostUpdate(update: progress)) }
             case .listEvents(let since):
-                send(.events(items: await manager.eventList(since: since), live: false))
+                let items = await manager.eventList(since: since)
+                if let userId {
+                    let visible = await manager.filtered(.events(items: items, live: false), for: userId)
+                    if let visible { send(visible) }
+                } else {
+                    send(.events(items: items, live: false))
+                }
+            case .writeFile(let sessionId, let path, let content, let baseHash):
+                do {
+                    let hash = try await manager.writeFile(sessionId: sessionId, path: path, content: content, baseHash: baseHash, user: userId)
+                    send(.fileWritten(sessionId: sessionId, path: path, hash: hash, error: nil))
+                } catch {
+                    send(.fileWritten(sessionId: sessionId, path: path, hash: nil, error: "\(error)"))
+                }
+            case .listUsers:
+                let me = userId.flatMap { id in HostControl.shared.users.first { $0.id == id } }
+                send(.users(items: userId == nil ? HostControl.shared.users : [], me: me))
+            case .inviteUser(let name):
+                if let (user, url) = HostControl.shared.invite(name: name) {
+                    log("invited \(user.name)")
+                    await manager.recordEvent(HostEvent(kind: .phone, title: "Invited \(user.name) to this host"))
+                    send(.userInvited(user: user, pairingURL: url, error: nil))
+                    send(.users(items: HostControl.shared.users, me: nil))
+                } else {
+                    send(.userInvited(user: nil, pairingURL: nil, error: "A name is needed."))
+                }
+            case .removeUser(let id):
+                HostControl.shared.remove(userId: id)
+                send(.users(items: HostControl.shared.users, me: nil))
+            case .setOwnClaudeToken(let token):
+                guard let userId else {
+                    send(.error(message: "The owner uses the host's own Claude login.", sessionId: nil))
+                    break
+                }
+                HostControl.shared.setClaudeToken(userId: userId, token: token)
+                send(.users(items: [], me: HostControl.shared.users.first { $0.id == userId }))
+            case .giveSession(let sessionId, let user):
+                await manager.give(sessionId: sessionId, to: user)
+            case .exportSession(let sessionId):
+                do {
+                    send(.sessionPackage(sessionId: sessionId, package: try await manager.exportSession(sessionId: sessionId), error: nil))
+                } catch {
+                    send(.sessionPackage(sessionId: sessionId, package: nil, error: "\(error)"))
+                }
+            case .importSession(let package, let cwd):
+                do {
+                    let result = try await manager.importSession(package, cwd: cwd, user: userId)
+                    send(.sessionImported(sessionId: result.sessionId, cwd: result.cwd, error: nil))
+                } catch {
+                    send(.sessionImported(sessionId: nil, cwd: nil, error: "\(error)"))
+                }
             case .health:
                 send(.health(report: await manager.health()))
             case .listSimulators:
@@ -503,7 +603,8 @@ extension ClientMessage {
              .runCommand(let id, _, _), .cancelCommand(let id, _), .pullRequest(let id), .renameSession(let id, _),
              .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id),
              .rewind(let id, _), .listPalette(let id), .listWorktrees(let id), .worktreeAction(let id, _),
-             .listHandoffTargets(let id), .handoff(let id, _), .shareTranscript(let id, _, _), .reviewDiff(let id, _):
+             .listHandoffTargets(let id), .handoff(let id, _), .shareTranscript(let id, _, _), .reviewDiff(let id, _),
+             .writeFile(let id, _, _, _), .exportSession(let id):
             return id
         default:
             return nil

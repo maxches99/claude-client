@@ -106,6 +106,13 @@ public actor SessionManager {
     private let approvalLog: String?
     let log: @Sendable (String) -> Void
     var subscribers: [UUID: Sender] = [:]
+    /// Phones signed in as a member (SessionManagerPeople.swift); absent = the owner.
+    var subscriberUsers: [UUID: String] = [:]
+    /// Session → the member who started it; sessions not in here are the owner's.
+    var sessionOwners: [String: String] = [:]
+    var members: [String: MemberAccess] = [:]
+    /// Review chats (plan check, post-mortem) → what they review (SessionManagerCollab.swift).
+    var analysisSessions: [String: AnalysisJob] = [:]
     /// Live Activity push tokens per session, per phone. Kept while the phone is away — that's the point.
     private var activityTokens: [String: [UUID: (token: String, approvalNeedsApp: Bool)]] = [:]
     var hosted: [String: Hosted] = [:]
@@ -208,6 +215,7 @@ public actor SessionManager {
             await self?.startTaskTimer()
             await self?.startCIWatch()
             await self?.loadEvents()
+            await self?.loadSessionOwners()
             await self?.startHealthWatch()
             await self?.loadDigestSchedule()
             await self?.loadPhoneSessions()
@@ -222,6 +230,7 @@ public actor SessionManager {
 
     public func unsubscribe(_ id: UUID) {
         subscribers[id] = nil
+        subscriberUsers[id] = nil
         detachAllProcesses(phone: id)
         detachAllTerminals(phone: id)
         // Nobody left to answer: let the Mac show its own prompt instead of holding the CLI.
@@ -231,7 +240,13 @@ public actor SessionManager {
     public var hasSubscribers: Bool { !subscribers.isEmpty }
 
     func broadcast(_ message: ServerMessage) {
-        for send in subscribers.values { send(message) }
+        for (id, send) in subscribers {
+            if let user = subscriberUsers[id] {
+                if let visible = filtered(message, for: user) { send(visible) }
+            } else {
+                send(message)
+            }
+        }
     }
 
     /// Recent durable events per session, numbered, so a phone that reconnects can catch up.
@@ -289,7 +304,7 @@ public actor SessionManager {
 
     /// A work session finished a turn: into the feed (chats and judges stay out of it).
     func noteTurn(_ h: Hosted, sessionId: String, isError: Bool, text: String?) {
-        guard h.state.kind != .chat, judgeSessions[sessionId] == nil else { return }
+        guard h.state.kind != .chat, judgeSessions[sessionId] == nil, analysisSessions[sessionId] == nil else { return }
         let snippet = text.map { SessionManager.notifySnippet($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
         recordEvent(HostEvent(kind: .session, severity: isError ? .error : .success,
                               title: notifyName(h) + (isError ? " — turn failed" : " — turn finished"),
@@ -333,7 +348,8 @@ public actor SessionManager {
     public func listModels(agent: AgentKind) async throws -> [ModelOption] {
         switch agent {
         case .claude:
-            return [ModelOption(id: "claude-opus-5", label: "Opus 5", isDefault: true),
+            return [ModelOption(id: "claude-opus-5-5", label: "Opus 5.5", isDefault: true),
+                    ModelOption(id: "claude-opus-5", label: "Opus 5"),
                     ModelOption(id: "claude-sonnet-5", label: "Sonnet 5"),
                     ModelOption(id: "claude-haiku-4-5", label: "Haiku 4.5")]
         case .codex:
@@ -515,7 +531,7 @@ public actor SessionManager {
         return store.session(id: id) == nil && id.count == 36 && id.dropFirst(14).first == "7"
     }
 
-    public func create(_ options: NewSessionOptions) async throws -> SessionState {
+    public func create(_ options: NewSessionOptions, owner: String? = nil) async throws -> SessionState {
         var options = options
         // A quick chat from a phone that asked for Claude (or an older app that always does) goes to
         // Codex on a Mac without the Claude CLI; a work session has Claude-only settings, so it is refused.
@@ -536,10 +552,12 @@ public actor SessionManager {
             let started = try await codex.start(cwd: cwd, options: turnOptions,
                                                 instructions: isChat ? SessionManager.chatSystemPrompt : nil)
             let h = adoptCodex(started, kind: options.kind)
+            if let owner { claim(h.state.id, for: owner) }
             broadcast(.sessions(items: listSessions()))
             return h.state
         }
         let sessionId = UUID().uuidString.lowercased()
+        if let owner { claim(sessionId, for: owner) }
         var config = CLIProcess.Config(cliPath: try claudePath(), cwd: cwd)
         config.sessionId = sessionId
         config.model = options.model ?? (isChat ? "claude-sonnet-5" : nil)
@@ -569,6 +587,7 @@ public actor SessionManager {
         guard let stored = store.session(id: sessionId) else { throw ManagerError.unknownSession(sessionId) }
         guard FileManager.default.fileExists(atPath: stored.cwd) else { throw ManagerError.cwdMissing(stored.cwd) }
         let newId = UUID().uuidString.lowercased()
+        if let owner = sessionOwners[sessionId] { claim(newId, for: owner) }
         var config = CLIProcess.Config(cliPath: try claudePath(), cwd: stored.cwd)
         config.resume = sessionId
         config.forkSession = true
@@ -598,6 +617,8 @@ public actor SessionManager {
     }
 
     func spawn(sessionId: String, config: CLIProcess.Config, origin: SessionOrigin, kind: SessionKind = .agent) throws -> Hosted {
+        var config = config
+        config.environment.merge(environment(forSession: sessionId)) { current, _ in current }
         let process = CLIProcess(config: config)
         let state = SessionState(id: sessionId, origin: origin, status: .idle, cwd: config.cwd, model: config.model,
                                  permissionMode: config.permissionMode, kind: kind)

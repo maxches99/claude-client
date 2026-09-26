@@ -15,6 +15,7 @@ struct ChatView: View {
     @State private var showSimulator = false
     @State private var showLimits = false
     @State private var showGit = false
+    @State private var showHandover = false
     @State private var showBrowser = false
     @State private var showCommands = false
     @State private var showTurnChanges = false
@@ -89,10 +90,12 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) { header }
-            ToolbarItem(placement: .topBarTrailing) {
-                SimulatorToolbarButton(isPresented: $showSimulator)
+            if !model.simpleUI {
+                ToolbarItem(placement: .topBarTrailing) {
+                    SimulatorToolbarButton(isPresented: $showSimulator)
+                }
             }
-            if !isChat {
+            if !isChat, !model.simpleUI {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showGit = true } label: {
                         Image(systemName: "arrow.triangle.branch").foregroundStyle(CDS.textSecondary)
@@ -120,6 +123,7 @@ struct ChatView: View {
                     if !isChat {
                         Section {
                             Button("Browse files…", systemImage: "folder") { showBrowser = true }
+                            if !model.simpleUI {
                             Button("Run a command…", systemImage: "terminal") { showCommands = true }
                             if model.supportsMacTools {
                                 Button("Terminal…", systemImage: "apple.terminal") { showTerminals = true }
@@ -133,6 +137,7 @@ struct ChatView: View {
                             }
                             if model.supportsQueue {
                                 Button("Worktrees…", systemImage: "square.split.2x1") { showWorktrees = true }
+                            }
                             }
                         }
                     }
@@ -166,7 +171,10 @@ struct ChatView: View {
                         }
                         .disabled(TranscriptExport.lastReply(items: transcript.items).isEmpty)
                     }
-                    if model.supportsMacTools, let targets = model.handoffTargets[sessionId], !targets.isEmpty {
+                    if model.supportsPeople, !isChat {
+                        Button("Hand over…", systemImage: "arrow.left.arrow.right") { showHandover = true }
+                    }
+                    if model.supportsMacTools, !model.isMember, let targets = model.handoffTargets[sessionId], !targets.isEmpty {
                         Menu {
                             ForEach(targets) { target in
                                 Button(target.label, systemImage: target.systemImage) {
@@ -204,6 +212,7 @@ struct ChatView: View {
         .sheet(isPresented: $showSimulator) { SimulatorView { files.append($0) } }
         .sheet(isPresented: $showLimits) { LimitsView(sessionId: sessionId) }
         .sheet(isPresented: $showGit) { GitView(sessionId: sessionId) }
+        .sheet(isPresented: $showHandover) { HandoverView(sessionId: sessionId) }
         .sheet(isPresented: $showBrowser) { ProjectBrowserView(sessionId: sessionId) }
         .sheet(isPresented: $showCommands) { CommandsView(sessionId: sessionId) }
         .sheet(isPresented: $showTurnChanges) { TurnChangesView(sessionId: sessionId) }
@@ -705,6 +714,21 @@ struct ComposerDock: View {
             }
             if isDesktop {
                 notice(desktopNotice, tint: CDS.textMuted)
+                if !isChat {
+                    // What you type here reaches the agent as a message from another session, not from you:
+                    // it will not take it as your go-ahead for anything outward (a push, a release).
+                    HStack(spacing: 8) {
+                        Image(systemName: "person.badge.shield.checkmark").foregroundStyle(CDS.warning)
+                        Text("The agent there reads this as a message from another session and won't take it as your approval. To approve from the phone, continue here.")
+                            .font(CDS.caption).foregroundStyle(CDS.textSecondary)
+                        Spacer(minLength: 4)
+                        Button("Continue here") { model.fork(sessionId) }
+                            .buttonStyle(CDSButtonStyle(variant: .secondary))
+                            .disabled(!model.isConnected)
+                    }
+                    .padding(8)
+                    .background(CDS.warningBackground, in: RoundedRectangle(cornerRadius: CDS.radius))
+                }
             }
             suggestionsPanel
             composer
@@ -1081,6 +1105,7 @@ struct ComposerDock: View {
     private func startDictation() async {
         guard !recorder.isRecording else { return }
         dictationBase = draft
+        dictation.locale = model.speechLocale
         _ = await dictation.start()
     }
 
@@ -1358,7 +1383,7 @@ struct ComposerDock: View {
     private func finishRecording() async {
         recorder.stop()
         if let att = recorder.attachment() { files.append(att) }
-        let transcript = await recorder.transcribe()
+        let transcript = await recorder.transcribe(locale: model.speechLocale)
         recorder.discardFile()
         if !transcript.isEmpty {
             let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1437,11 +1462,17 @@ struct ComposerDock: View {
     private var modeLabel: String { currentMode?.shortLabel ?? "Permissions" }
     private var modeIcon: String { currentMode?.symbol ?? "shield" }
 
+    /// The list entry the session's model belongs to: the first (longest) id it starts with.
+    private var currentModelEntry: String? {
+        guard let modelId else { return nil }
+        return NewSessionView.models.first { modelId.hasPrefix($0.id) }?.id
+    }
+
     private var modelSection: some View {
         Section("Model") {
             ForEach(NewSessionView.models, id: \.id) { m in
                 Button { model.setModel(sessionId, model: m.id) } label: {
-                    if modelId?.hasPrefix(m.id) == true { Label(m.label, systemImage: "checkmark") } else { Text(m.label) }
+                    if currentModelEntry == m.id { Label(m.label, systemImage: "checkmark") } else { Text(m.label) }
                 }
             }
         }

@@ -262,7 +262,7 @@ struct DuelEditor: View {
     @State private var judge: AgentKind = .claude
     /// Claude against Codex, or two models (or reasoning levels) head to head.
     @State private var byModel = false
-    @State private var sideA = ContestantDraft(agent: .claude, model: "claude-opus-5")
+    @State private var sideA = ContestantDraft(agent: .claude, model: "claude-opus-5-5")
     @State private var sideB = ContestantDraft(agent: .claude, model: "claude-sonnet-5")
 
     var body: some View {

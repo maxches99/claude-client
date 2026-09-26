@@ -1,4 +1,5 @@
 import AppIntents
+import UIKit
 import CoreSpotlight
 import Foundation
 import ClaudeRemoteCore
@@ -29,6 +30,45 @@ struct AskAgentIntent: AppIntent {
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
         guard let model = AppModel.shared else { throw IntentFailure.noApp }
         let reply = try await model.askChat(question, agent: model.resolvedAgent(agent.kind))
+        return .result(value: reply, dialog: IntentDialog(stringLiteral: reply))
+    }
+}
+
+/// "Translate this" — text, or a photo (a sign, a menu), translated on the phone when it can, else on the Mac or hub. With no input it
+/// takes whatever is on the clipboard. Fits the Action Button, Siri and the share sheet via Shortcuts.
+struct TranslateIntent: AppIntent {
+    static let title: LocalizedStringResource = "Translate"
+    static let description = IntentDescription("Translates text or a photo and returns the translation: on the phone when it has the languages, otherwise on your Mac or hub.")
+    static let openAppWhenRun = false
+
+    @Parameter(title: "Text") var text: String?
+    @Parameter(title: "Photo") var photo: IntentFile?
+    @Parameter(title: "Into", default: "Russian") var language: String
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Translate \(\.$text) \(\.$photo) into \(\.$language)")
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+        guard let model = AppModel.shared else { throw IntentFailure.noApp }
+        var images: [InlineImage] = []
+        if let photo, let ui = UIImage(data: photo.data), let jpeg = ui.jpegData(compressionQuality: 0.8) {
+            images = [InlineImage(mediaType: "image/jpeg", base64: jpeg.base64EncodedString())]
+        }
+        let source = (text?.isEmpty == false ? text : nil) ?? (images.isEmpty ? UIPasteboard.general.string : nil)
+        guard source?.isEmpty == false || !images.isEmpty else { throw IntentFailure.emptyPrompt }
+        // Text with the languages on the phone: translated right here, no Mac, no connection.
+        if images.isEmpty, let source, let code = TranslatorLanguage.code(named: language),
+           let local = await FastTranslator.translateNow(source, into: code) {
+            return .result(value: local, dialog: IntentDialog(stringLiteral: local))
+        }
+        let prompt = images.isEmpty
+            ? "Translate into \(language). Reply with the translation only.\n\n\(source ?? "")"
+            : "Translate everything written in this photo into \(language). Reply with the translation only, line by line."
+        let agent = model.defaultAgent
+        let reply = try await model.askChat(prompt, agent: agent, model: agent == .claude ? "claude-haiku-4-5" : nil,
+                                            images: images, timeout: 60)
         return .result(value: reply, dialog: IntentDialog(stringLiteral: reply))
     }
 }
@@ -262,6 +302,10 @@ struct ClaudeRemoteShortcuts: AppShortcutsProvider {
             "Ask \(.applicationName)",
             "Ask a question in \(.applicationName)",
         ], shortTitle: "Ask", systemImageName: "bubble.left.and.text.bubble.right")
+        AppShortcut(intent: TranslateIntent(), phrases: [
+            "Translate with \(.applicationName)",
+            "Translate this in \(.applicationName)",
+        ], shortTitle: "Translate", systemImageName: "character.bubble")
         AppShortcut(intent: PendingApprovalsIntent(), phrases: [
             "What's waiting in \(.applicationName)",
             "Pending approvals in \(.applicationName)",

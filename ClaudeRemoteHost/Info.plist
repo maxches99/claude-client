@@ -28,6 +28,8 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Agents you run from your phone script apps on this Mac with osascript. Allowing it now means they won't stop on this question while you're away.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© Max Chesnikov</string>
 </dict>

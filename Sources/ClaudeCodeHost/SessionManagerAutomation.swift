@@ -86,8 +86,65 @@ extension SessionManager {
                 try? await Task.sleep(nanoseconds: 180_000_000_000)
                 guard let self else { return }
                 await self.checkCI()
+                await self.checkReviews()
             }
         }
+    }
+
+    // MARK: review comments
+
+    /// New comments by people on the pull requests of tasks that answer them: a follow-up task in the same
+    /// worktree addresses them, its change is committed and waits for "Push the fix".
+    func checkReviews() async {
+        let watched = tasks.filter { $0.answerReviews && $0.pullRequestURL != nil && $0.worktreePath != nil && $0.repairOf == nil }
+        guard !watched.isEmpty else { return }
+        let me = await githubAccount().login
+        for task in watched {
+            guard let url = task.pullRequestURL, let worktree = task.worktreePath else { continue }
+            if let state = task.reviews?.state, state != .watching { continue }
+            if task.ci?.state == .repairing || task.ci?.state == .fixReady { continue }   // one change at a time
+            let fetched: (open: Bool, comments: [PRComment])? = await offActor { [self] in
+                guard let view = try? runGh(["pr", "view", url, "--json", "state,number,reviews,url"], cwd: worktree, timeout: 40), view.code == 0,
+                      let json = try? JSONValue.parse(Data(view.out.utf8)), let number = json["number"]?.int else { return nil }
+                let repo = SessionManager.repoPath(fromPR: url) ?? ""
+                func api(_ path: String) -> JSONValue? {
+                    guard let r = try? runGh(["api", "--paginate", path], cwd: worktree, timeout: 40), r.code == 0 else { return nil }
+                    return try? JSONValue.parse(Data(r.out.utf8))
+                }
+                let lines = api("repos/\(repo)/pulls/\(number)/comments")
+                let issue = api("repos/\(repo)/issues/\(number)/comments")
+                return ((json["state"]?.string ?? "OPEN") == "OPEN", TaskReviews.parse(lineComments: lines, issueComments: issue, reviews: json, me: me))
+            }
+            guard let fetched, let idx = tasks.firstIndex(where: { $0.id == task.id }) else { continue }
+            guard fetched.open else { tasks[idx].answerReviews = false; saveTasks(); broadcastTasks(); continue }
+            guard var reviews = tasks[idx].reviews else {
+                // The first look only notes what is already there.
+                tasks[idx].reviews = TaskReviews(seen: fetched.comments.map(\.id))
+                saveTasks(); broadcastTasks()
+                continue
+            }
+            let fresh = fetched.comments.filter { !reviews.seen.contains($0.id) }
+            guard !fresh.isEmpty else { continue }
+            var followUp = AgentTask(title: "Review comments · \(task.title)", prompt: TaskReviews.prompt(pullRequest: url, comments: fresh),
+                                     cwd: worktree, agent: task.agent, model: task.model, permissionMode: task.permissionMode,
+                                     effort: task.effort, repairOf: task.id, isReviewFollowUp: true)
+            followUp.ownerId = task.ownerId
+            if followUp.agent == .claude, !hasClaude { followUp.agent = .codex; followUp.permissionMode = CodexApprovalPolicy.never.rawValue }
+            reviews.seen += fresh.map(\.id)
+            reviews.state = .addressing
+            reviews.lastCount = fresh.count
+            reviews.followUpTaskId = followUp.id
+            tasks[idx].reviews = reviews
+            announce(.task, .info, "\(fresh.count) new review comment\(fresh.count == 1 ? "" : "s") on \"\(task.title)\" — working on them",
+                     detail: fresh.map { "@\($0.author): \($0.body.prefix(80))" }.joined(separator: "\n"), taskId: task.id, url: url, notify: .done)
+            await addTask(followUp)
+        }
+    }
+
+    /// `https://github.com/owner/repo/pull/12` → `owner/repo`.
+    static func repoPath(fromPR url: String) -> String? {
+        guard let r = url.range(of: #"github\.com/([^/]+/[^/]+)/pull/"#, options: .regularExpression) else { return nil }
+        return String(url[r]).replacingOccurrences(of: "github.com/", with: "").replacingOccurrences(of: "/pull/", with: "")
     }
 
     /// Looks at the checks of every watched pull request and starts a repair where they fail.
@@ -197,6 +254,7 @@ extension SessionManager {
     /// A repair finished: commit what it changed in the pull request's worktree and wait for "Push the fix".
     func repairFinished(_ repair: AgentTask, succeeded: Bool) async {
         guard let originalId = repair.repairOf, let idx = tasks.firstIndex(where: { $0.id == originalId }) else { return }
+        if repair.isReviewFollowUp { await reviewFollowUpFinished(repair, originalId: originalId, succeeded: succeeded); return }
         let worktree = repair.cwd
         let message = "Fix CI" + ((tasks[idx].ci?.failing.isEmpty ?? true) ? "" : ": " + (tasks[idx].ci?.failing.joined(separator: ", ") ?? ""))
         let committed: Bool = succeeded ? await offActor { [self] in
@@ -212,23 +270,48 @@ extension SessionManager {
         } else {
             let attempts = tasks[i].ci?.attempts ?? 0
             tasks[i].ci?.state = attempts >= TaskCI.maxAttempts ? .gaveUp : .failing
+            if attempts >= TaskCI.maxAttempts { Task { await self.writePostmortem(taskId: originalId, ciLog: repair.prompt) } }
             announce(.ci, .error, "The CI repair for \"\(tasks[i].title)\" changed nothing", taskId: originalId, notify: .error)
         }
         saveTasks()
         broadcastTasks()
     }
 
-    /// Pushes the committed repair to the pull request's branch.
+    private func reviewFollowUpFinished(_ followUp: AgentTask, originalId: String, succeeded: Bool) async {
+        let worktree = followUp.cwd
+        let count = tasks.first { $0.id == originalId }?.reviews?.lastCount ?? 0
+        let committed: Bool = succeeded ? await offActor { [self] in
+            _ = runGit(["-C", worktree, "add", "-A"], timeout: 60)
+            guard runGit(["-C", worktree, "diff", "--cached", "--quiet"]).code != 0 else { return false }
+            return runGit(["-C", worktree, "commit", "-q", "-m", "Address review comments"], timeout: 60).code == 0
+        } : false
+        guard let i = tasks.firstIndex(where: { $0.id == originalId }) else { return }
+        tasks[i].reviews?.followUpTaskId = nil
+        tasks[i].reviews?.state = committed ? .fixReady : .watching
+        let title = tasks[i].title
+        if committed {
+            announce(.task, .success, "Changes for \(count) review comment\(count == 1 ? "" : "s") on \"\(title)\" are ready — push them from the phone",
+                     detail: followUp.resultSummary, taskId: originalId, notify: .done)
+        } else {
+            announce(.task, .warning, "The review comments on \"\(title)\" led to no change", detail: followUp.resultSummary ?? followUp.error,
+                     taskId: originalId, notify: .done)
+        }
+        saveTasks()
+        broadcastTasks()
+    }
+
+    /// Pushes the committed repair (CI or review comments) to the pull request's branch.
     func pushFix(taskId: String) async throws {
         guard let task = tasks.first(where: { $0.id == taskId }), let worktree = task.worktreePath else {
             throw GitError.refused("That task has no worktree any more.")
         }
-        guard task.ci?.state == .fixReady else { throw GitError.refused("There is no CI fix waiting to be pushed.") }
+        let reviewsReady = task.reviews?.state == .fixReady
+        guard task.ci?.state == .fixReady || reviewsReady else { throw GitError.refused("There is no fix waiting to be pushed.") }
         let push = await offActor { [self] in runGit(["-C", worktree, "push"], timeout: 180) }
         guard push.code == 0 else { throw GitError.refused("Push failed: \((push.err + push.out).trimmingCharacters(in: .whitespacesAndNewlines))") }
         if let i = tasks.firstIndex(where: { $0.id == taskId }) {
-            tasks[i].ci?.state = .pending
-            tasks[i].ci?.checkedAt = Date()
+            if tasks[i].ci?.state == .fixReady { tasks[i].ci?.state = .pending; tasks[i].ci?.checkedAt = Date() }
+            if reviewsReady { tasks[i].reviews?.state = .watching }
         }
         log("ci: pushed the fix for \(taskId.prefix(6))")
         recordEvent(HostEvent(kind: .ci, severity: .info, title: "Pushed the CI fix for \"\(task.title)\"", taskId: taskId, url: task.pullRequestURL))

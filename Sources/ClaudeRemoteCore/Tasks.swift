@@ -84,13 +84,26 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
     public var preview: TaskPreview?
     /// The working tree before a task that ran in it (not in a worktree), to put back in one tap.
     public var snapshot: TaskSnapshot?
+    /// Ask for a plan first, and check the result against it afterwards.
+    public var planFirst: Bool
+    public var plan: [String]?
+    public var planCheck: PlanCheck?
+    /// Why it failed, in a few lines, written by a short review after the failure.
+    public var postmortem: String?
+    /// The person on the host who set it (nil = the owner).
+    public var ownerId: String?
+    /// Answer new review comments on its pull request with a follow-up change.
+    public var answerReviews: Bool
+    public var reviews: TaskReviews?
+    /// A follow-up for review comments (with `repairOf`), not a CI repair.
+    public var isReviewFollowUp: Bool
 
     public init(id: String = UUID().uuidString.lowercased(), title: String, prompt: String, cwd: String, agent: AgentKind = .claude,
                 model: String? = nil, permissionMode: String? = nil, status: Status = .queued, sessionId: String? = nil,
                 createdAt: Date = Date(), startedAt: Date? = nil, finishedAt: Date? = nil, resultSummary: String? = nil,
                 error: String? = nil, runAt: Date? = nil, dailyAtMinutes: Int? = nil, inWorktree: Bool = false, worktreePath: String? = nil,
                 openPullRequest: Bool = false, duelId: String? = nil, effort: String? = nil, label: String? = nil,
-                issue: IssueRef? = nil, fixCI: Bool = false, repairOf: String? = nil, wantsPreview: Bool = false) {
+                issue: IssueRef? = nil, fixCI: Bool = false, repairOf: String? = nil, wantsPreview: Bool = false, planFirst: Bool = false, answerReviews: Bool = false, isReviewFollowUp: Bool = false) {
         self.id = id
         self.title = title
         self.prompt = prompt
@@ -117,6 +130,9 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
         self.fixCI = fixCI
         self.repairOf = repairOf
         self.wantsPreview = wantsPreview
+        self.planFirst = planFirst
+        self.answerReviews = answerReviews
+        self.isReviewFollowUp = isReviewFollowUp
     }
 
     public init(from decoder: Decoder) throws {
@@ -155,6 +171,14 @@ public struct AgentTask: Codable, Equatable, Identifiable, Sendable {
         wantsPreview = try c.decodeIfPresent(Bool.self, forKey: .wantsPreview) ?? false
         preview = try c.decodeIfPresent(TaskPreview.self, forKey: .preview)
         snapshot = try c.decodeIfPresent(TaskSnapshot.self, forKey: .snapshot)
+        planFirst = try c.decodeIfPresent(Bool.self, forKey: .planFirst) ?? false
+        plan = try c.decodeIfPresent([String].self, forKey: .plan)
+        planCheck = try c.decodeIfPresent(PlanCheck.self, forKey: .planCheck)
+        postmortem = try c.decodeIfPresent(String.self, forKey: .postmortem)
+        ownerId = try c.decodeIfPresent(String.self, forKey: .ownerId)
+        answerReviews = try c.decodeIfPresent(Bool.self, forKey: .answerReviews) ?? false
+        reviews = try c.decodeIfPresent(TaskReviews.self, forKey: .reviews)
+        isReviewFollowUp = try c.decodeIfPresent(Bool.self, forKey: .isReviewFollowUp) ?? false
     }
 
     /// The name a duel screen or notification uses for this task's side.
@@ -257,6 +281,8 @@ public enum TaskAction: String, Codable, Sendable {
     case toggleFixCI
     /// Put the working tree back as it was before the task (its snapshot).
     case restoreSnapshot
+    /// Stop (or start) answering review comments on the pull request.
+    case toggleAnswerReviews
 }
 
 /// The same prompt given to Claude and to Codex, each in its own worktree, and a judge's verdict on

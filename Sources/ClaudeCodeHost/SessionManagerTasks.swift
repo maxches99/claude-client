@@ -101,6 +101,9 @@ extension SessionManager {
         case .toggleFixCI:
             tasks[idx].fixCI.toggle()
             if tasks[idx].fixCI { Task { await self.checkCI() } }
+        case .toggleAnswerReviews:
+            tasks[idx].answerReviews.toggle()
+            if tasks[idx].answerReviews { Task { await self.checkReviews() } }
         case .restoreSnapshot:
             let taskId = tasks[idx].id
             do {
@@ -177,10 +180,10 @@ extension SessionManager {
             // default can be read-only, which leaves it describing the fix instead of making it).
             let options = NewSessionOptions(cwd: cwd, model: task.model, permissionMode: task.permissionMode, effort: task.effort, agent: task.agent,
                                             sandbox: task.agent == .codex ? CodexSandboxMode.workspaceWrite.rawValue : nil)
-            let state = try await create(options)
+            let state = try await create(options, owner: task.ownerId)
             task.sessionId = state.id
             tasks[index] = task
-            try await prompt(sessionId: state.id, text: task.prompt)
+            try await prompt(sessionId: state.id, text: task.planFirst ? TaskReview.planPreamble + task.prompt : task.prompt)
             log("task started: \(task.title.prefix(60)) → \(state.id.prefix(8))")
             recordEvent(HostEvent(kind: .task, title: "Started \"\(task.title)\"", detail: task.projectName, sessionId: state.id, taskId: task.id))
         } catch {
@@ -200,6 +203,7 @@ extension SessionManager {
             judgeFinished(duelId: duelId, isError: isError, reply: summary ?? "")
             return
         }
+        if reviewFinished(sessionId: sessionId, isError: isError, reply: summary ?? "") { return }
         guard let idx = tasks.firstIndex(where: { $0.status == .running && $0.sessionId == sessionId }) else { return }
         var task = tasks[idx]
         let text = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -236,6 +240,8 @@ extension SessionManager {
             return
         }
         if task.wantsPreview { await takePreview(taskId: taskId, phase: .after) }
+        if succeeded, task.planFirst { await checkPlan(taskId: taskId) }
+        if !succeeded, task.duelId == nil { await writePostmortem(taskId: taskId) }
         if let worktree = task.worktreePath, let base = task.baseCommit, FileManager.default.fileExists(atPath: worktree) {
             let stat = await offActor { [self] in changes(in: worktree, against: base).stat }
             if let i = tasks.firstIndex(where: { $0.id == taskId }) {

@@ -220,7 +220,14 @@ struct HostControlRows: View {
     private var host: HostInfo? { model.hostByMac[macId] }
 
     var body: some View {
-        if model.supportsAutomation(mac: macId), let host {
+        if model.supportsPeople(mac: macId), let host {
+            if host.me.map({ !$0.isOwner }) ?? false {
+                NavigationLink { MemberAccountView() } label: { LabeledContent("You", value: host.me?.name ?? "") }
+            } else {
+                NavigationLink { PeopleView() } label: { Label("People on this Mac", systemImage: "person.2") }
+            }
+        }
+        if model.supportsAutomation(mac: macId), let host, !(host.me.map { !$0.isOwner } ?? false) {
             LabeledContent("Relay") {
                 if host.relay != nil {
                     Text("on").foregroundStyle(CDS.success)

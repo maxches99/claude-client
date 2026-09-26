@@ -27,6 +27,7 @@ struct SessionListView: View {
     @State private var showClone = false
     @State private var showAudit = false
     @State private var showFeed = false
+    @State private var showTranslator = false
 
     private var isChats: Bool { scope == .chats }
     /// One list across every paired Mac (only worth it when there is more than one).
@@ -230,18 +231,22 @@ struct SessionListView: View {
                     }
                     if !isChats, model.supportsQueue {
                         Button("Task queue…", systemImage: "list.bullet.rectangle") { showTasks = true }
-                        Button("Background processes…", systemImage: "bolt.horizontal") { showProcesses = true }
+                        if !model.simpleUI {
+                            Button("Background processes…", systemImage: "bolt.horizontal") { showProcesses = true }
+                        }
                     }
-                    if !isChats, model.supportsMacTools {
+                    if !isChats, model.supportsMacTools, !model.simpleUI {
                         Button("Terminals…", systemImage: "apple.terminal") { showTerminals = true }
                     }
-                    if !isChats, model.supportsPipelines {
+                    if !isChats, model.supportsPipelines, !model.simpleUI {
                         Button("Clone a repository…", systemImage: "square.and.arrow.down.on.square") { showClone = true }
                     }
-                    if !isChats, model.supportsAutomation {
+                    if !isChats, model.supportsAutomation, !model.simpleUI {
                         Button("Audit…", systemImage: "checklist.checked") { showAudit = true }
                     }
-                    if model.supportsOperations {
+                    Button("Translator…", systemImage: "character.bubble") { showTranslator = true }
+                        .disabled(!model.isConnected)
+                    if model.supportsOperations, !model.isMember {
                         Button("Feed…", systemImage: "list.bullet.below.rectangle") { showFeed = true }
                     }
                     Divider()
@@ -289,6 +294,7 @@ struct SessionListView: View {
         .sheet(isPresented: $showTerminals) { TerminalsView(sessionId: nil) }
         .sheet(isPresented: $showAudit) { AuditView() }
         .sheet(isPresented: $showFeed) { FeedView() }
+        .fullScreenCover(isPresented: $showTranslator) { TranslatorView() }
         .sheet(isPresented: $showClone) { CloneRepositoryView() }
         .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Title", text: $renameText)

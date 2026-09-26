@@ -33,6 +33,7 @@ struct RemoteFileContent: View {
 
     private var file: AppModel.RemoteFile? { model.remoteFiles[path] }
     private var error: String? { model.remoteFileErrors[path] }
+    @State private var editing = false
     private var name: String { (path as NSString).lastPathComponent }
 
     var body: some View {
@@ -61,6 +62,15 @@ struct RemoteFileContent: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(CDS.surface0, for: .navigationBar)
         .toolbar {
+            if let sessionId, model.supportsPeople, let file, RemoteFileViewer.text(of: file) != nil, file.data.count < 1_000_000 {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Edit") { editing = true }
+                        .sheet(isPresented: $editing) {
+                            FileEditorView(sessionId: sessionId, path: path, original: RemoteFileViewer.text(of: file) ?? "",
+                                           baseHash: FileHash.hex(file.data))
+                        }
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     if let file {
@@ -236,5 +246,62 @@ struct RemoteFileDocument: Transferable {
             return SentTransferredFile(url)
         }
         .suggestedFileName { $0.file.name }
+    }
+}
+
+/// A small editor for a text file of the session's project: change a few lines and save them to the Mac.
+/// The save is refused when the file changed on the Mac meanwhile (the agent may be working on it).
+struct FileEditorView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let sessionId: String
+    let path: String
+    let original: String
+    let baseHash: String
+    @State private var text = ""
+    @State private var saving = false
+
+    private var name: String { (path as NSString).lastPathComponent }
+    private var status: FileSave? { model.savedFiles[path] }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                if let error = status?.error, !(status?.saving ?? false) {
+                    Text(error).font(CDS.caption).foregroundStyle(CDS.danger)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, CDS.gutter).padding(.vertical, 8)
+                }
+                TextEditor(text: $text)
+                    .font(CDS.codeSmall)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .scrollContentBackground(.hidden)
+                    .padding(.horizontal, 8)
+            }
+            .background(CDS.surface0)
+            .navigationTitle(name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    if saving && status?.saving != false {
+                        ProgressView()
+                    } else {
+                        Button("Save") {
+                            saving = true
+                            model.saveFile(sessionId: sessionId, path: path, content: text, baseHash: baseHash)
+                        }
+                        .disabled(text == original)
+                    }
+                }
+            }
+        }
+        .onAppear { if text.isEmpty { text = original } }
+        .onChange(of: status) { _, new in
+            guard saving, let new, !new.saving else { return }
+            saving = false
+            if new.error == nil { dismiss() }
+        }
+        .interactiveDismissDisabled(text != original)
     }
 }

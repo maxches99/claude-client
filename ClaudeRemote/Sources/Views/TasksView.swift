@@ -58,7 +58,7 @@ struct TasksView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    if model.supportsPipelines && (model.hasBothAgents || model.supportsAutomation) {
+                    if model.supportsPipelines && (model.hasBothAgents || model.supportsAutomation) && !model.simpleUI {
                         Menu {
                             Button("New task", systemImage: "plus") { showNew = true }
                             Button(model.hasBothAgents ? "New duel: Claude vs Codex" : "New duel: model vs model", systemImage: "figure.fencing") { showNewDuel = true }
@@ -201,8 +201,33 @@ struct TasksView: View {
                 Label("watching CI", systemImage: "eye").font(CDS.caption).foregroundStyle(CDS.textMuted)
             }
             if let preview = task.preview { TaskPreviewStrip(preview: preview, title: task.title) }
+            if let check = task.planCheck { PlanCheckView(check: check) }
+            if let postmortem = task.postmortem {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Why it failed", systemImage: "stethoscope").font(CDS.captionMedium).foregroundStyle(CDS.danger)
+                    Text(postmortem).font(CDS.caption).foregroundStyle(CDS.textSecondary)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(CDS.dangerFill.opacity(0.08), in: RoundedRectangle(cornerRadius: CDS.radius))
+            } else if task.status == .failed, model.supportsPeople, task.duelId == nil {
+                Label("Looking into why it failed…", systemImage: "stethoscope").font(CDS.caption).foregroundStyle(CDS.textMuted)
+            }
             if let snapshot = task.snapshot, snapshot.restoredAt != nil {
                 Label("rolled back", systemImage: "arrow.uturn.backward").font(CDS.caption).foregroundStyle(CDS.textMuted)
+            }
+            if let reviews = task.reviews, task.answerReviews || reviews.state != .watching {
+                HStack(spacing: 6) {
+                    Image(systemName: reviews.state == .fixReady ? "arrow.up.circle.fill" : "text.bubble")
+                        .foregroundStyle(reviews.state == .fixReady ? CDS.brand : CDS.textMuted)
+                    Text(reviews.label).foregroundStyle(reviews.state == .fixReady ? CDS.brand : CDS.textMuted).lineLimit(1)
+                    if reviews.state == .fixReady {
+                        Spacer(minLength: 0)
+                        Button("Push") { model.taskAction(task.id, .pushFix) }
+                            .buttonStyle(CDSButtonStyle(variant: .primary))
+                    }
+                }
+                .font(CDS.caption)
             }
             if let issue = task.issue {
                 Label("#\(issue.number) \(issue.title)", systemImage: "smallcircle.filled.circle").font(CDS.caption).foregroundStyle(CDS.textMuted).lineLimit(1)
@@ -254,6 +279,14 @@ struct TasksView: View {
                 }
                 Button(task.fixCI ? "Stop fixing CI" : "Fix CI failures", systemImage: task.fixCI ? "eye.slash" : "wrench.and.screwdriver") {
                     model.taskAction(task.id, .toggleFixCI)
+                }
+                if model.supportsReviewAnswers {
+                    Button(task.answerReviews ? "Stop answering reviews" : "Answer review comments", systemImage: "text.bubble") {
+                        model.taskAction(task.id, .toggleAnswerReviews)
+                    }
+                    if task.reviews?.state == .fixReady {
+                        Button("Push the review changes", systemImage: "arrow.up.circle") { model.taskAction(task.id, .pushFix) }
+                    }
                 }
             }
             Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete = task }
@@ -310,6 +343,8 @@ struct TaskEditor: View {
     @State private var issue: IssueRef?
     @State private var fixCI = false
     @State private var wantsPreview = false
+    @State private var planFirst = false
+    @State private var answerReviews = false
     @State private var showIssues = false
     @State private var template: PromptTemplate?
     @State private var schedule = Schedule.now
@@ -377,14 +412,25 @@ struct TaskEditor: View {
                         }
                         .pickerStyle(.segmented)
                     }
+                    if model.supportsPeople {
+                        Toggle("Plan first, then check the result against it", isOn: $planFirst)
+                            .tint(CDS.brand)
+                    }
+                    if !model.simpleUI {
                     Toggle("Run in a fresh worktree", isOn: $inWorktree)
                         .tint(CDS.brand)
-                    if model.supportsPipelines {
+                    }
+                    if model.supportsPipelines, !model.simpleUI {
                         Toggle("Open a draft pull request when done", isOn: $openPullRequest)
                             .tint(CDS.brand)
                             .disabled(!inWorktree || model.host?.hasGitHubCLI != true)
                         if model.supportsAutomation {
                             Toggle("Fix CI failures on it", isOn: $fixCI)
+                                .tint(CDS.brand)
+                                .disabled(!inWorktree || !openPullRequest)
+                        }
+                        if model.supportsReviewAnswers {
+                            Toggle("Answer review comments on it", isOn: $answerReviews)
                                 .tint(CDS.brand)
                                 .disabled(!inWorktree || !openPullRequest)
                         }
@@ -474,6 +520,8 @@ struct TaskEditor: View {
             issue = task.issue
             fixCI = task.fixCI
             wantsPreview = task.wantsPreview
+            planFirst = task.planFirst
+            answerReviews = task.answerReviews
             if let minutes = task.dailyAtMinutes {
                 schedule = .daily
                 time = Calendar.current.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: Date()) ?? Date()
@@ -504,6 +552,8 @@ struct TaskEditor: View {
         built.issue = issue
         built.fixCI = built.openPullRequest && fixCI
         built.wantsPreview = wantsPreview
+        built.planFirst = planFirst
+        built.answerReviews = built.openPullRequest && answerReviews
         switch schedule {
         case .now:
             built.dailyAtMinutes = nil

@@ -61,6 +61,14 @@ final class AppModel {
     var supportsAutomation: Bool { (host?.protocolVersion ?? 1) >= 7 }
     /// Event feed, health, before/after screenshots, task snapshots (protocol 8).
     var supportsOperations: Bool { (host?.protocolVersion ?? 1) >= 8 }
+    /// People, file editing, handing sessions over, plan checks and post-mortems (protocol 9).
+    var supportsPeople: Bool { (host?.protocolVersion ?? 1) >= 9 }
+    /// Answering review comments on a task's pull request (protocol 10).
+    var supportsReviewAnswers: Bool { (host?.protocolVersion ?? 1) >= 10 }
+    /// This phone is a member of the host, not its owner.
+    var isMember: Bool { host?.me.map { !$0.isOwner } ?? false }
+    /// Chats, sessions and tasks only — for someone who wants just that, and for a host's members.
+    var simpleUI: Bool { simpleMode || isMember }
     func supportsMacTools(_ macId: String) -> Bool { (hostByMac[macId]?.protocolVersion ?? 1) >= 5 }
     /// Models Codex on the Mac can run, fetched once per connection.
     var codexModels: [ModelOption] = []
@@ -300,22 +308,36 @@ final class AppModel {
         guard isConnected else { throw IntentFailure.notConnected }
     }
 
+    /// Starts a session without showing it (the translator's chat); returns its id.
+    func createQuietly(_ options: NewSessionOptions, timeout: TimeInterval = 20) async -> String? {
+        try? await withTimeout(timeout) { [self] in
+            try await withCheckedThrowingContinuation { continuation in
+                createdSessionWaiter = continuation
+                quietCreate = true
+                create(options)
+            }
+        }
+    }
+
     /// Runs one tool-less chat turn on the Mac and returns the reply's text.
-    func askChat(_ question: String, agent: AgentKind, timeout: TimeInterval = 25) async throws -> String {
+    func askChat(_ question: String, agent: AgentKind, model: String? = nil, images: [InlineImage] = [],
+                 timeout: TimeInterval = 25) async throws -> String {
         try await ensureConnected()
         let sessionId: String = try await withTimeout(timeout) { [self] in
             try await withCheckedThrowingContinuation { continuation in
                 createdSessionWaiter = continuation
                 quietCreate = true
-                create(.chat(agent: agent))
+                create(.chat(agent: agent, model: model))
             }
         }
         let reply: String = try await withTimeout(timeout) { [self] in
             try await withCheckedThrowingContinuation { continuation in
                 replyWaiters[sessionId] = continuation
-                prompt(sessionId, text: question)
+                prompt(sessionId, text: question, images: images)
             }
         }
+        // A one-off question: the chat has done its job.
+        close(sessionId)
         return reply
     }
 
@@ -991,6 +1013,22 @@ final class AppModel {
     var healthByMac: [String: HostHealth] = [:]
     /// Something shared into the app (text, a link) waiting to become a task or a prompt.
     var incomingShare: SharedDraft?
+    /// Protocol 9 (AppModel+People.swift).
+    var simpleMode: Bool = UserDefaults.standard.bool(forKey: "ccremote.simpleMode") {
+        didSet { UserDefaults.standard.set(simpleMode, forKey: "ccremote.simpleMode") }
+    }
+    /// The language dictation, hands-free and voice memos listen in ("" = from the phone's languages).
+    var speechLanguage: String = UserDefaults.standard.string(forKey: "ccremote.speechLanguage") ?? "" {
+        didSet { UserDefaults.standard.set(speechLanguage, forKey: "ccremote.speechLanguage") }
+    }
+    var speechLocale: Locale? { Dictation.locale(for: speechLanguage) }
+    var hostUsers: [HostUser] = []
+    var invitation: (user: HostUser, url: String)?
+    var inviteError: String?
+    var savedFiles: [String: FileSave] = [:]
+    var packages: [String: PackageState] = [:]
+    var incomingPackage: SessionPackage?
+    var importResult: ImportResult?
 
     // MARK: inbound
 
@@ -1264,6 +1302,8 @@ final class AppModel {
             receiveAutomation(message, from: macId, isActive: isActive)
         case .events, .health:
             receiveOperations(message, from: macId)
+        case .fileWritten, .users, .userInvited, .sessionPackage, .sessionImported:
+            receivePeople(message, from: macId, isActive: isActive)
         case .pong:
             break
         }

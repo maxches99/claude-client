@@ -4,7 +4,7 @@ import Foundation
 /// 4: rewind, palette, worktrees, the task queue and background processes.
 /// 5: the digest, terminals, handoff to the Mac and share links.
 /// 6: pull requests from tasks, branch review, cloning into the workspace, duels, the scheduled digest.
-public let protocolVersion = 8
+public let protocolVersion = 10
 
 /// Which coding agent runs a session. Claude Code is the default everywhere a field is missing,
 /// so messages from an older build still decode.
@@ -68,6 +68,8 @@ public struct HostInfo: Codable, Equatable, Sendable {
     public var appVersion: String?
     /// The host can download a newer release and restart into it.
     public var canUpdate: Bool?
+    /// Who this phone is on the host (protocol 9); nil = the owner, as before.
+    public var me: HostUser?
 
     /// Claude sessions can be started here.
     public var claudeInstalled: Bool { hasClaude ?? true }
@@ -93,6 +95,7 @@ public struct HostInfo: Codable, Equatable, Sendable {
         self.relay = relay
         self.appVersion = appVersion
         self.canUpdate = canUpdate
+        self.me = nil
     }
 }
 

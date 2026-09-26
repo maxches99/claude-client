@@ -12,7 +12,7 @@ struct NewSessionView: View {
     private static let customTag = "custom"
     private var isCustom: Bool { cwd == Self.customTag }
     @State private var agent: AgentKind = .claude
-    @State private var modelId = "claude-opus-5"
+    @State private var modelId = "claude-opus-5-5"
     @State private var mode: PermissionMode = .manual
     // Codex knobs
     @State private var codexModelId = ""
@@ -21,6 +21,8 @@ struct NewSessionView: View {
     @State private var sandbox: CodexSandboxMode = .workspaceWrite
 
     static let models: [(id: String, label: String)] = [
+        // Longest id first: labels are matched by prefix, and "claude-opus-5" is a prefix of "claude-opus-5-5".
+        ("claude-opus-5-5", "Opus 5.5"),
         ("claude-opus-5", "Opus 5"),
         ("claude-sonnet-5", "Sonnet 5"),
         ("claude-haiku-4-5", "Haiku 4.5"),
