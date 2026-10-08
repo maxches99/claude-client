@@ -39,4 +39,22 @@ final class CodexOnlyHostTests: XCTestCase {
             XCTAssertTrue("\(error)".contains("not installed"), "\(error)")
         }
     }
+
+    func testDesktopBundledFindsBothLayouts() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        defer { try? fm.removeItem(atPath: root) }
+        func make(_ path: String) throws {
+            let full = root + "/" + path + "/claude.app/Contents/MacOS"
+            try fm.createDirectory(atPath: full, withIntermediateDirectories: true)
+            fm.createFile(atPath: full + "/claude", contents: Data(), attributes: [.posixPermissions: 0o755])
+        }
+        try make("2.1.280")
+        XCTAssertEqual(ClaudeCLI.desktopBundled(root: root), root + "/2.1.280/claude.app/Contents/MacOS/claude")
+        // The newer version's build sits one level deeper; an unverified sibling loses to the verified one.
+        try make("2.1.293/aaaa")
+        try make("2.1.293/bbbb")
+        fm.createFile(atPath: root + "/2.1.293/bbbb/.verified", contents: Data())
+        XCTAssertEqual(ClaudeCLI.desktopBundled(root: root), root + "/2.1.293/bbbb/claude.app/Contents/MacOS/claude")
+    }
 }
