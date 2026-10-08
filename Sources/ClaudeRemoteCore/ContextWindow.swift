@@ -17,6 +17,8 @@ public enum ContextWindow {
     private static func declaredLimit(model: String?, agent: AgentKind) -> Int {
         guard let model = model?.lowercased(), !model.isEmpty else { return agent == .codex ? 272_000 : 200_000 }
         if model.contains("[1m]") || model.contains("-1m") { return 1_000_000 }
+        // Fable runs with its full 1M window by default.
+        if model.contains("fable") { return 1_000_000 }
         if agent == .codex {
             // GPT-5 class models the Codex CLI runs.
             if model.contains("gpt-5") || model.contains("codex") { return 272_000 }

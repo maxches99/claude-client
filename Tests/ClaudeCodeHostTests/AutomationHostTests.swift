@@ -68,3 +68,10 @@ final class AutomationHostTests: XCTestCase {
         XCTAssertTrue(tasks.allSatisfy { $0.inWorktree })
     }
 }
+
+final class ReviewAnswerHostTests: XCTestCase {
+    func testRepoFromPRURL() {
+        XCTAssertEqual(SessionManager.repoPath(fromPR: "https://github.com/maxches99/claude-client/pull/12"), "maxches99/claude-client")
+        XCTAssertNil(SessionManager.repoPath(fromPR: "https://example.com/x"))
+    }
+}

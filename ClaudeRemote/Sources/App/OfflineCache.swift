@@ -12,6 +12,7 @@ struct OfflineCache {
         return base.appendingPathComponent("ccremote", isDirectory: true).appendingPathComponent(macId, isDirectory: true)
     }
     private var sessionsURL: URL { directory.appendingPathComponent("sessions.json") }
+    private var projectsURL: URL { directory.appendingPathComponent("projects.json") }
     private func transcriptURL(_ id: String) -> URL {
         directory.appendingPathComponent("transcripts", isDirectory: true).appendingPathComponent(id + ".json")
     }
@@ -28,6 +29,18 @@ struct OfflineCache {
         guard let data = try? Self.encoder.encode(sessions) else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? data.write(to: sessionsURL, options: .atomic)
+    }
+
+    /// The project list, so a task can be written for one while the Mac is away.
+    func loadProjects() -> [ProjectInfo] {
+        guard let data = try? Data(contentsOf: projectsURL) else { return [] }
+        return (try? Self.decoder.decode([ProjectInfo].self, from: data)) ?? []
+    }
+
+    func saveProjects(_ projects: [ProjectInfo]) {
+        guard let data = try? Self.encoder.encode(projects) else { return }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? data.write(to: projectsURL, options: .atomic)
     }
 
     func loadTranscript(_ id: String) -> [JSONValue]? {

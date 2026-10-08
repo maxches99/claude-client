@@ -24,6 +24,10 @@ final class WatchClient {
     private var pendingChatPrompt: String?
     /// The chat just started from the wrist, for the view to navigate to.
     var startedChatId: String?
+    /// The pending chat is the translator's: it stays on the translate screen instead of opening.
+    private var pendingChatIsTranslation = false
+    /// The quick chat translations from the wrist go to, reused while it lives.
+    private(set) var translationChatId: String?
 
     private var pairing: WatchPairing?
     private var channel: WebSocketChannel?     // the winning connection once the race is decided
@@ -100,6 +104,20 @@ final class WatchClient {
         pendingChatPrompt = t
         startedChatId = nil
         send(.create(options: .chat(agent: agent)))
+    }
+
+    /// Translates dictated `text` into `language` (a name, "Japanese") in a quick Haiku chat on the Mac or hub.
+    func translate(_ text: String, into language: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        let prompt = "Translate into \(language). Reply with the translation only, written in \(language)'s own script.\n\n\(t)"
+        if let id = translationChatId, status(for: id) != .exited, sessions.contains(where: { $0.id == id }) {
+            send(.prompt(sessionId: id, text: prompt, images: []))
+            return
+        }
+        pendingChatPrompt = prompt
+        pendingChatIsTranslation = true
+        send(.create(options: .chat(agent: .claude, model: "claude-haiku-4-5")))
     }
 
     /// What the agent is doing right now, when it is inside a tool call.
@@ -268,7 +286,8 @@ final class WatchClient {
                 pendingChatPrompt = nil
                 followed.insert(sessionId)
                 send(.prompt(sessionId: sessionId, text: prompt, images: []))
-                startedChatId = sessionId
+                if pendingChatIsTranslation { translationChatId = sessionId } else { startedChatId = sessionId }
+                pendingChatIsTranslation = false
                 send(.listSessions)
             }
         case .event(let sessionId, let payload, _):

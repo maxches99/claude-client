@@ -61,6 +61,16 @@ final class AppModel {
     var supportsAutomation: Bool { (host?.protocolVersion ?? 1) >= 7 }
     /// Event feed, health, before/after screenshots, task snapshots (protocol 8).
     var supportsOperations: Bool { (host?.protocolVersion ?? 1) >= 8 }
+    /// People, file editing, handing sessions over, plan checks and post-mortems (protocol 9).
+    var supportsPeople: Bool { (host?.protocolVersion ?? 1) >= 9 }
+    /// Answering review comments on a task's pull request (protocol 10).
+    var supportsReviewAnswers: Bool { (host?.protocolVersion ?? 1) >= 10 }
+    /// Tasks on weekdays / every N hours, pause and skip, run history.
+    var supportsSchedules: Bool { (host?.protocolVersion ?? 1) >= 11 }
+    /// This phone is a member of the host, not its owner.
+    var isMember: Bool { host?.me.map { !$0.isOwner } ?? false }
+    /// Chats, sessions and tasks only — for someone who wants just that, and for a host's members.
+    var simpleUI: Bool { simpleMode || isMember }
     func supportsMacTools(_ macId: String) -> Bool { (hostByMac[macId]?.protocolVersion ?? 1) >= 5 }
     /// Models Codex on the Mac can run, fetched once per connection.
     var codexModels: [ModelOption] = []
@@ -93,6 +103,12 @@ final class AppModel {
         set { if let id = activeMacId { permissionsByMac[id] = newValue } }
     }
     var errorBanner: String?
+    /// Prompts and tasks written while a Mac was out of reach, per Mac (see Outbox.swift).
+    var outboxByMac: [String: [OutboxItem]] = [:]
+    /// "Sent 2 prompts written offline." — shown once the outbox went out.
+    var outboxNotice: String?
+    /// Sessions whose parked prompts wait for the Mac to attach them again.
+    var outboxAwaitingAttach: Set<String> = []
     /// Sessions and chats are separate tabs, each with its own navigation stack.
     var tab: AppTab = .sessions
     var sessionPath: [String] = []
@@ -149,6 +165,7 @@ final class AppModel {
         activeMacId = saved.activeId ?? saved.macs.first?.id
         loadCachedSessions()
         loadSessionFlags()
+        loadOutboxes()
         syncConnections()
     }
 
@@ -267,6 +284,8 @@ final class AppModel {
         sessionsByMac[id] = nil
         permissionsByMac[id] = nil
         hostByMac[id] = nil
+        outboxByMac[id] = nil
+        OutboxStore(macId: id).remove()
         guard id == activeMacId else { persistMacs(); return }
         resetHostState()
         activeMacId = nil
@@ -300,22 +319,36 @@ final class AppModel {
         guard isConnected else { throw IntentFailure.notConnected }
     }
 
+    /// Starts a session without showing it (the translator's chat); returns its id.
+    func createQuietly(_ options: NewSessionOptions, timeout: TimeInterval = 20) async -> String? {
+        try? await withTimeout(timeout) { [self] in
+            try await withCheckedThrowingContinuation { continuation in
+                createdSessionWaiter = continuation
+                quietCreate = true
+                create(options)
+            }
+        }
+    }
+
     /// Runs one tool-less chat turn on the Mac and returns the reply's text.
-    func askChat(_ question: String, agent: AgentKind, timeout: TimeInterval = 25) async throws -> String {
+    func askChat(_ question: String, agent: AgentKind, model: String? = nil, images: [InlineImage] = [],
+                 timeout: TimeInterval = 25) async throws -> String {
         try await ensureConnected()
         let sessionId: String = try await withTimeout(timeout) { [self] in
             try await withCheckedThrowingContinuation { continuation in
                 createdSessionWaiter = continuation
                 quietCreate = true
-                create(.chat(agent: agent))
+                create(.chat(agent: agent, model: model))
             }
         }
         let reply: String = try await withTimeout(timeout) { [self] in
             try await withCheckedThrowingContinuation { continuation in
                 replyWaiters[sessionId] = continuation
-                prompt(sessionId, text: question)
+                prompt(sessionId, text: question, images: images)
             }
         }
+        // A one-off question: the chat has done its job.
+        close(sessionId)
         return reply
     }
 
@@ -432,6 +465,7 @@ final class AppModel {
 
     private func loadCachedSessions() {
         guard let cache, sessions.isEmpty else { return }
+        if projects.isEmpty { projects = cache.loadProjects() }
         let cached = cache.loadSessions()
         if !cached.isEmpty {
             sessions = cached
@@ -603,7 +637,9 @@ final class AppModel {
     }
 
     func prompt(_ sessionId: String, text: String, images: [InlineImage] = [], attachments: [Attachment]? = nil) {
-        sendMessage(.prompt(sessionId: sessionId, text: text, images: images, attachments: attachments))
+        let preview = text.isEmpty ? "\((attachments?.count ?? 0) + images.count) attachment(s)" : text
+        guard sendOrPark(.prompt(sessionId: sessionId, text: text, images: images, attachments: attachments),
+                         kind: .prompt, preview: preview, session: sessionId) else { return }
         // Mid-turn the host queues it; the turn that is running keeps its own timer.
         let status = states[sessionId]?.status
         guard status != .running, status != .awaitingPermission else { return }
@@ -977,6 +1013,11 @@ final class AppModel {
 
     // MARK: protocol 7 state (AppModel+Automation.swift)
     var issuesByCwd: [String: IssueList] = [:]
+    /// Crash reporters the active Mac watches and what they reported (CrashesView).
+    var crashSources: [CrashSource] = []
+    var crashIssues: [CrashIssue] = []
+    var crashError: String?
+    var crashesLoaded = false
     var templatesByCwd: [String: [PromptTemplate]] = [:]
     var auditReport: AuditReport?
     var auditLoading = false
@@ -991,6 +1032,22 @@ final class AppModel {
     var healthByMac: [String: HostHealth] = [:]
     /// Something shared into the app (text, a link) waiting to become a task or a prompt.
     var incomingShare: SharedDraft?
+    /// Protocol 9 (AppModel+People.swift).
+    var simpleMode: Bool = UserDefaults.standard.bool(forKey: "ccremote.simpleMode") {
+        didSet { UserDefaults.standard.set(simpleMode, forKey: "ccremote.simpleMode") }
+    }
+    /// The language dictation, hands-free and voice memos listen in ("" = from the phone's languages).
+    var speechLanguage: String = UserDefaults.standard.string(forKey: "ccremote.speechLanguage") ?? "" {
+        didSet { UserDefaults.standard.set(speechLanguage, forKey: "ccremote.speechLanguage") }
+    }
+    var speechLocale: Locale? { Dictation.locale(for: speechLanguage) }
+    var hostUsers: [HostUser] = []
+    var invitation: (user: HostUser, url: String)?
+    var inviteError: String?
+    var savedFiles: [String: FileSave] = [:]
+    var packages: [String: PackageState] = [:]
+    var incomingPackage: SessionPackage?
+    var importResult: ImportResult?
 
     // MARK: inbound
 
@@ -1014,6 +1071,7 @@ final class AppModel {
             requestDigestIfAway(macId)
             updateMac(macId) { $0.hostName = host.hostName; $0.lastConnectedAt = Date() }
             guard isActive else {
+                flushOutbox(macId)
                 connections[macId]?.send(.listSessions)
                 return
             }
@@ -1025,7 +1083,11 @@ final class AppModel {
             for id in openSessionIds { sendMessage(.open(sessionId: id, since: transcripts[id] != nil ? lastSeq[id] : nil)) }
             if let udid = simulatorFeed.watching { sendSimulatorStream(udid, enabled: true) }
             for id in liveActivities.activeSessionIds { registerActivityToken(id, token: liveActivities.pushToken(for: id)) }
-        case .error(let text, _):
+            let parkedTasks = outboxByMac[macId]?.contains { $0.kind == .task } ?? false
+            flushOutbox(macId)
+            if parkedTasks { requestTasks() }
+        case .error(let text, let sessionId):
+            if let sessionId, outboxAwaitingAttach.contains(sessionId) { parkedSessionFailed(sessionId) }
             if isActive { errorBanner = text }
         case .sessions(let items):
             sessionsByMac[macId] = items
@@ -1037,7 +1099,9 @@ final class AppModel {
         case .projects(let items):
             guard isActive else { return }
             projects = items
+            cache?.saveProjects(items)
         case .history(let sessionId, let entries):
+            defer { releaseParkedPrompts(sessionId, from: macId) }
             guard isActive else { return }
             var transcript = Transcript()
             transcript.apply(entries: entries)
@@ -1053,6 +1117,7 @@ final class AppModel {
                 if quietCreate { quietCreate = false } else { present(sessionId, kind: awaitingKind) }
             }
         case .catchUp(let sessionId, let entries, let seq):
+            defer { releaseParkedPrompts(sessionId, from: macId) }
             guard isActive else { return }
             guard transcripts[sessionId] != nil else { return }
             transcripts[sessionId]?.apply(entries: entries)
@@ -1260,10 +1325,12 @@ final class AppModel {
             guard isActive else { return }
             digestSchedule = schedule
             digestScheduleError = error
-        case .issues, .templates, .audit, .relaySetup, .relayConfigured, .github, .hostUpdate:
+        case .issues, .templates, .audit, .relaySetup, .relayConfigured, .github, .hostUpdate, .crashes:
             receiveAutomation(message, from: macId, isActive: isActive)
         case .events, .health:
             receiveOperations(message, from: macId)
+        case .fileWritten, .users, .userInvited, .sessionPackage, .sessionImported:
+            receivePeople(message, from: macId, isActive: isActive)
         case .pong:
             break
         }

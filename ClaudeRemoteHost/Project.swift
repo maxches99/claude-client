@@ -19,6 +19,7 @@ let project = Project(
             infoPlist: .file(path: "Info.plist"),
             sources: ["Sources/**"],
             resources: ["Assets.xcassets"],
+            entitlements: .file(path: "ClaudeRemoteHost.entitlements"),
             dependencies: [
                 .package(product: "ClaudeRemoteDaemon"),
                 .package(product: "ClaudeCodeHost"),

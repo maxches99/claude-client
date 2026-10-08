@@ -18,6 +18,7 @@ extension SessionManager {
         guard let stored = store.session(id: sessionId) else { throw ManagerError.unknownSession(sessionId) }
         guard FileManager.default.fileExists(atPath: stored.cwd) else { throw ManagerError.cwdMissing(stored.cwd) }
         let newId = UUID().uuidString.lowercased()
+        if let owner = sessionOwners[sessionId] { claim(newId, for: owner) }
         let cut = try SessionManager.writeRewound(from: stored.path, upTo: uuid, newSessionId: newId)
         var config = CLIProcess.Config(cliPath: try claudePath(), cwd: stored.cwd)
         config.resume = newId

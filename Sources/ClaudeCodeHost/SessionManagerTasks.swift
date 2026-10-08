@@ -21,8 +21,8 @@ extension SessionManager {
     public func addTask(_ task: AgentTask) async {
         var task = task
         if task.title.trimmingCharacters(in: .whitespaces).isEmpty { task.title = AgentTask.title(fromPrompt: task.prompt) }
-        if let minutes = task.dailyAtMinutes {
-            task.runAt = task.runAt ?? SessionManager.nextDaily(minutes: minutes)
+        if task.repeats {
+            task.runAt = task.runAt ?? task.nextRun()
             task.status = .scheduled
         } else if let at = task.runAt, at > Date() {
             task.status = .scheduled
@@ -44,8 +44,10 @@ extension SessionManager {
         updated.sessionId = tasks[idx].sessionId
         updated.createdAt = tasks[idx].createdAt
         if updated.title.trimmingCharacters(in: .whitespaces).isEmpty { updated.title = AgentTask.title(fromPrompt: updated.prompt) }
-        if let minutes = updated.dailyAtMinutes {
-            updated.runAt = SessionManager.nextDaily(minutes: minutes)
+        // An older phone sends the task without its history; the host keeps it.
+        if updated.runs == nil { updated.runs = tasks[idx].runs }
+        if updated.repeats {
+            updated.runAt = updated.nextRun()
             updated.status = .scheduled
         } else if let at = updated.runAt, at > Date() {
             updated.status = .scheduled
@@ -101,6 +103,20 @@ extension SessionManager {
         case .toggleFixCI:
             tasks[idx].fixCI.toggle()
             if tasks[idx].fixCI { Task { await self.checkCI() } }
+        case .toggleAnswerReviews:
+            tasks[idx].answerReviews.toggle()
+            if tasks[idx].answerReviews { Task { await self.checkReviews() } }
+        case .pause:
+            tasks[idx].paused = true
+        case .resume:
+            tasks[idx].paused = false
+            if tasks[idx].repeats, tasks[idx].status == .scheduled, (tasks[idx].runAt ?? .distantPast) < Date() {
+                tasks[idx].runAt = tasks[idx].nextRun()
+            }
+        case .skipNext:
+            guard tasks[idx].repeats, tasks[idx].status == .scheduled else { break }
+            let after = max(tasks[idx].runAt ?? Date(), Date())
+            tasks[idx].runAt = tasks[idx].nextRun(after: after)
         case .restoreSnapshot:
             let taskId = tasks[idx].id
             do {
@@ -128,7 +144,7 @@ extension SessionManager {
     func pumpTasks() async {
         var changed = false
         let now = Date()
-        for i in tasks.indices where tasks[i].status == .scheduled {
+        for i in tasks.indices where tasks[i].status == .scheduled && !tasks[i].paused {
             if let at = tasks[i].runAt, at <= now {
                 tasks[i].status = .queued
                 changed = true
@@ -177,10 +193,10 @@ extension SessionManager {
             // default can be read-only, which leaves it describing the fix instead of making it).
             let options = NewSessionOptions(cwd: cwd, model: task.model, permissionMode: task.permissionMode, effort: task.effort, agent: task.agent,
                                             sandbox: task.agent == .codex ? CodexSandboxMode.workspaceWrite.rawValue : nil)
-            let state = try await create(options)
+            let state = try await create(options, owner: task.ownerId)
             task.sessionId = state.id
             tasks[index] = task
-            try await prompt(sessionId: state.id, text: task.prompt)
+            try await prompt(sessionId: state.id, text: task.planFirst ? TaskReview.planPreamble + task.prompt : task.prompt)
             log("task started: \(task.title.prefix(60)) → \(state.id.prefix(8))")
             recordEvent(HostEvent(kind: .task, title: "Started \"\(task.title)\"", detail: task.projectName, sessionId: state.id, taskId: task.id))
         } catch {
@@ -189,6 +205,12 @@ extension SessionManager {
             task.finishedAt = Date()
             log("task failed to start: \(task.title.prefix(60)): \(error)")
             announce(.task, .error, "Task \"\(task.title)\" could not start", detail: "\(error)", taskId: task.id, notify: .error)
+            if task.repeats {
+                task.record(TaskRun(startedAt: task.startedAt, finishedAt: Date(), outcome: .failed, summary: "Could not start: \(error)"))
+                task.status = .scheduled
+                task.runAt = task.nextRun()
+                task.sessionId = nil
+            }
         }
         if let idx = tasks.firstIndex(where: { $0.id == task.id }) { tasks[idx] = task }
     }
@@ -200,6 +222,7 @@ extension SessionManager {
             judgeFinished(duelId: duelId, isError: isError, reply: summary ?? "")
             return
         }
+        if reviewFinished(sessionId: sessionId, isError: isError, reply: summary ?? "") { return }
         guard let idx = tasks.firstIndex(where: { $0.status == .running && $0.sessionId == sessionId }) else { return }
         var task = tasks[idx]
         let text = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -213,10 +236,13 @@ extension SessionManager {
         }
         announce(.task, isError ? .error : .success, "Task \"\(task.title)\" \(isError ? "failed" : "finished")",
                  detail: task.resultSummary.map { String($0.prefix(200)) }, sessionId: sessionId, taskId: task.id, notify: isError ? .error : .done)
-        if let minutes = task.dailyAtMinutes, !isError {
-            // A daily task keeps its row: it is armed again for tomorrow with the last result on it.
+        if task.repeats {
+            // A repeating task keeps its row: the run goes into its history and it is armed again —
+            // after a failure too, so one bad night doesn't end the schedule.
+            task.record(TaskRun(startedAt: task.startedAt, finishedAt: task.finishedAt ?? Date(), outcome: isError ? .failed : .done,
+                                summary: task.resultSummary, sessionId: sessionId))
             task.status = .scheduled
-            task.runAt = SessionManager.nextDaily(minutes: minutes)
+            task.runAt = task.nextRun()
             task.sessionId = nil
         }
         tasks[idx] = task
@@ -236,19 +262,34 @@ extension SessionManager {
             return
         }
         if task.wantsPreview { await takePreview(taskId: taskId, phase: .after) }
+        if succeeded, task.planFirst { await checkPlan(taskId: taskId) }
+        if !succeeded, task.duelId == nil { await writePostmortem(taskId: taskId) }
+        var unchanged = false
         if let worktree = task.worktreePath, let base = task.baseCommit, FileManager.default.fileExists(atPath: worktree) {
             let stat = await offActor { [self] in changes(in: worktree, against: base).stat }
+            unchanged = stat.files == 0
             if let i = tasks.firstIndex(where: { $0.id == taskId }) {
                 tasks[i].diffStat = stat
+                if tasks[i].repeats, var run = tasks[i].runs?.last {
+                    run.diffStat = stat
+                    if unchanged, succeeded { run.outcome = .noChanges }
+                    tasks[i].runs?[tasks[i].runs!.count - 1] = run
+                }
                 saveTasks()
                 broadcastTasks()
             }
         }
+        // A repeating job that found nothing to do ("update the dependencies") is not an error.
+        if unchanged, task.repeats, task.duelId == nil { return }
         if let duelId = task.duelId {
             await duelTaskFinished(duelId: duelId)
         } else if succeeded, task.openPullRequest, task.worktreePath != nil {
             do {
                 let url = try await openPullRequest(forTask: taskId)
+                if let i = tasks.firstIndex(where: { $0.id == taskId }), tasks[i].repeats, let n = tasks[i].runs?.count, n > 0 {
+                    tasks[i].runs?[n - 1].pullRequestURL = url
+                    saveTasks(); broadcastTasks()
+                }
                 announce(.task, .success, "Pull request for \"\(task.title)\"", detail: url, taskId: taskId, url: url, notify: .done)
                 if task.fixCI, let i = tasks.firstIndex(where: { $0.id == taskId }) {
                     tasks[i].ci = TaskCI(state: .pending)
@@ -279,13 +320,7 @@ extension SessionManager {
 
     /// The next time today or tomorrow that is `minutes` past local midnight.
     static func nextDaily(minutes: Int, from now: Date = Date(), calendar: Calendar = .current) -> Date {
-        let clamped = min(max(0, minutes), 24 * 60 - 1)
-        var components = calendar.dateComponents([.year, .month, .day], from: now)
-        components.hour = clamped / 60
-        components.minute = clamped % 60
-        components.second = 0
-        let today = calendar.date(from: components) ?? now
-        return today > now ? today : (calendar.date(byAdding: .day, value: 1, to: today) ?? now.addingTimeInterval(86_400))
+        AgentTask.nextTime(minutes: minutes, weekdays: nil, after: now, calendar: calendar)
     }
 
     // MARK: persistence
@@ -317,13 +352,13 @@ extension SessionManager {
                 task.error = "The Mac app restarted while this task was running."
                 task.finishedAt = Date()
             }
-            if task.status == .scheduled, let minutes = task.dailyAtMinutes, (task.runAt ?? .distantPast) < Date() {
-                task.runAt = SessionManager.nextDaily(minutes: minutes)
+            if task.status == .scheduled, task.repeats, (task.runAt ?? .distantPast) < Date() {
+                task.runAt = task.nextRun()
             }
             return task
         }
         // Finished one-off tasks are history; keep the recent ones only.
-        let finished = tasks.filter { $0.status.isFinished && $0.dailyAtMinutes == nil && $0.duelId == nil }
+        let finished = tasks.filter { $0.status.isFinished && !$0.repeats && $0.duelId == nil }
             .sorted { ($0.finishedAt ?? .distantPast) > ($1.finishedAt ?? .distantPast) }
         let drop = Set(finished.dropFirst(30).map(\.id))
         if !drop.isEmpty { tasks.removeAll { drop.contains($0.id) } }

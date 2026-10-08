@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Menu-bar app hosting the ccremote daemon. Panels: the status popover under the menu-bar
-/// icon, a Pairing window (big QR), a Settings window, and a Log window.
+/// icon, a Pairing window (big QR), a Settings window, a Permissions window and a Log window.
 @main
 struct HostApp: App {
     @State private var model = HostModel()
@@ -18,6 +18,11 @@ struct HostApp: App {
                     if model.shouldShowPairingOnLaunch {
                         model.markPairingShown()
                         openWindow(id: WindowID.pairing)
+                        NSApp.activate(ignoringOtherApps: true)
+                    } else if model.permissions.shouldShowOnLaunch {
+                        // Once per build: an update can make macOS forget what it granted.
+                        model.permissions.markWindowShown()
+                        openWindow(id: WindowID.permissions)
                         NSApp.activate(ignoringOtherApps: true)
                     }
                 }
@@ -36,6 +41,12 @@ struct HostApp: App {
         .windowResizability(.contentMinSize)
         .defaultPosition(.center)
 
+        Window("ClaudeRemote Host Permissions", id: WindowID.permissions) {
+            PermissionsWindow(permissions: model.permissions)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+
         Window("ClaudeRemote Host Log", id: WindowID.log) {
             LogWindow(model: model)
         }
@@ -47,6 +58,7 @@ enum WindowID {
     static let pairing = "pairing"
     static let settings = "settings"
     static let log = "log"
+    static let permissions = "permissions"
 }
 
 /// Opens one of the app's windows from the menu-bar panel and brings the app forward

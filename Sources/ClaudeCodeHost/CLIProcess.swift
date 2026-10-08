@@ -25,7 +25,11 @@ public final class CLIProcess: @unchecked Sendable {
         public var systemPrompt: String?
         /// `--setting-sources`; "" keeps CLAUDE.md and project settings out of a chat.
         public var settingSources: String = "user,project,local"
+        /// `--prompt-suggestions`: a predicted next prompt after every turn, as the terminal UI shows in its input.
+        public var promptSuggestions = false
         public var extraArgs: [String] = []
+        /// Added to the child's environment (a member's own `CLAUDE_CODE_OAUTH_TOKEN`).
+        public var environment: [String: String] = [:]
 
         public init(cliPath: String, cwd: String) {
             self.cliPath = cliPath
@@ -88,12 +92,13 @@ public final class CLIProcess: @unchecked Sendable {
         if let model = config.model { args += ["--model", model] }
         if let mode = config.permissionMode { args += ["--permission-mode", mode] }
         if let effort = config.effort { args += ["--effort", effort] }
+        if config.promptSuggestions { args.append("--prompt-suggestions") }
         args += config.extraArgs
 
         process.executableURL = URL(fileURLWithPath: config.cliPath)
         process.arguments = args
         process.currentDirectoryURL = URL(fileURLWithPath: config.cwd)
-        process.environment = ClaudeCLI.childEnvironment()
+        process.environment = ClaudeCLI.childEnvironment().merging(config.environment) { _, new in new }
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe

@@ -149,6 +149,17 @@ public enum ClientMessage: Codable, Sendable {
     case getDigestSchedule
     /// Open issues of the project's GitHub repository; answered with `issues`.
     case listIssues(cwd: String)
+    /// Crash reporters the host watches and the crashes it has seen; answered with `crashes` (protocol 11).
+    case listCrashes
+    /// Add or change a crash reporter (a nil `token` keeps the stored one); answered with `crashes`.
+    case setCrashSource(source: CrashSource)
+    case removeCrashSource(id: String)
+    /// Ask the reporters now instead of at the next 15-minute check.
+    case checkCrashes
+    /// Start a task that fixes this crash (worktree + draft pull request); answered with `crashes`.
+    case fixCrash(id: String)
+    /// Stop offering a fix for this crash.
+    case ignoreCrash(id: String)
     /// Prompt templates for a project (its `.ccremote.json` and the host's own); answered with `templates`.
     case listTemplates(cwd: String)
     /// What agents did on the machine since `since` (one project, or all); answered with `audit`.
@@ -172,6 +183,23 @@ public enum ClientMessage: Codable, Sendable {
     case listEvents(since: Date?)
     /// Disk, memory, load, power and logins; answered with `health`.
     case health
+    /// Save an edited text file of the session's project. `baseHash` is the SHA-256 of the version the
+    /// phone edited; a file that changed since is refused. Answered with `fileWritten`.
+    case writeFile(sessionId: String, path: String, content: String, baseHash: String?)
+    /// People with their own pairing on this host (owner only); answered with `users`.
+    case listUsers
+    /// A new member and their pairing link; answered with `userInvited`.
+    case inviteUser(name: String)
+    case removeUser(id: String)
+    /// A member's own Claude token (`claude setup-token`), so their use counts against their account.
+    /// Nil clears it. Answered with `users`.
+    case setOwnClaudeToken(token: String?)
+    /// Pack a session to continue elsewhere; answered with `sessionPackage`.
+    case exportSession(sessionId: String)
+    /// Unpack a session here (into `cwd`, or a folder of the workspace); answered with `sessionImported`.
+    case importSession(package: SessionPackage, cwd: String?)
+    /// Hand a session to another person on this host (owner only).
+    case giveSession(sessionId: String, userId: String?)
     /// Register (or, with `pushToken == nil`, drop) this phone's Live Activity for a session. When the
     /// Mac has APNs configured it pushes `SessionActivityState` updates to the token, so the activity
     /// keeps moving while the app is in the background. `approvalNeedsApp` mirrors the phone's Face ID
@@ -238,6 +266,8 @@ public enum ServerMessage: Codable, Sendable {
     case duels(items: [Duel])
     case digestSchedule(schedule: DigestSchedule, error: String?)
     case issues(cwd: String, items: [GitHubIssue], error: String?)
+    /// Crash reporters (tokens left out) and the crashes seen, newest first. Also pushed when a check finds new ones.
+    case crashes(sources: [CrashSource], items: [CrashIssue], error: String?)
     case templates(cwd: String, items: [PromptTemplate])
     case audit(report: AuditReport)
     case relaySetup(setup: RelaySetup?, error: String?)
@@ -248,6 +278,11 @@ public enum ServerMessage: Codable, Sendable {
     /// Events newest last; `live` for ones that just happened.
     case events(items: [HostEvent], live: Bool)
     case health(report: HostHealth)
+    case fileWritten(sessionId: String, path: String, hash: String?, error: String?)
+    case users(items: [HostUser], me: HostUser?)
+    case userInvited(user: HostUser?, pairingURL: String?, error: String?)
+    case sessionPackage(sessionId: String, package: SessionPackage?, error: String?)
+    case sessionImported(sessionId: String?, cwd: String?, error: String?)
     case simulators(items: [SimulatorInfo])
     case simulatorActionResult(udid: String, action: SimulatorAction, error: String?)
     case simulatorApps(udid: String, items: [SimulatorApp], error: String?)

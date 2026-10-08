@@ -46,6 +46,26 @@ struct SettingsView: View {
                          : "The app shows one Mac at a time — pick it here or from the title of the session list. Swipe a Mac to forget it.")
                 }
                 Section {
+                    Toggle("Simple mode", isOn: $model.simpleMode).disabled(model.isMember)
+                } footer: {
+                    Text(model.isMember
+                         ? "You are a member of this host: you see your own chats, sessions and tasks."
+                         : "Just chats, sessions and tasks — git, terminals, the simulator, duels, audit and the rest stay out of the way.")
+                }
+                Section {
+                    Picker("Speech language", selection: $model.speechLanguage) {
+                        Text(automaticSpeechLabel).tag("")
+                        ForEach(Dictation.supportedLocales, id: \.identifier) { locale in
+                            Text(Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier)
+                                .tag(locale.identifier)
+                        }
+                    }
+                } header: {
+                    Text("Voice")
+                } footer: {
+                    Text("The language dictation, hands-free and voice memo transcripts listen in.")
+                }
+                Section {
                     Toggle("Require Face ID to approve", isOn: $model.requireBiometricsForApproval)
                     Toggle("Lock app with Face ID", isOn: $model.lockAppWithBiometrics)
                 } header: {
@@ -96,6 +116,13 @@ struct SettingsView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .sheet(isPresented: $showAddMac) { PairingView() }
         }
+    }
+
+    /// "Automatic (Russian)" — says which language the automatic choice lands on.
+    private var automaticSpeechLabel: String {
+        guard let locale = Dictation.locale(for: ""),
+              let name = Locale.current.localizedString(forIdentifier: locale.identifier) else { return "Automatic" }
+        return "Automatic (\(name))"
     }
 
     private var liveActivityFooter: String {

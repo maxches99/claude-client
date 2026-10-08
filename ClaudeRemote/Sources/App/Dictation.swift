@@ -11,6 +11,8 @@ final class Dictation {
     enum Failure: Equatable { case microphone, speech, unavailable }
 
     private(set) var isListening = false
+    /// The language to recognize (nil = the phone's own).
+    var locale: Locale?
     /// The transcript of the current utterance so far (partial results replace, not append).
     private(set) var text = ""
     /// Rough input level 0…1 for the meter while listening.
@@ -21,13 +23,14 @@ final class Dictation {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var idleTimer: Timer?
+    private var joiner = Joiner()
 
     /// Starts listening; `onText` fires on every partial result with the full text so far.
     func start() async -> Bool {
         failure = nil
         guard await Self.ensureMicPermission() else { failure = .microphone; return false }
         guard await Self.ensureSpeechPermission() else { failure = .speech; return false }
-        guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable else { failure = .unavailable; return false }
+        guard let recognizer = locale.flatMap(SFSpeechRecognizer.init(locale:)) ?? SFSpeechRecognizer(), recognizer.isAvailable else { failure = .unavailable; return false }
 
         let session = AVAudioSession.sharedInstance()
         do {
@@ -58,13 +61,15 @@ final class Dictation {
 
         self.engine = engine
         self.request = request
+        joiner = Joiner()
         text = ""
         isListening = true
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor [weak self] in
                 guard let self, self.isListening else { return }
                 if let result {
-                    self.text = result.bestTranscription.formattedString
+                    self.joiner.add(result)
+                    self.text = self.joiner.text
                     if result.isFinal { self.stop() }
                 } else if error != nil {
                     // Silence → the recognizer times out with an error; keep what we have.
@@ -93,6 +98,49 @@ final class Dictation {
     func cancel() {
         stop()
         text = ""
+    }
+
+    /// Glues the recognizer's results into one transcript. Since iOS 17 the recognizer closes an
+    /// utterance at a pause (the result then carries `speechRecognitionMetadata` or `isFinal`) and the
+    /// next results start from an empty string — replacing the text lost everything said before it.
+    struct Joiner {
+        private var committed = ""
+        private var current = ""
+        private var segmentClosed = false
+
+        var text: String { [committed, current].filter { !$0.isEmpty }.joined(separator: " ") }
+
+        mutating func add(_ result: SFSpeechRecognitionResult) {
+            let new = result.bestTranscription.formattedString
+            // After a closed utterance, a result that doesn't continue it is a fresh one (older
+            // systems keep the text cumulative, so the prefix check keeps them from doubling).
+            if segmentClosed, !new.hasPrefix(current) { committed = text }
+            current = new
+            segmentClosed = result.isFinal || result.speechRecognitionMetadata != nil
+        }
+    }
+
+    /// Languages the recognizer knows, sorted by their name in the phone's language.
+    static var supportedLocales: [Locale] {
+        SFSpeechRecognizer.supportedLocales().sorted {
+            Locale.current.localizedString(forIdentifier: $0.identifier) ?? $0.identifier
+                < Locale.current.localizedString(forIdentifier: $1.identifier) ?? $1.identifier
+        }
+    }
+
+    /// The language to listen in: the one picked in Settings, else the first of the phone's preferred
+    /// languages the recognizer knows (`SFSpeechRecognizer()` alone follows only the region format,
+    /// so an English-region phone of a Russian speaker transcribed Russian as English).
+    static func locale(for choice: String) -> Locale? {
+        if !choice.isEmpty { return Locale(identifier: choice) }
+        let supported = SFSpeechRecognizer.supportedLocales()
+        for preferred in Locale.preferredLanguages {
+            let tag = preferred.replacingOccurrences(of: "_", with: "-")
+            if let exact = supported.first(where: { $0.identifier.replacingOccurrences(of: "_", with: "-") == tag }) { return exact }
+            let language = Locale(identifier: preferred).language.languageCode?.identifier
+            if let language, let match = supported.first(where: { $0.language.languageCode?.identifier == language }) { return match }
+        }
+        return nil
     }
 
     private static func rms(_ buffer: AVAudioPCMBuffer) -> Float {

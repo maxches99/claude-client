@@ -4,7 +4,8 @@ import Foundation
 /// 4: rewind, palette, worktrees, the task queue and background processes.
 /// 5: the digest, terminals, handoff to the Mac and share links.
 /// 6: pull requests from tasks, branch review, cloning into the workspace, duels, the scheduled digest.
-public let protocolVersion = 8
+/// 11: tasks that repeat on weekdays or every N hours, pause / skip the next run, run history.
+public let protocolVersion = 11
 
 /// Which coding agent runs a session. Claude Code is the default everywhere a field is missing,
 /// so messages from an older build still decode.
@@ -68,6 +69,8 @@ public struct HostInfo: Codable, Equatable, Sendable {
     public var appVersion: String?
     /// The host can download a newer release and restart into it.
     public var canUpdate: Bool?
+    /// Who this phone is on the host (protocol 9); nil = the owner, as before.
+    public var me: HostUser?
 
     /// Claude sessions can be started here.
     public var claudeInstalled: Bool { hasClaude ?? true }
@@ -93,6 +96,7 @@ public struct HostInfo: Codable, Equatable, Sendable {
         self.relay = relay
         self.appVersion = appVersion
         self.canUpdate = canUpdate
+        self.me = nil
     }
 }
 
@@ -113,6 +117,17 @@ public struct ModelOption: Codable, Equatable, Identifiable, Sendable {
         self.isDefault = isDefault
         self.efforts = efforts
         self.defaultEffort = defaultEffort
+    }
+}
+
+/// Reasoning effort for Claude models: the CLI's `--effort` levels, from cheapest to most thorough.
+public enum ClaudeEffort {
+    public static let levels = ["low", "medium", "high", "xhigh", "max"]
+
+    /// The levels `model` accepts; Haiku has no effort control.
+    public static func levels(model: String?) -> [String] {
+        guard let model = model?.lowercased(), !model.contains("haiku") else { return [] }
+        return levels
     }
 }
 
@@ -234,7 +249,7 @@ public struct SessionState: Codable, Equatable, Sendable {
     public var lastError: String?
     public var agent: AgentKind
     public var kind: SessionKind
-    /// Reasoning effort, in the agent's vocabulary (Codex only for now).
+    /// Reasoning effort, in the agent's vocabulary.
     public var effort: String?
     /// Codex sandbox mode (`CodexSandboxMode`).
     public var sandbox: String?
@@ -242,10 +257,13 @@ public struct SessionState: Codable, Equatable, Sendable {
     public var slashCommands: [String]
     /// Prompts sent while the agent was mid-turn, in the order they will go out once it finishes.
     public var queued: [QueuedPrompt]
+    /// Claude's guess at the next prompt, offered in the composer once a turn ends (`--prompt-suggestions`).
+    public var suggestion: String?
 
     public init(id: String, origin: SessionOrigin, status: SessionStatus, cwd: String, model: String? = nil, permissionMode: String? = nil,
                 pendingPermissions: [PermissionRequest] = [], lastError: String? = nil, agent: AgentKind = .claude, kind: SessionKind = .agent,
-                effort: String? = nil, sandbox: String? = nil, slashCommands: [String] = [], queued: [QueuedPrompt] = []) {
+                effort: String? = nil, sandbox: String? = nil, slashCommands: [String] = [], queued: [QueuedPrompt] = [],
+                suggestion: String? = nil) {
         self.id = id
         self.origin = origin
         self.status = status
@@ -260,6 +278,7 @@ public struct SessionState: Codable, Equatable, Sendable {
         self.sandbox = sandbox
         self.slashCommands = slashCommands
         self.queued = queued
+        self.suggestion = suggestion
     }
 
     public init(from decoder: Decoder) throws {
@@ -278,6 +297,7 @@ public struct SessionState: Codable, Equatable, Sendable {
         sandbox = try c.decodeIfPresent(String.self, forKey: .sandbox)
         slashCommands = try c.decodeIfPresent([String].self, forKey: .slashCommands) ?? []
         queued = try c.decodeIfPresent([QueuedPrompt].self, forKey: .queued) ?? []
+        suggestion = try c.decodeIfPresent(String.self, forKey: .suggestion)
     }
 }
 

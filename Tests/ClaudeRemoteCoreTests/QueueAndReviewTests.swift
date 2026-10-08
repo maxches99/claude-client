@@ -89,6 +89,7 @@ final class QueueAndReviewTests: XCTestCase {
     func testContextWindowLimitsAndThresholds() {
         XCTAssertEqual(ContextWindow.limit(model: "claude-sonnet-5"), 200_000)
         XCTAssertEqual(ContextWindow.limit(model: "claude-sonnet-5[1m]"), 1_000_000)
+        XCTAssertEqual(ContextWindow.limit(model: "claude-fable-5-1"), 1_000_000)
         XCTAssertEqual(ContextWindow.limit(model: nil), 200_000)
         XCTAssertEqual(ContextWindow.limit(model: "gpt-5-codex", agent: .codex), 272_000)
 

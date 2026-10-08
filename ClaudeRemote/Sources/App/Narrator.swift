@@ -19,6 +19,23 @@ final class Narrator: NSObject, AVSpeechSynthesizerDelegate {
         synthesizer.delegate = self
     }
 
+    /// Speaks in a given language (a BCP-47 code like "ja-JP") — short phrases are too little for guessing.
+    func speak(_ text: String, language: String) {
+        stop()
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        try? session.setActive(true, options: [])
+        let utterance = AVSpeechUtterance(string: text)
+        let prefix = String(language.prefix(2))
+        let voices = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == language || $0.language.hasPrefix(prefix) }
+        utterance.voice = voices.max { a, b in a.quality.rawValue < b.quality.rawValue } ?? AVSpeechSynthesisVoice(language: language)
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.9
+        onFinish = nil
+        speakingItemId = nil
+        isSpeaking = true
+        synthesizer.speak(utterance)
+    }
+
     /// Speaks `markdown`; `onFinish` runs when it ends (not when it is cut off by `stop`).
     func speak(_ markdown: String, itemId: String? = nil, onFinish: (() -> Void)? = nil) {
         stop()

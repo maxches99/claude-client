@@ -80,21 +80,18 @@ final class VoiceRecorder {
     }
 
     /// Best-effort on-device transcription of the last recording. Empty when unavailable or denied.
-    func transcribe() async -> String {
+    func transcribe(locale: Locale? = nil) async -> String {
         guard let url = fileURL else { return "" }
         guard await Self.ensureSpeechPermission() else { return "" }
-        guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable else { return "" }
+        guard let recognizer = locale.flatMap(SFSpeechRecognizer.init(locale:)) ?? SFSpeechRecognizer(), recognizer.isAvailable else { return "" }
         let request = SFSpeechURLRecognitionRequest(url: url)
         request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
-        let box = ResumeBox()
+        // A delegate, not a result handler: a memo with pauses comes back as several final
+        // utterances, and only the delegate says when the whole file is done.
         return await withCheckedContinuation { (cont: CheckedContinuation<String, Never>) in
-            recognizer.recognitionTask(with: request) { result, error in
-                if let result, result.isFinal {
-                    if box.claim() { cont.resume(returning: result.bestTranscription.formattedString) }
-                } else if error != nil {
-                    if box.claim() { cont.resume(returning: "") }
-                }
-            }
+            let delegate = FileTranscription(cont)
+            let task = recognizer.recognitionTask(with: request, delegate: delegate)
+            objc_setAssociatedObject(task, &FileTranscription.key, delegate, .OBJC_ASSOCIATION_RETAIN)
         }
     }
 
@@ -111,13 +108,24 @@ final class VoiceRecorder {
     }
 }
 
-/// Guards a CheckedContinuation against a double resume from a callback that may fire more than once.
-private final class ResumeBox: @unchecked Sendable {
+/// Collects every utterance of a recorded memo and resumes once with all of them joined.
+private final class FileTranscription: NSObject, SFSpeechRecognitionTaskDelegate, @unchecked Sendable {
+    nonisolated(unsafe) static var key: UInt8 = 0
     private let lock = NSLock()
-    private var done = false
-    func claim() -> Bool {
+    private var cont: CheckedContinuation<String, Never>?
+    private var joiner = Dictation.Joiner()
+
+    init(_ cont: CheckedContinuation<String, Never>) { self.cont = cont }
+
+    func speechRecognitionTask(_ task: SFSpeechRecognitionTask, didFinishRecognition result: SFSpeechRecognitionResult) {
         lock.lock(); defer { lock.unlock() }
-        if done { return false }
-        done = true; return true
+        joiner.add(result)
+    }
+
+    func speechRecognitionTask(_ task: SFSpeechRecognitionTask, didFinishSuccessfully successfully: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        // Unsuccessful with some text (e.g. trailing silence) still keeps what was heard.
+        cont?.resume(returning: joiner.text)
+        cont = nil
     }
 }

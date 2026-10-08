@@ -33,6 +33,8 @@ final class HostModel {
     private(set) var update: HostUpdate?
     private var updater: AppUpdater?
     private(set) var checkingUpdate = false
+    /// macOS privacy permissions agents need, asked for up front (Permissions.swift).
+    let permissions = Permissions()
 
     var keepAwake: Bool {
         didSet {

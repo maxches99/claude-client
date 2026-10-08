@@ -15,6 +15,7 @@ struct ChatView: View {
     @State private var showSimulator = false
     @State private var showLimits = false
     @State private var showGit = false
+    @State private var showHandover = false
     @State private var showBrowser = false
     @State private var showCommands = false
     @State private var showTurnChanges = false
@@ -89,10 +90,12 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) { header }
-            ToolbarItem(placement: .topBarTrailing) {
-                SimulatorToolbarButton(isPresented: $showSimulator)
+            if !model.simpleUI {
+                ToolbarItem(placement: .topBarTrailing) {
+                    SimulatorToolbarButton(isPresented: $showSimulator)
+                }
             }
-            if !isChat {
+            if !isChat, !model.simpleUI {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showGit = true } label: {
                         Image(systemName: "arrow.triangle.branch").foregroundStyle(CDS.textSecondary)
@@ -120,6 +123,7 @@ struct ChatView: View {
                     if !isChat {
                         Section {
                             Button("Browse files…", systemImage: "folder") { showBrowser = true }
+                            if !model.simpleUI {
                             Button("Run a command…", systemImage: "terminal") { showCommands = true }
                             if model.supportsMacTools {
                                 Button("Terminal…", systemImage: "apple.terminal") { showTerminals = true }
@@ -133,6 +137,7 @@ struct ChatView: View {
                             }
                             if model.supportsQueue {
                                 Button("Worktrees…", systemImage: "square.split.2x1") { showWorktrees = true }
+                            }
                             }
                         }
                     }
@@ -166,7 +171,10 @@ struct ChatView: View {
                         }
                         .disabled(TranscriptExport.lastReply(items: transcript.items).isEmpty)
                     }
-                    if model.supportsMacTools, let targets = model.handoffTargets[sessionId], !targets.isEmpty {
+                    if model.supportsPeople, !isChat {
+                        Button("Hand over…", systemImage: "arrow.left.arrow.right") { showHandover = true }
+                    }
+                    if model.supportsMacTools, !model.isMember, let targets = model.handoffTargets[sessionId], !targets.isEmpty {
                         Menu {
                             ForEach(targets) { target in
                                 Button(target.label, systemImage: target.systemImage) {
@@ -204,6 +212,7 @@ struct ChatView: View {
         .sheet(isPresented: $showSimulator) { SimulatorView { files.append($0) } }
         .sheet(isPresented: $showLimits) { LimitsView(sessionId: sessionId) }
         .sheet(isPresented: $showGit) { GitView(sessionId: sessionId) }
+        .sheet(isPresented: $showHandover) { HandoverView(sessionId: sessionId) }
         .sheet(isPresented: $showBrowser) { ProjectBrowserView(sessionId: sessionId) }
         .sheet(isPresented: $showCommands) { CommandsView(sessionId: sessionId) }
         .sheet(isPresented: $showTurnChanges) { TurnChangesView(sessionId: sessionId) }
@@ -643,6 +652,11 @@ struct ComposerDock: View {
     @Binding var handsFree: Bool
     let onSend: () -> Void
     let onShowPermission: (PermissionRequest) -> Void
+    /// Claude's predicted next prompt, offered while the field is empty.
+    private var suggestion: String? {
+        guard draft.isEmpty, state?.status == .idle, let text = state?.suggestion, !text.isEmpty else { return nil }
+        return text
+    }
 
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var showPhotoPicker = false
@@ -680,8 +694,9 @@ struct ComposerDock: View {
     // sessions receive all files (images included) staged to disk on the Mac and referenced by path.
     private var canAttach: Bool { model.isConnected }
     private var hasAttachments: Bool { !files.isEmpty || !macFiles.isEmpty }
+    /// Offline too: what is written then waits in the outbox and goes out when the Mac is back.
     private var canSend: Bool {
-        (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasAttachments) && model.isConnected
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasAttachments
     }
 
     var body: some View {
@@ -699,12 +714,29 @@ struct ComposerDock: View {
             if let queued = state?.queued, !queued.isEmpty {
                 QueuedPromptsStrip(sessionId: sessionId, queued: queued)
             }
+            let parked = model.pendingPrompts(for: sessionId)
+            if !parked.isEmpty { OutboxStrip(items: parked) }
             if handsFree { handsFreeStrip }
             if let error = state?.lastError, state?.status == .exited {
                 notice(error, tint: CDS.danger)
             }
             if isDesktop {
                 notice(desktopNotice, tint: CDS.textMuted)
+                if !isChat {
+                    // What you type here reaches the agent as a message from another session, not from you:
+                    // it will not take it as your go-ahead for anything outward (a push, a release).
+                    HStack(spacing: 8) {
+                        Image(systemName: "person.badge.shield.checkmark").foregroundStyle(CDS.warning)
+                        Text("The agent there reads this as a message from another session and won't take it as your approval. To approve from the phone, continue here.")
+                            .font(CDS.caption).foregroundStyle(CDS.textSecondary)
+                        Spacer(minLength: 4)
+                        Button("Continue here") { model.fork(sessionId) }
+                            .buttonStyle(CDSButtonStyle(variant: .secondary))
+                            .disabled(!model.isConnected)
+                    }
+                    .padding(8)
+                    .background(CDS.warningBackground, in: RoundedRectangle(cornerRadius: CDS.radius))
+                }
             }
             suggestionsPanel
             composer
@@ -837,14 +869,29 @@ struct ComposerDock: View {
         VStack(alignment: .leading, spacing: 8) {
             if hasAttachments || recorder.isRecording { attachmentStrip }
             if dictation.isListening { dictationStrip }
-            TextField(isDesktop ? "Message this session" : "Message \(agent.label)", text: $draft, axis: .vertical)
-                .lineLimit(1...8)
-                .textFieldStyle(.plain)
-                .font(CDS.prose)
-                .foregroundStyle(CDS.textPrimary)
-                .focused(focused)
-                .disabled(!model.isConnected)
-                .padding(.horizontal, 6).padding(.top, 6)
+            HStack(alignment: .top, spacing: 6) {
+                TextField(suggestion ?? (isDesktop ? "Message this session" : "Message \(agent.label)"), text: $draft, axis: .vertical)
+                    .lineLimit(1...8)
+                    .textFieldStyle(.plain)
+                    .font(CDS.prose)
+                    .foregroundStyle(CDS.textPrimary)
+                    .focused(focused)
+                if let suggestion {
+                    // The terminal takes its suggestion with Tab; here it goes into the field to edit or send.
+                    Button {
+                        draft = suggestion
+                        focused.wrappedValue = true
+                    } label: {
+                        Image(systemName: "arrow.turn.down.left")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(CDS.textSecondary)
+                            .frame(width: 28, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Use suggestion")
+                }
+            }
+            .padding(.horizontal, 6).padding(.top, 6)
             HStack(spacing: 6) {
                 if canAttach {
                     if recorder.isRecording {
@@ -1081,6 +1128,7 @@ struct ComposerDock: View {
     private func startDictation() async {
         guard !recorder.isRecording else { return }
         dictationBase = draft
+        dictation.locale = model.speechLocale
         _ = await dictation.start()
     }
 
@@ -1358,7 +1406,7 @@ struct ComposerDock: View {
     private func finishRecording() async {
         recorder.stop()
         if let att = recorder.attachment() { files.append(att) }
-        let transcript = await recorder.transcribe()
+        let transcript = await recorder.transcribe(locale: model.speechLocale)
         recorder.discardFile()
         if !transcript.isEmpty {
             let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1437,12 +1485,31 @@ struct ComposerDock: View {
     private var modeLabel: String { currentMode?.shortLabel ?? "Permissions" }
     private var modeIcon: String { currentMode?.symbol ?? "shield" }
 
+    /// The list entry the session's model belongs to: the first (longest) id it starts with.
+    private var currentModelEntry: String? {
+        guard let modelId else { return nil }
+        return NewSessionView.models.first { modelId.hasPrefix($0.id) }?.id
+    }
+
+    @ViewBuilder
     private var modelSection: some View {
         Section("Model") {
             ForEach(NewSessionView.models, id: \.id) { m in
                 Button { model.setModel(sessionId, model: m.id) } label: {
-                    if modelId?.hasPrefix(m.id) == true { Label(m.label, systemImage: "checkmark") } else { Text(m.label) }
+                    if currentModelEntry == m.id { Label(m.label, systemImage: "checkmark") } else { Text(m.label) }
                 }
+            }
+        }
+        let efforts = ClaudeEffort.levels(model: modelId)
+        if !efforts.isEmpty {
+            Menu {
+                ForEach(efforts, id: \.self) { effort in
+                    Button { model.setEffort(sessionId, effort: effort) } label: {
+                        if state?.effort == effort { Label(effort.capitalized, systemImage: "checkmark") } else { Text(effort.capitalized) }
+                    }
+                }
+            } label: {
+                Label("Effort: \(state?.effort?.capitalized ?? "default")", systemImage: "brain")
             }
         }
     }

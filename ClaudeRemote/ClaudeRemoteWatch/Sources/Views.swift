@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import ClaudeRemoteCore
 
 /// Where the Watch's navigation can go.
@@ -6,6 +7,7 @@ enum WatchRoute: Hashable {
     case session(String)
     case approval(String)
     case ask
+    case translate
 }
 
 struct WatchRootView: View {
@@ -32,6 +34,7 @@ struct WatchRootView: View {
                 case .session(let id): SessionDetailView(sessionId: id)
                 case .approval(let id): ApprovalView(requestId: id)
                 case .ask: AskView()
+                case .translate: WatchTranslateView()
                 }
             }
         }
@@ -93,6 +96,9 @@ struct HomeView: View {
             Section {
                 NavigationLink(value: WatchRoute.ask) {
                     Label("Ask Claude", systemImage: "mic.fill").foregroundStyle(.orange)
+                }
+                NavigationLink(value: WatchRoute.translate) {
+                    Label("Translate", systemImage: "character.bubble")
                 }
             }
             Section("Sessions") {
@@ -335,6 +341,68 @@ struct AskView: View {
         }
         .padding(.horizontal, 4)
         .navigationTitle("Ask")
+    }
+}
+
+/// Say a phrase, get it back in their language on screen and out loud — for a quick word at a counter.
+struct WatchTranslateView: View {
+    @Environment(WatchClient.self) private var client
+    /// Their language, picked on the wrist.
+    @AppStorage("ccremote.watch.translate.into") private var into = "ja-JP"
+    @State private var text = ""
+    @State private var sentFrom: String?
+    @State private var waiting = false
+    @State private var voice = AVSpeechSynthesizer()
+
+    static let languages: [(code: String, name: String)] = [
+        ("ja-JP", "Japanese"), ("zh-CN", "Chinese"), ("ko-KR", "Korean"), ("th-TH", "Thai"), ("vi-VN", "Vietnamese"),
+        ("tr-TR", "Turkish"), ("ka-GE", "Georgian"), ("en-US", "English"), ("es-ES", "Spanish"), ("fr-FR", "French"),
+        ("de-DE", "German"), ("it-IT", "Italian"), ("pt-PT", "Portuguese"), ("el-GR", "Greek"), ("ru-RU", "Russian"),
+    ]
+
+    private var name: String { Self.languages.first { $0.code == into }?.name ?? into }
+    private var result: String? {
+        guard let id = client.translationChatId, let latest = client.latestAssistantText(for: id), latest != sentFrom,
+              client.status(for: id) != .running else { return nil }
+        return latest
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 10) {
+                Picker("Into", selection: $into) { ForEach(Self.languages, id: \.code) { Text($0.name).tag($0.code) } }
+                    .frame(height: 50)
+                TextField("Say it", text: $text, axis: .vertical).lineLimit(1...4)
+                Button {
+                    sentFrom = client.translationChatId.flatMap { client.latestAssistantText(for: $0) }
+                    waiting = true
+                    client.translate(text, into: name)
+                } label: {
+                    Label("Translate", systemImage: "character.bubble").frame(maxWidth: .infinity)
+                }
+                .tint(.orange)
+                .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+                if let result {
+                    Text(result).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
+                        .onTapGesture { speak(result) }
+                } else if waiting {
+                    ProgressView()
+                }
+            }
+        }
+        .navigationTitle("Translate")
+        .onChange(of: result) { _, new in
+            guard waiting, let new else { return }
+            waiting = false
+            speak(new)
+        }
+    }
+
+    private func speak(_ phrase: String) {
+        let utterance = AVSpeechUtterance(string: phrase)
+        utterance.voice = AVSpeechSynthesisVoice(language: into)
+        voice.stopSpeaking(at: .immediate)
+        voice.speak(utterance)
     }
 }
 

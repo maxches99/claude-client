@@ -310,6 +310,13 @@ public final class Daemon: @unchecked Sendable {
         var restart: (@Sendable () -> Void)?
         if onRestartRequest != nil { restart = { [weak self] in self?.onRestartRequest?() } }
         HostControl.shared.configure(relay: relaySetup, supportDirectory: supportDirectory, restart: restart)
+        // Members' pairing links look like the owner's, with their own token.
+        let pairing = status.pairing
+        HostControl.shared.configureUsers(pairingURL: { token in
+            var p = pairing
+            p.token = token
+            return p.url.absoluteString
+        }, onMembers: { [manager] members in Task { await manager.setMembers(members) } })
 
         #if os(macOS)
         let serverTLS: TLSRole = tlsIdentity.map { .server(identity: $0.identity) } ?? .none
@@ -495,10 +502,15 @@ public final class Daemon: @unchecked Sendable {
             return t
         }
         try? fm.createDirectory(atPath: directory, withIntermediateDirectories: true)
-        let bytes = (0..<16).map { _ in UInt8.random(in: 0...255, using: &SecureRandom.generator) }
-        let t = bytes.map { String(format: "%02x", $0) }.joined()
+        let t = newToken()
         fm.createFile(atPath: path, contents: Data(t.utf8), attributes: [.posixPermissions: 0o600])
         return t
+    }
+
+    /// 128 random bits as hex: a pairing token.
+    static func newToken() -> String {
+        let bytes = (0..<16).map { _ in UInt8.random(in: 0...255, using: &SecureRandom.generator) }
+        return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
     /// A stable room id per Mac (so the pairing URL stays valid across restarts).

@@ -71,9 +71,14 @@ struct RootView: View {
             if let id = SpotlightIndex.sessionId(from: activity) { model.openDeepLink(sessionId: id) }
         }
         .sheet(item: Bindable(model).incomingShare) { draft in ShareDraftView(draft: draft) }
+        .sheet(item: Binding(get: { model.incomingPackage.map(IncomingPackage.init) }, set: { if $0 == nil { model.incomingPackage = nil } })) { item in
+            PackageImportView(package: item.package)
+        }
         .onOpenURL { url in
             // ccremote://share?text=… — the share extension handing over text or a link.
             if model.receiveShare(url) { return }
+            // A packed session (.ccsession) opened from Files, AirDrop or Messages.
+            if model.receivePackageFile(url) { return }
             // ccremote://session/<id> — a Live Activity tap; go straight to that session.
             if url.host == "session", let id = url.pathComponents.dropFirst().first, !id.isEmpty {
                 model.openDeepLink(sessionId: id)

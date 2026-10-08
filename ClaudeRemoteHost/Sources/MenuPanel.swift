@@ -25,6 +25,10 @@ struct MenuPanel: View {
                 failureBanner(why)
                 Divider()
             }
+            if model.permissions.needsAttention {
+                permissionsBanner
+                Divider()
+            }
             PhonesSection(model: model)
             Divider()
             if !model.recentPhoneWork.isEmpty {
@@ -59,6 +63,7 @@ struct MenuPanel: View {
             model.refreshLoginItem()
             model.refreshLegacyAgent()
             model.refreshPhoneSessions()
+            model.permissions.refresh()
         }
     }
 
@@ -94,6 +99,21 @@ struct MenuPanel: View {
                 Button("Switch to the app") { model.takeOverLegacyAgent() }
                     .controlSize(.small)
             }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    /// Something an agent could stop on while nobody is at the Mac.
+    private var permissionsBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock.shield").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.permissions.pendingCount == 1 ? "1 permission not granted yet" : "\(model.permissions.pendingCount) permissions not granted yet")
+                    .font(.callout)
+                Text("An agent would wait on a macOS alert here").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            OpenWindowButton(id: WindowID.permissions) { Text("Grant…") }.controlSize(.small)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
     }
@@ -247,6 +267,7 @@ struct MenuPanel: View {
     private var footer: some View {
         HStack(spacing: 12) {
             OpenWindowButton(id: WindowID.settings) { Text("Settings…") }
+            OpenWindowButton(id: WindowID.permissions) { Text("Permissions") }
             OpenWindowButton(id: WindowID.log) { Text("Log") }
             Button("Approvals…") { model.openApprovalLog() }
             Button(model.checkingUpdate ? "Checking…" : "Updates") { model.checkForUpdateNow() }

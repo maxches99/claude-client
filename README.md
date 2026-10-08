@@ -24,7 +24,7 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
 | Path | What |
 |---|---|
 | `Sources/ClaudeRemoteCore` | Shared package: wire protocol, `JSONValue`, transcript reducer, `CodexTranslator` / `CodexRollout` (Codex events and session files → the same reducer), WebSocket channel (TLS roles), the queue / palette / worktree / turn-review / digest / review / duel models (`DuelJudge`: the blind brief and verdict parser), the Telegram digest (`DigestTelegram`), `Automation` (issues, CI state, model duels, templates, the audit rules, relay setup, updates), the terminal emulator (`TerminalScreen`) and the share page (`TranscriptHTML`) |
-| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` and its feature files (`…Rewind`, `…Palette`, `…Worktrees`, `…Tasks`, `…Digest`, `…DigestSchedule`, `…PullRequests`, `…Review`, `…Duels`, `…Workspace`, `…Automation` (issues, CI repair, templates, audit, GitHub login), `…Operations` (event feed, snapshots, before/after screenshots, health), `…Handoff`, `…Share`, `BackgroundProcesses`, `TerminalSessions` — the pseudo-terminal itself is the small C target `CPTY`) |
+| `Sources/ClaudeCodeHost` | Mac-only: `CLIProcess` (stream-json + control protocol), `CodexAppServer` + `CodexBackend` (Codex threads over JSON-RPC), transcript index, live-session registry, `PeerInbox` (write into desktop sessions), `ClaudeHooks` (the PermissionRequest hook in settings.json), `TLSIdentity`, `SessionManager` and its feature files (`…Rewind`, `…Palette`, `…Worktrees`, `…Tasks`, `…Digest`, `…DigestSchedule`, `…PullRequests`, `…Review`, `…Duels`, `…Workspace`, `…Automation` (issues, CI repair, templates, audit, GitHub login), `…Operations` (event feed, snapshots, before/after screenshots, health), `…People` (members, what each may see), `…Collab` (plan checks, post-mortems, file edits, session hand-over), `…Handoff`, `…Share`, `BackgroundProcesses`, `TerminalSessions` — the pseudo-terminal itself is the small C target `CPTY`) |
 | `Sources/ClaudeRemoteDaemon` | The daemon as a library: `Daemon` (config → listener + Bonjour, relay dial-out, notifier, phone tracking, status), `DaemonConfig` (`config.json`), `PhoneSession`, `WebSocketServer`, `HookServer` (hook socket), `RelayClient`, `DeviceRegistry`, pairing URL + QR |
 | `Sources/ccremote` | Thin CLI front-end for the daemon (flags, terminal QR) |
 | `ClaudeRemoteHost/` | **Mac menu-bar app** hosting the daemon: status, paired phones, QR, settings, open-at-login, keep-awake (Tuist project) |
@@ -427,6 +427,54 @@ Settings → Connected Mac → **GitHub** runs `gh auth login --web` on the host
 code (type it at github.com/login/device on any device; then `gh auth setup-git` lets git push with it),
 and takes the name and email commits are signed with. With that, the hub works from GitHub alone:
 clone, task from an issue, draft PR, CI repair — no Mac awake.
+
+## Translator
+
+**Translator…** (list menu) is for travelling: a photo of a sign or a menu is translated line by line,
+**Listen** hears the other person (the phone recognizes their language) and sends each phrase as they
+pause, **Speak** turns what you say into their language and reads it out for them. It runs in a quick
+tool-less chat on your Mac or hub (Haiku, or Codex at low effort), warmed up when the screen opens —
+a phrase comes back in about two seconds. Pick the two languages at the top; the speaker button turns
+reading aloud off.
+
+The translator has two more tabs. **Phrases** is a phrasebook for the pair of languages — greetings,
+restaurant, shop, taxi, hotel, directions, pharmacy, emergency, money, small talk, about 120 phrases with
+a Latin reading — written once by the Mac or hub ("Prepare for the trip", about a minute) and then kept
+on the phone, so it works with no connection; tap a phrase to show it big and hear it. **Receipt** reads a
+photo of a bill line by line (translated), converts it at today's rate (editable) and splits it: mark who
+had which line, the rest and the tax are shared. **Translate** is also a Shortcuts / Siri action (text, a
+photo, or the clipboard) — put it on the Action Button.
+
+## People on one host
+
+**People on this Mac** (Settings → Connected Mac, owner only) invites someone: they scan the QR or open
+the link and pair with their own key. A member sees only the chats, sessions and tasks they started,
+works in their own folder of the workspace (`~/work/<name>`), and gets nothing host-wide — processes,
+terminals, the simulator, duels, the audit, updates. With **Your account** they can paste their own
+`claude setup-token` token, so their sessions run on their Claude subscription. The owner can give any
+session to a member (the session's **Hand over…**). Members live in `users.json`; removing one ends their
+access.
+
+**Hand over…** (a session's menu) packs a session to continue somewhere else: its transcript (inline
+images left out) and the branch — commits as a git bundle, uncommitted changes as a patch. Send the file
+to someone (AirDrop, Messages; ClaudeRemote opens it and asks which Mac to continue on), or move it
+straight to another of your Macs or the hub. The receiving host clones the repository if it has none,
+recreates the branch, applies the changes and puts the transcript where its agent looks for it.
+
+**Simple mode** (Settings) hides git, terminals, the simulator, duels, audit and the rest — just chats,
+sessions and tasks. Members always see it that way.
+
+**Edit** in a file opened from the project browser changes a few lines and saves them to the Mac; the save
+is refused if the file changed there since you opened it.
+
+**Answer review comments on it** (a task that opens a PR) watches the pull request for new comments by
+people — line comments, reviews, conversation — and starts a follow-up in the same worktree that
+addresses them; its change is committed and waits for **Push**, like a CI fix.
+
+**Plan first, then check the result** on a task asks the agent for a numbered plan before it starts; when
+it is done, a short review checks the change against every step (done / partial / missing, and changes
+the plan never mentioned). A task that fails — or whose CI repair gives up — gets a post-mortem: what it
+tried, where it got stuck, what a person needs to do.
 
 ## Feed and health
 

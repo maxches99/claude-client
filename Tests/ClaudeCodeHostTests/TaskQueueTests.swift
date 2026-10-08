@@ -45,6 +45,54 @@ final class TaskQueueTests: XCTestCase {
         XCTAssertNil(stored.first?.sessionId)
     }
 
+    func testARepeatingTaskThatCannotStartIsArmedAgainWithTheFailureInItsHistory() async throws {
+        let manager = makeManager()
+        var task = AgentTask(title: "Nightly", prompt: "run tests", cwd: directory + "/missing")
+        task.repeatEveryMinutes = 60
+        task.runAt = Date().addingTimeInterval(-1)
+        await manager.addTask(task)
+        let items = await manager.taskList().items
+        let stored = try XCTUnwrap(items.first)
+        XCTAssertEqual(stored.status, .scheduled, "one failed run does not end the schedule")
+        XCTAssertEqual(stored.runs?.count, 1)
+        XCTAssertEqual(stored.runs?.first?.outcome, .failed)
+        XCTAssertGreaterThan(stored.runAt ?? .distantPast, Date().addingTimeInterval(50 * 60))
+    }
+
+    func testPausingSkippingAndResumingARepeatingTask() async throws {
+        let manager = makeManager()
+        var task = AgentTask(title: "Daily", prompt: "p", cwd: directory)
+        task.dailyAtMinutes = 3 * 60
+        await manager.addTask(task)
+        let firstList = await manager.taskList().items
+        let first = try XCTUnwrap(firstList.first?.runAt)
+
+        await manager.performTaskAction(id: task.id, action: .skipNext)
+        let skippedList = await manager.taskList().items
+        let skipped = try XCTUnwrap(skippedList.first?.runAt)
+        XCTAssertEqual(skipped.timeIntervalSince(first), 86_400, accuracy: 3_700, "the run after the skipped one is a day later")
+
+        await manager.performTaskAction(id: task.id, action: .pause)
+        let pausedList = await manager.taskList().items
+        XCTAssertEqual(pausedList.first?.paused, true)
+        await manager.performTaskAction(id: task.id, action: .resume)
+        let resumedList = await manager.taskList().items
+        let resumed = try XCTUnwrap(resumedList.first)
+        XCTAssertFalse(resumed.paused)
+        XCTAssertEqual(resumed.status, .scheduled)
+    }
+
+    func testAPausedRepeatingTaskDoesNotStartWhenDue() async throws {
+        let manager = makeManager()
+        var task = AgentTask(title: "Poll", prompt: "p", cwd: directory, repeatEveryMinutes: 60, paused: true)
+        task.runAt = Date().addingTimeInterval(-60)
+        await manager.addTask(task)
+        let items = await manager.taskList().items
+        let stored = try XCTUnwrap(items.first)
+        XCTAssertEqual(stored.status, .scheduled)
+        XCTAssertNil(stored.runs, "nothing ran")
+    }
+
     func testPausedQueueStartsNothing() async throws {
         let manager = makeManager()
         await manager.setTaskSettings(TaskQueueSettings(maxParallel: 1, paused: true))
