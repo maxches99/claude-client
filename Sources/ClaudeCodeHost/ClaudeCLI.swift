@@ -23,16 +23,26 @@ public struct ClaudeCLI: Sendable {
             return ClaudeCLI(path: override)
         }
         let home = NSHomeDirectory()
-        let desktopRoot = home + "/Library/Application Support/Claude/claude-code"
-        if let versions = try? fm.contentsOfDirectory(atPath: desktopRoot) {
-            let sorted = versions.filter { !$0.hasPrefix(".") }.sorted { $0.compare($1, options: .numeric) == .orderedDescending }
-            for v in sorted {
-                let candidate = "\(desktopRoot)/\(v)/claude.app/Contents/MacOS/claude"
-                if fm.isExecutableFile(atPath: candidate) { return ClaudeCLI(path: candidate) }
-            }
-        }
+        if let bundled = desktopBundled(root: home + "/Library/Application Support/Claude/claude-code") { return ClaudeCLI(path: bundled) }
         for candidate in [home + "/.claude/local/claude", home + "/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"] {
             if fm.isExecutableFile(atPath: candidate) { return ClaudeCLI(path: candidate) }
+        }
+        return nil
+    }
+
+    /// The newest CLI the desktop app keeps under `root`: `<version>/claude.app`, or since 2.1.293
+    /// `<version>/<build hash>/claude.app` (a build marked `.verified` first).
+    static func desktopBundled(root: String) -> String? {
+        let fm = FileManager.default
+        guard let versions = try? fm.contentsOfDirectory(atPath: root) else { return nil }
+        let binary = "claude.app/Contents/MacOS/claude"
+        let sorted = versions.filter { !$0.hasPrefix(".") }.sorted { $0.compare($1, options: .numeric) == .orderedDescending }
+        for v in sorted {
+            let dir = "\(root)/\(v)"
+            if fm.isExecutableFile(atPath: "\(dir)/\(binary)") { return "\(dir)/\(binary)" }
+            let builds = ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).filter { !$0.hasPrefix(".") }
+                .sorted { fm.fileExists(atPath: "\(dir)/\($0)/.verified") && !fm.fileExists(atPath: "\(dir)/\($1)/.verified") }
+            for b in builds where fm.isExecutableFile(atPath: "\(dir)/\(b)/\(binary)") { return "\(dir)/\(b)/\(binary)" }
         }
         return nil
     }
