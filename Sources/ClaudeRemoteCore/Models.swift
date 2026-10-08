@@ -120,6 +120,17 @@ public struct ModelOption: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// Reasoning effort for Claude models: the CLI's `--effort` levels, from cheapest to most thorough.
+public enum ClaudeEffort {
+    public static let levels = ["low", "medium", "high", "xhigh", "max"]
+
+    /// The levels `model` accepts; Haiku has no effort control.
+    public static func levels(model: String?) -> [String] {
+        guard let model = model?.lowercased(), !model.contains("haiku") else { return [] }
+        return levels
+    }
+}
+
 /// Where a session currently "lives".
 public enum SessionOrigin: String, Codable, Sendable {
     /// A CLI process owned by the daemon (started or resumed from the phone).
@@ -238,7 +249,7 @@ public struct SessionState: Codable, Equatable, Sendable {
     public var lastError: String?
     public var agent: AgentKind
     public var kind: SessionKind
-    /// Reasoning effort, in the agent's vocabulary (Codex only for now).
+    /// Reasoning effort, in the agent's vocabulary.
     public var effort: String?
     /// Codex sandbox mode (`CodexSandboxMode`).
     public var sandbox: String?
@@ -246,10 +257,13 @@ public struct SessionState: Codable, Equatable, Sendable {
     public var slashCommands: [String]
     /// Prompts sent while the agent was mid-turn, in the order they will go out once it finishes.
     public var queued: [QueuedPrompt]
+    /// Claude's guess at the next prompt, offered in the composer once a turn ends (`--prompt-suggestions`).
+    public var suggestion: String?
 
     public init(id: String, origin: SessionOrigin, status: SessionStatus, cwd: String, model: String? = nil, permissionMode: String? = nil,
                 pendingPermissions: [PermissionRequest] = [], lastError: String? = nil, agent: AgentKind = .claude, kind: SessionKind = .agent,
-                effort: String? = nil, sandbox: String? = nil, slashCommands: [String] = [], queued: [QueuedPrompt] = []) {
+                effort: String? = nil, sandbox: String? = nil, slashCommands: [String] = [], queued: [QueuedPrompt] = [],
+                suggestion: String? = nil) {
         self.id = id
         self.origin = origin
         self.status = status
@@ -264,6 +278,7 @@ public struct SessionState: Codable, Equatable, Sendable {
         self.sandbox = sandbox
         self.slashCommands = slashCommands
         self.queued = queued
+        self.suggestion = suggestion
     }
 
     public init(from decoder: Decoder) throws {
@@ -282,6 +297,7 @@ public struct SessionState: Codable, Equatable, Sendable {
         sandbox = try c.decodeIfPresent(String.self, forKey: .sandbox)
         slashCommands = try c.decodeIfPresent([String].self, forKey: .slashCommands) ?? []
         queued = try c.decodeIfPresent([QueuedPrompt].self, forKey: .queued) ?? []
+        suggestion = try c.decodeIfPresent(String.self, forKey: .suggestion)
     }
 }
 

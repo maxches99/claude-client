@@ -353,10 +353,11 @@ public actor SessionManager {
     public func listModels(agent: AgentKind) async throws -> [ModelOption] {
         switch agent {
         case .claude:
-            return [ModelOption(id: "claude-opus-5-5", label: "Opus 5.5", isDefault: true),
-                    ModelOption(id: "claude-opus-5", label: "Opus 5"),
-                    ModelOption(id: "claude-sonnet-5", label: "Sonnet 5"),
-                    ModelOption(id: "claude-haiku-4-5", label: "Haiku 4.5")]
+            let models = [("claude-opus-5-5", "Opus 5.5"), ("claude-fable-5-1", "Fable 5.1"), ("claude-opus-5", "Opus 5"),
+                          ("claude-sonnet-5-5", "Sonnet 5.5"), ("claude-sonnet-5", "Sonnet 5"), ("claude-haiku-4-5", "Haiku 4.5")]
+            return models.enumerated().map { index, model in
+                ModelOption(id: model.0, label: model.1, isDefault: index == 0, efforts: ClaudeEffort.levels(model: model.0))
+            }
         case .codex:
             guard let codex else { throw CodexBackend.BackendError.notInstalled }
             return try await codex.listModels()
@@ -565,7 +566,7 @@ public actor SessionManager {
         if let owner { claim(sessionId, for: owner) }
         var config = CLIProcess.Config(cliPath: try claudePath(), cwd: cwd)
         config.sessionId = sessionId
-        config.model = options.model ?? (isChat ? "claude-sonnet-5" : nil)
+        config.model = options.model ?? (isChat ? "claude-sonnet-5-5" : nil)
         config.effort = options.effort
         if isChat {
             config.tools = ""                  // no tools at all → nothing can ask for permission
@@ -624,9 +625,11 @@ public actor SessionManager {
     func spawn(sessionId: String, config: CLIProcess.Config, origin: SessionOrigin, kind: SessionKind = .agent) throws -> Hosted {
         var config = config
         config.environment.merge(environment(forSession: sessionId)) { current, _ in current }
+        // A chat has no tools and no next step to predict.
+        config.promptSuggestions = kind != .chat && config.tools != ""
         let process = CLIProcess(config: config)
         let state = SessionState(id: sessionId, origin: origin, status: .idle, cwd: config.cwd, model: config.model,
-                                 permissionMode: config.permissionMode, kind: kind)
+                                 permissionMode: config.permissionMode, kind: kind, effort: config.effort)
         let h = Hosted(process: process, state: state)
         let log = self.log
         process.log = { line in log("[\(sessionId.prefix(8))] \(line)") }
@@ -931,9 +934,12 @@ public actor SessionManager {
         broadcast(.state(state: h.state))
     }
 
-    public func setEffort(sessionId: String, effort: String) throws {
+    /// Codex picks the effort up on the next turn; a running Claude CLI takes it as a flag setting, as its own `/effort` does.
+    public func setEffort(sessionId: String, effort: String) async throws {
         guard let h = hosted[sessionId] else { throw ManagerError.unknownSession(sessionId) }
-        guard h.agent == .codex else { throw ManagerError.notDrivable("Effort can only be changed on Codex sessions") }
+        if h.agent == .claude {
+            try await h.process?.control("apply_flag_settings", ["settings": .object(["effortLevel": .string(effort)])])
+        }
         h.state.effort = effort
         broadcast(.state(state: h.state))
     }
@@ -1827,6 +1833,9 @@ public actor SessionManager {
         case "user":
             // A tool result closes the running tool.
             if message["message"]?["content"]?.array?.contains(where: { $0["type"]?.string == "tool_result" }) == true { h.lastTool = nil }
+        case "prompt_suggestion":
+            h.state.suggestion = message["suggestion"]?.string.flatMap { $0.isEmpty ? nil : $0 }
+            broadcast(.state(state: h.state))
         case "result":
             let isError = message["is_error"]?.bool == true
             if isError { h.state.lastError = message["result"]?.string }
@@ -1924,6 +1933,8 @@ public actor SessionManager {
 
     private func update(_ h: Hosted, status: SessionStatus) {
         h.state.status = status
+        // A new turn makes the last prediction stale.
+        if status == .running { h.state.suggestion = nil }
         broadcast(.state(state: h.state))
         pushActivity(h.state.id, h, throttled: false)
     }

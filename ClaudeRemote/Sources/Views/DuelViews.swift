@@ -263,7 +263,7 @@ struct DuelEditor: View {
     /// Claude against Codex, or two models (or reasoning levels) head to head.
     @State private var byModel = false
     @State private var sideA = ContestantDraft(agent: .claude, model: "claude-opus-5-5")
-    @State private var sideB = ContestantDraft(agent: .claude, model: "claude-sonnet-5")
+    @State private var sideB = ContestantDraft(agent: .claude, model: "claude-sonnet-5-5")
 
     var body: some View {
         NavigationStack {
@@ -356,7 +356,8 @@ struct ContestantDraft: Equatable {
     func label(models: [ModelOption]) -> String {
         switch agent {
         case .claude:
-            return NewSessionView.models.first { $0.id == model }?.label ?? "Claude"
+            let name = NewSessionView.models.first { $0.id == model }?.label ?? "Claude"
+            return effort.isEmpty ? name : "\(name) · \(effort)"
         case .codex:
             let name = models.first { $0.id == model }?.label ?? (model.isEmpty ? "Codex" : model)
             return effort.isEmpty ? name : "\(name) · \(effort)"
@@ -388,6 +389,13 @@ struct ContestantPicker: View {
                 Picker("Model", selection: $draft.model) {
                     ForEach(NewSessionView.models, id: \.id) { Text($0.label).tag($0.id) }
                 }
+                let efforts = ClaudeEffort.levels(model: draft.model)
+                if !efforts.isEmpty {
+                    Picker("Effort", selection: $draft.effort) {
+                        Text("Default").tag("")
+                        ForEach(efforts, id: \.self) { Text($0.capitalized).tag($0) }
+                    }
+                }
             } else {
                 Picker("Model", selection: $draft.model) {
                     ForEach(model.codexModels) { Text($0.label).tag($0.id) }
@@ -399,6 +407,9 @@ struct ContestantPicker: View {
                     }
                 }
             }
+        }
+        .onChange(of: draft.model) { _, id in
+            if draft.agent == .claude, !ClaudeEffort.levels(model: id).contains(draft.effort) { draft.effort = "" }
         }
         .onChange(of: draft.agent) { _, agent in
             draft.model = agent == .claude ? (NewSessionView.models.first?.id ?? "") : (model.codexModels.first { $0.isDefault }?.id ?? model.codexModels.first?.id ?? "")

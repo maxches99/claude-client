@@ -652,6 +652,11 @@ struct ComposerDock: View {
     @Binding var handsFree: Bool
     let onSend: () -> Void
     let onShowPermission: (PermissionRequest) -> Void
+    /// Claude's predicted next prompt, offered while the field is empty.
+    private var suggestion: String? {
+        guard draft.isEmpty, state?.status == .idle, let text = state?.suggestion, !text.isEmpty else { return nil }
+        return text
+    }
 
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var showPhotoPicker = false
@@ -864,13 +869,29 @@ struct ComposerDock: View {
         VStack(alignment: .leading, spacing: 8) {
             if hasAttachments || recorder.isRecording { attachmentStrip }
             if dictation.isListening { dictationStrip }
-            TextField(isDesktop ? "Message this session" : "Message \(agent.label)", text: $draft, axis: .vertical)
-                .lineLimit(1...8)
-                .textFieldStyle(.plain)
-                .font(CDS.prose)
-                .foregroundStyle(CDS.textPrimary)
-                .focused(focused)
-                .padding(.horizontal, 6).padding(.top, 6)
+            HStack(alignment: .top, spacing: 6) {
+                TextField(suggestion ?? (isDesktop ? "Message this session" : "Message \(agent.label)"), text: $draft, axis: .vertical)
+                    .lineLimit(1...8)
+                    .textFieldStyle(.plain)
+                    .font(CDS.prose)
+                    .foregroundStyle(CDS.textPrimary)
+                    .focused(focused)
+                if let suggestion {
+                    // The terminal takes its suggestion with Tab; here it goes into the field to edit or send.
+                    Button {
+                        draft = suggestion
+                        focused.wrappedValue = true
+                    } label: {
+                        Image(systemName: "arrow.turn.down.left")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(CDS.textSecondary)
+                            .frame(width: 28, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Use suggestion")
+                }
+            }
+            .padding(.horizontal, 6).padding(.top, 6)
             HStack(spacing: 6) {
                 if canAttach {
                     if recorder.isRecording {
@@ -1470,12 +1491,25 @@ struct ComposerDock: View {
         return NewSessionView.models.first { modelId.hasPrefix($0.id) }?.id
     }
 
+    @ViewBuilder
     private var modelSection: some View {
         Section("Model") {
             ForEach(NewSessionView.models, id: \.id) { m in
                 Button { model.setModel(sessionId, model: m.id) } label: {
                     if currentModelEntry == m.id { Label(m.label, systemImage: "checkmark") } else { Text(m.label) }
                 }
+            }
+        }
+        let efforts = ClaudeEffort.levels(model: modelId)
+        if !efforts.isEmpty {
+            Menu {
+                ForEach(efforts, id: \.self) { effort in
+                    Button { model.setEffort(sessionId, effort: effort) } label: {
+                        if state?.effort == effort { Label(effort.capitalized, systemImage: "checkmark") } else { Text(effort.capitalized) }
+                    }
+                }
+            } label: {
+                Label("Effort: \(state?.effort?.capitalized ?? "default")", systemImage: "brain")
             }
         }
     }

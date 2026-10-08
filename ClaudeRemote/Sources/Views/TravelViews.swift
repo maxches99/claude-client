@@ -130,7 +130,7 @@ struct PhrasebookView: View {
         do {
             let agent = model.defaultAgent
             let reply = try await model.askChat(Phrasebook.prompt(mine: mine.name, theirs: theirs.name), agent: agent,
-                                                model: agent == .claude ? "claude-sonnet-5" : nil, timeout: 240)
+                                                model: agent == .claude ? "claude-sonnet-5-5" : nil, timeout: 240)
             guard let made = Phrasebook.parse(reply, mine: mine.code, theirs: theirs.code) else {
                 error = "The phrasebook did not come back readable — try again."
                 return
@@ -289,7 +289,7 @@ struct ReceiptView: View {
             do {
                 let agent = model.defaultAgent
                 let reply = try await model.askChat(Receipt.prompt(mine: mine.name), agent: agent,
-                                                    model: agent == .claude ? "claude-sonnet-5" : nil,
+                                                    model: agent == .claude ? "claude-sonnet-5-5" : nil,
                                                     images: [InlineImage(mediaType: "image/jpeg", base64: jpeg.base64EncodedString())], timeout: 120)
                 guard let parsed = Receipt.parse(reply) else { error = "Couldn't read that receipt — try a straighter, closer photo."; return }
                 receipt = parsed

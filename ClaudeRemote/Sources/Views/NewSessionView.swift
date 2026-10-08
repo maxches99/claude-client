@@ -13,6 +13,8 @@ struct NewSessionView: View {
     private var isCustom: Bool { cwd == Self.customTag }
     @State private var agent: AgentKind = .claude
     @State private var modelId = "claude-opus-5-5"
+    /// Empty = the CLI's own default for the model.
+    @State private var claudeEffort = ""
     @State private var mode: PermissionMode = .manual
     // Codex knobs
     @State private var codexModelId = ""
@@ -22,8 +24,11 @@ struct NewSessionView: View {
 
     static let models: [(id: String, label: String)] = [
         // Longest id first: labels are matched by prefix, and "claude-opus-5" is a prefix of "claude-opus-5-5".
+        // The first entry is also the default a duel side starts on.
         ("claude-opus-5-5", "Opus 5.5"),
+        ("claude-fable-5-1", "Fable 5.1"),
         ("claude-opus-5", "Opus 5"),
+        ("claude-sonnet-5-5", "Sonnet 5.5"),
         ("claude-sonnet-5", "Sonnet 5"),
         ("claude-haiku-4-5", "Haiku 4.5"),
     ]
@@ -124,7 +129,7 @@ struct NewSessionView: View {
     private func options(cwd: String) -> NewSessionOptions {
         switch agent {
         case .claude:
-            return NewSessionOptions(cwd: cwd, model: modelId, permissionMode: mode.rawValue)
+            return NewSessionOptions(cwd: cwd, model: modelId, permissionMode: mode.rawValue, effort: claudeEffort.isEmpty ? nil : claudeEffort)
         case .codex:
             return NewSessionOptions(cwd: cwd, model: codexModelId.isEmpty ? nil : codexModelId, permissionMode: approvalPolicy.rawValue,
                                      effort: codexEffort.isEmpty ? nil : codexEffort, agent: .codex, sandbox: sandbox.rawValue)
@@ -146,6 +151,16 @@ struct NewSessionView: View {
                 ForEach(NewSessionView.models, id: \.id) { m in Text(m.label).tag(m.id) }
             }
             .pickerStyle(.segmented)
+            let efforts = ClaudeEffort.levels(model: modelId)
+            if !efforts.isEmpty {
+                Picker("Effort", selection: $claudeEffort) {
+                    Text("Default").tag("")
+                    ForEach(efforts, id: \.self) { Text($0.capitalized).tag($0) }
+                }
+            }
+        }
+        .onChange(of: modelId) { _, id in
+            if !ClaudeEffort.levels(model: id).contains(claudeEffort) { claudeEffort = "" }
         }
         Section("Permissions") {
             Picker("Mode", selection: $mode) {
