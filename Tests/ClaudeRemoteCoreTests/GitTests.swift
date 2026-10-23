@@ -35,6 +35,24 @@ final class GitTests: XCTestCase {
         XCTAssertTrue(s.isClean)
     }
 
+    func testNumstatFillsLineCounts() throws {
+        var s = GitStatus(branch: "main", files: [
+            GitFile(path: "a.swift", indexStatus: ".", workStatus: "M"),
+            GitFile(path: "logo.png", indexStatus: "M", workStatus: "."),
+            GitFile(path: "notes/new file.md", indexStatus: ".", workStatus: ".", untracked: true),
+        ])
+        XCTAssertNil(s.linesAdded)
+        s.applyNumstat("12\t3\ta.swift\n-\t-\tlogo.png\n")
+        XCTAssertEqual(s.files[0].added, 12)
+        XCTAssertEqual(s.files[0].removed, 3)
+        XCTAssertNil(s.files[1].added)   // binary
+        XCTAssertEqual(s.linesAdded, 12)
+        XCTAssertEqual(s.linesRemoved, 3)
+        // A status from a host that doesn't count lines still decodes.
+        let legacy = try JSONDecoder().decode(GitFile.self, from: Data(#"{"path":"x","indexStatus":".","workStatus":"M","untracked":false,"conflicted":false}"#.utf8))
+        XCTAssertNil(legacy.added)
+    }
+
     func testGitMessagesRoundTrip() throws {
         let status = GitStatus(branch: "main", upstream: "origin/main", ahead: 1, files: [GitFile(path: "a.swift", indexStatus: ".", workStatus: "M")], branches: ["main", "dev"], lastCommit: "abc Subject")
         let back = try ProtocolCoding.decode(ServerMessage.self, from: ProtocolCoding.encode(ServerMessage.gitStatus(sessionId: "s", status: status, error: nil)))
