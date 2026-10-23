@@ -847,6 +847,7 @@ struct ComposerDock: View {
             if isDesktop {
                 notice(desktopNotice, tint: CDS.textMuted)
                 if agent == .claude, model.permissionHookOn == false, !model.isMember { hookOffCard }
+                if isRunning { browserWaitCard }
                 if !isChat {
                     // What you type here reaches the agent as a message from another session, not from you:
                     // it will not take it as your go-ahead for anything outward (a push, a release).
@@ -985,6 +986,27 @@ struct ComposerDock: View {
         case true?: return "Open in \(source) on the Mac — messages are delivered there, and its permission prompts come here."
         case false?: return "Open in \(source) on the Mac — messages are delivered there."
         case nil: return "Open in \(source) on the Mac — messages are delivered there. Permission prompts come here when the Mac's hook is on (Host → Settings), otherwise they're answered on the Mac."
+        }
+    }
+
+    /// A browser tool that has gone quiet: the desktop app is most likely asking on the Mac whether the
+    /// site may be used — a prompt of its own that no hook reaches. Say so, and where to answer it.
+    private var browserWaitCard: some View {
+        TimelineView(.periodic(from: .now, by: 15)) { context in
+            if let stall = BrowserWait.stalled(in: model.transcripts[sessionId]?.items ?? [], now: context.date) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "globe.badge.chevron.backward").foregroundStyle(CDS.warning)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(BrowserWait.shortName(stall.toolName)) has been waiting \(ActivitySummary.format(context.date.timeIntervalSince(stall.since)))")
+                            .font(CDS.captionMedium).foregroundStyle(CDS.textPrimary)
+                        Text("Claude Desktop on \(model.activeMac?.displayName ?? "the Mac") is probably asking to allow a site. Answer it there — “Always allow” keeps it from asking again.")
+                            .font(CDS.caption).foregroundStyle(CDS.textSecondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(8)
+                .background(CDS.warningBackground, in: RoundedRectangle(cornerRadius: CDS.radius))
+            }
         }
     }
 

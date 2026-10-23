@@ -15,6 +15,9 @@ final class MacAttention: NSObject, UNUserNotificationCenterDelegate {
     private static let doneCategory = "ccremote.done"
     /// Last seen status of every session on every host, to notice a turn ending.
     private var statuses: [String: SessionStatus] = [:]
+    /// Browser tool calls already announced as waiting on the Mac (one notification each).
+    private var announcedStalls: Set<String> = []
+    private var stallTimer: Timer?
 
     func attach(_ model: AppModel) {
         guard self.model == nil else { return }
@@ -33,6 +36,28 @@ final class MacAttention: NSObject, UNUserNotificationCenterDelegate {
         announced = Set(model.pendingApprovals.map(\.id))
         observe()
         observeTurns()
+        stallTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { _ in
+            Task { @MainActor in MacAttention.shared.checkBrowserStalls() }
+        }
+    }
+
+    /// A Desktop session whose browser tool went quiet is most likely waiting on a site prompt on that
+    /// Mac — say so once, so the turn doesn't sit there unnoticed.
+    private func checkBrowserStalls() {
+        guard let model, !NSApp.isActive else { return }
+        for (sessionId, transcript) in model.transcripts {
+            guard let state = model.states[sessionId], state.origin == .desktop, state.status == .running,
+                  let stall = BrowserWait.stalled(in: transcript.items), !announcedStalls.contains(stall.toolUseId) else { continue }
+            announcedStalls.insert(stall.toolUseId)
+            let content = UNMutableNotificationContent()
+            content.title = model.summary(for: sessionId)?.title ?? "Session"
+            content.subtitle = "\(BrowserWait.shortName(stall.toolName)) is waiting"
+            content.body = "Claude Desktop on \(model.activeMac?.displayName ?? "the Mac") is probably asking to allow a site — answer it there."
+            content.sound = .default
+            content.categoryIdentifier = Self.doneCategory
+            content.userInfo = ["macId": model.activeMacId ?? "", "sessionId": sessionId, "kind": "agent"]
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "browser-" + stall.toolUseId, content: content, trigger: nil))
+        }
     }
 
     /// A session going from working to idle while you are elsewhere: "done", with the start of the reply.
