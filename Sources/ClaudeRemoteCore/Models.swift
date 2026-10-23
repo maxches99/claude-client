@@ -71,6 +71,9 @@ public struct HostInfo: Codable, Equatable, Sendable {
     public var canUpdate: Bool?
     /// Who this phone is on the host (protocol 9); nil = the owner, as before.
     public var me: HostUser?
+    /// The PermissionRequest hook is in the host's `~/.claude/settings.json`, so sessions open in Claude
+    /// Desktop or a terminal ask the phones before prompting on the host. Nil from hosts that don't say.
+    public var permissionHook: Bool?
 
     /// Claude sessions can be started here.
     public var claudeInstalled: Bool { hasClaude ?? true }

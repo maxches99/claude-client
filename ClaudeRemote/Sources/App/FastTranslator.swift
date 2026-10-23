@@ -68,7 +68,7 @@ final class FastTranslator {
     func check(mine: String, theirs: String, force: Bool = false) async {
         guard force || checked?.mine != mine || checked?.theirs != theirs else { return }
         checked = (mine, theirs)
-        guard #available(iOS 18.0, macCatalyst 26.0, *), mine != theirs else { status = .unsupported; return }
+        guard #available(iOS 18.0, macCatalyst 26.0, macOS 26.0, *), mine != theirs else { status = .unsupported; return }
         status = .checking
         let availability = LanguageAvailability()
         let there = await availability.status(from: Self.language(theirs), to: Self.language(mine))
@@ -80,7 +80,7 @@ final class FastTranslator {
     }
 
     /// Runs one direction's session for as long as SwiftUI keeps it (until the languages change).
-    @available(iOS 18.0, macCatalyst 26.0, *)
+    @available(iOS 18.0, macCatalyst 26.0, macOS 26.0, *)
     fileprivate func serve(_ session: TranslationSession, _ direction: Direction) async {
         let (stream, inbox) = AsyncStream.makeStream(of: Job.self)
         let generation = (generations[direction] ?? 0) + 1
@@ -119,7 +119,7 @@ final class FastTranslator {
     /// A one-off translation outside any view (Siri, Shortcuts): only where the OS lets a session be made
     /// directly and the languages are already on the phone. Nil sends the caller to the Mac.
     static func translateNow(_ text: String, into target: String) async -> String? {
-        guard #available(iOS 26.0, macCatalyst 26.0, *) else { return nil }
+        guard #available(iOS 26.0, macCatalyst 26.0, macOS 26.0, *) else { return nil }
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(text)
         guard let detected = recognizer.dominantLanguage?.rawValue else { return nil }
@@ -159,7 +159,11 @@ final class FastTranslator {
     /// The lines of text in a photo, top to bottom, read on the phone.
     nonisolated static func readText(in image: UIImage, language: String) async -> [String] {
         guard let cgImage = image.cgImage else { return [] }
+        #if os(iOS)
         let orientation = CGImagePropertyOrientation(image.imageOrientation)
+        #else
+        let orientation = CGImagePropertyOrientation.up   // NSImage's CGImage is already upright
+        #endif
         let visionLanguage = visionLanguage(language)
         return await withCheckedContinuation { reply in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -183,7 +187,7 @@ extension View {
     /// Keeps the on-device sessions for the pair alive while this view is on screen.
     @ViewBuilder
     func fastTranslator(_ translator: FastTranslator, mine: String, theirs: String) -> some View {
-        if #available(iOS 18.0, macCatalyst 26.0, *) {
+        if #available(iOS 18.0, macCatalyst 26.0, macOS 26.0, *) {
             modifier(FastTranslatorSessions(translator: translator, mine: mine, theirs: theirs))
         } else {
             task(id: mine + theirs) { await translator.check(mine: mine, theirs: theirs) }
@@ -191,7 +195,7 @@ extension View {
     }
 }
 
-@available(iOS 18.0, macCatalyst 26.0, *)
+@available(iOS 18.0, macCatalyst 26.0, macOS 26.0, *)
 private struct FastTranslatorSessions: ViewModifier {
     let translator: FastTranslator
     let mine: String
@@ -206,13 +210,14 @@ private struct FastTranslatorSessions: ViewModifier {
 
     /// The low-latency models where the OS has them: speed is the point here, the Mac is there for nuance.
     private func configuration(from source: String, to target: String) -> TranslationSession.Configuration {
-        if #available(iOS 26.4, macCatalyst 26.4, *) {
+        if #available(iOS 26.4, macCatalyst 26.4, macOS 26.4, *) {
             return .init(source: FastTranslator.language(source), target: FastTranslator.language(target), preferredStrategy: .lowLatency)
         }
         return .init(source: FastTranslator.language(source), target: FastTranslator.language(target))
     }
 }
 
+#if os(iOS)
 private extension CGImagePropertyOrientation {
     init(_ orientation: UIImage.Orientation) {
         switch orientation {
@@ -228,3 +233,4 @@ private extension CGImagePropertyOrientation {
         }
     }
 }
+#endif

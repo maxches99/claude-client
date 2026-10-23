@@ -22,9 +22,7 @@ final class Narrator: NSObject, AVSpeechSynthesizerDelegate {
     /// Speaks in a given language (a BCP-47 code like "ja-JP") — short phrases are too little for guessing.
     func speak(_ text: String, language: String) {
         stop()
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try? session.setActive(true, options: [])
+        try? AudioSession.activate(.playback)
         let utterance = AVSpeechUtterance(string: text)
         let prefix = String(language.prefix(2))
         let voices = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == language || $0.language.hasPrefix(prefix) }
@@ -41,9 +39,7 @@ final class Narrator: NSObject, AVSpeechSynthesizerDelegate {
         stop()
         let text = Narrator.plainText(markdown)
         guard !text.isEmpty else { onFinish?(); return }
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try? session.setActive(true, options: [])
+        try? AudioSession.activate(.playback)
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = Narrator.voice(for: text)
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
@@ -66,7 +62,7 @@ final class Narrator: NSObject, AVSpeechSynthesizerDelegate {
             self.speakingItemId = nil
             let finish = self.onFinish
             self.onFinish = nil
-            try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+            AudioSession.deactivate()
             finish?()
         }
     }

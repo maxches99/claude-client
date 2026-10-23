@@ -190,7 +190,11 @@ struct SessionListView: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
+            #if os(macOS)
+            .searchable(text: $search, placement: .sidebar, prompt: isChats ? "Search chats" : "Search sessions and transcripts")
+            #else
             .searchable(text: $search, prompt: isChats ? "Search chats" : "Search sessions and transcripts")
+            #endif
             .onChange(of: search) { _, q in
                 searchTask?.cancel()
                 let trimmed = q.trimmingCharacters(in: .whitespaces)
@@ -211,21 +215,21 @@ struct SessionListView: View {
             }
         }
         .background(CDS.surface0)
-        .toolbarBackground(CDS.surface0, for: .navigationBar)
+        .navigationBarBackground(CDS.surface0)
         .navigationTitle(isChats ? "Chats" : (model.activeMac?.displayName ?? "Sessions"))
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         // Tapping the title switches between paired Macs (the title shows a chevron when a menu is attached).
         .toolbarTitleMenu {
             MacSwitcherMenu(showAddMac: $showAddMac)
         }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingBar) {
                 ApprovalsToolbarButton(isPresented: $showInbox)
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingBar) {
                 SimulatorToolbarButton(isPresented: $showSimulator)
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingBar) {
                 Menu {
                     Button("Approvals inbox", systemImage: "tray.full") { showInbox = true }
                     if model.supportsMacTools {
@@ -305,7 +309,7 @@ struct SessionListView: View {
         .sheet(isPresented: $showAudit) { AuditView() }
         .sheet(isPresented: $showFeed) { FeedView() }
         .sheet(isPresented: $showCrashes) { CrashesView() }
-        .fullScreenCover(isPresented: $showTranslator) { TranslatorView() }
+        .coverFullScreen(isPresented: $showTranslator) { TranslatorView() }
         .sheet(isPresented: $showClone) { CloneRepositoryView() }
         .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Title", text: $renameText)

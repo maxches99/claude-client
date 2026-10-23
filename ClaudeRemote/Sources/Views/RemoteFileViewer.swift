@@ -59,11 +59,11 @@ struct RemoteFileContent: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CDS.surface0)
         .navigationTitle(name)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(CDS.surface0, for: .navigationBar)
+        .inlineNavigationTitle()
+        .navigationBarBackground(CDS.surface0)
         .toolbar {
             if let sessionId, model.supportsPeople, let file, RemoteFileViewer.text(of: file) != nil, file.data.count < 1_000_000 {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Button("Edit") { editing = true }
                         .sheet(isPresented: $editing) {
                             FileEditorView(sessionId: sessionId, path: path, original: RemoteFileViewer.text(of: file) ?? "",
@@ -71,7 +71,7 @@ struct RemoteFileContent: View {
                         }
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingBar) {
                 Menu {
                     if let file {
                         ShareLink(item: RemoteFileDocument(file: file), preview: SharePreview(name, image: Image(systemName: RemoteFileViewer.symbol(for: path)))) {
@@ -215,10 +215,10 @@ extension RemoteFileViewer {
 }
 
 /// PDFKit, wrapped — pages, pinch zoom, text selection.
-struct PDFDocumentView: UIViewRepresentable {
+struct PDFDocumentView: PlatformViewRepresentable {
     let data: Data
 
-    func makeUIView(context: Context) -> PDFView {
+    private func makeView() -> PDFView {
         let view = PDFView()
         view.autoScales = true
         view.displayMode = .singlePageContinuous
@@ -227,9 +227,17 @@ struct PDFDocumentView: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ uiView: PDFView, context: Context) {
-        if uiView.document?.dataRepresentation() != data { uiView.document = PDFDocument(data: data) }
+    private func update(_ view: PDFView) {
+        if view.document?.dataRepresentation() != data { view.document = PDFDocument(data: data) }
     }
+
+    #if os(iOS)
+    func makeUIView(context: Context) -> PDFView { makeView() }
+    func updateUIView(_ uiView: PDFView, context: Context) { update(uiView) }
+    #else
+    func makeNSView(context: Context) -> PDFView { makeView() }
+    func updateNSView(_ nsView: PDFView, context: Context) { update(nsView) }
+    #endif
 }
 
 /// The fetched bytes as a file for the share sheet, under the original name and type — so Files keeps
@@ -274,13 +282,13 @@ struct FileEditorView: View {
                 TextEditor(text: $text)
                     .font(CDS.codeSmall)
                     .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
+                    .noAutocapitalization()
                     .scrollContentBackground(.hidden)
                     .padding(.horizontal, 8)
             }
             .background(CDS.surface0)
             .navigationTitle(name)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

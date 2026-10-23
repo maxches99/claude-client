@@ -24,7 +24,7 @@ struct CloneRepositoryView: View {
                     HStack(spacing: 8) {
                         TextField("owner/name or a git URL", text: $source)
                             .font(CDS.code)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .noAutocapitalization().autocorrectionDisabled()
                             .onSubmit { model.cloneRepository(source) }
                         Button { model.cloneRepository(source) } label: {
                             if model.cloning == source.trimmingCharacters(in: .whitespaces), !source.isEmpty { ProgressView().controlSize(.small) }
@@ -60,13 +60,13 @@ struct CloneRepositoryView: View {
                     }
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .searchable(text: $search, prompt: "Filter")
             .navigationTitle("Clone a repository")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
             .onChange(of: model.cloneMessage) { _, message in
                 // Hand a fresh clone straight back to whoever asked for it.

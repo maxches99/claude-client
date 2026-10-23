@@ -92,16 +92,16 @@ struct PaletteView: View {
                     .listRowBackground(CDS.surface0)
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .searchable(text: $search, prompt: "Commands, skills, agents")
             .navigationTitle("Launch")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Menu {
                         Button("Save the draft as a prompt", systemImage: "bookmark") {
                             snippetTitle = AgentTask.title(fromPrompt: draft)

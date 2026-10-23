@@ -53,12 +53,12 @@ struct ShareLinkSheet: View {
                     }
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Share as a link")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
             .confirmationDialog("Revoke this link?", isPresented: Binding(get: { confirmRevoke != nil }, set: { if !$0 { confirmRevoke = nil } }), titleVisibility: .visible) {
                 Button("Revoke", role: .destructive) {
@@ -146,7 +146,7 @@ struct SharedLinksView: View {
         .navigationTitle("Shared links")
         .toolbar {
             if model.shares.contains(where: \.isExpired) {
-                ToolbarItem(placement: .topBarTrailing) { Button("Clear expired") { model.forgetExpiredShares() } }
+                ToolbarItem(placement: .trailingBar) { Button("Clear expired") { model.forgetExpiredShares() } }
             }
         }
         .confirmationDialog("Revoke this link?", isPresented: Binding(get: { confirmRevoke != nil }, set: { if !$0 { confirmRevoke = nil } }), titleVisibility: .visible) {

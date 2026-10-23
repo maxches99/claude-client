@@ -1,4 +1,4 @@
-import UIKit
+import SwiftUI
 import UniformTypeIdentifiers
 import ClaudeRemoteCore
 
@@ -24,11 +24,15 @@ enum Media {
         guard longest > maxSide else { return image }
         let scale = maxSide / longest
         let target = CGSize(width: size.width * scale, height: size.height * scale)
+        #if os(iOS)
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
         return UIGraphicsImageRenderer(size: target, format: format).image { _ in
             image.draw(in: CGRect(origin: .zero, size: target))
         }
+        #else
+        return image.resized(to: target)
+        #endif
     }
 }
 

@@ -73,6 +73,8 @@ struct FaceToFaceView: View {
 
 // MARK: - Live camera
 
+#if os(iOS)
+
 /// Point the camera at a sign: the translation sits on top of the text as it's read, on the phone.
 struct LiveCameraTranslateView: View {
     @Environment(\.dismiss) private var dismiss
@@ -226,6 +228,8 @@ private struct CameraPreview: UIViewRepresentable {
     func updateUIView(_ uiView: PreviewView, context: Context) {}
 }
 
+#endif
+
 // MARK: - Trip log
 
 /// Everything translated, by day, and a summary of what matters from it (addresses, prices, what was agreed).
@@ -279,7 +283,7 @@ struct TripLogView: View {
                 }
             }
             .navigationTitle("Trip")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .destructiveAction) {

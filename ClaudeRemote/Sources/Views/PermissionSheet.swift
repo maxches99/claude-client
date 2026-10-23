@@ -50,8 +50,8 @@ struct PermissionSheet: View {
             .background(CDS.surface0)
             .safeAreaInset(edge: .bottom) { actionBar }
             .navigationTitle("Permission")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
         }
     }
 

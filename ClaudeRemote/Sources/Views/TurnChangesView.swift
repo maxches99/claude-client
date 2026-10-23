@@ -48,12 +48,12 @@ struct TurnChangesView: View {
                     }
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Changes by turn")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
             }

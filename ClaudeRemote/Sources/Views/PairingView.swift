@@ -19,8 +19,13 @@ struct PairingView: View {
         NavigationStack {
             Form {
                 Section {
+                    #if os(iOS)
                     Text("Run `ccremote` on your Mac, then pick it below or scan the QR code it prints.")
                         .font(.footnote).foregroundStyle(.secondary)
+                    #else
+                    Text("Copy the pairing link on the host — “Copy link” in the ClaudeRemote Host menu, or `ccremote --print-pairing` on a Linux hub — and paste it below. Hosts on this network also show up in the list.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    #endif
                 }
                 Section("Macs on this network") {
                     if browser.results.isEmpty {
@@ -44,18 +49,20 @@ struct PairingView: View {
                 }
                 Section("Or connect by address") {
                     TextField("Host (e.g. 192.168.1.40 or mac.tail-net.ts.net)", text: $manualHost)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                        .noAutocapitalization().autocorrectionDisabled().keyboardKind(.url)
                         .onChange(of: manualHost) { if !manualHost.isEmpty { selectedService = nil } }
-                    TextField("Port", text: $manualPort).keyboardType(.numberPad)
+                    TextField("Port", text: $manualPort).keyboardKind(.number)
                 }
                 Section("Pairing token") {
                     TextField("Token from ccremote", text: $token)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().font(.system(.body, design: .monospaced))
+                        .noAutocapitalization().autocorrectionDisabled().font(.system(.body, design: .monospaced))
+                    #if os(iOS)
                     Button {
                         showScanner = true
                     } label: {
                         Label("Scan QR code", systemImage: "qrcode.viewfinder")
                     }
+                    #endif
                     // The Host app's "Copy link" puts the same ccremote:// URL the QR carries on the clipboard —
                     // the way to pair an iPad or Mac that has no camera pointed at the screen.
                     Button {
@@ -81,7 +88,7 @@ struct PairingView: View {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 }
             }
-            .fullScreenCover(isPresented: $showScanner) {
+            .coverFullScreen(isPresented: $showScanner) {
                 QRScannerView(accept: { PairingInfo.parse(pairURL: $0) != nil }) { payload in
                     showScanner = false
                     if let info = PairingInfo.parse(pairURL: payload) {

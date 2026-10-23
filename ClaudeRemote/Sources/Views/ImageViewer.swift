@@ -10,6 +10,23 @@ struct ImageViewerTarget: Identifiable {
     var name: String = "image"
 }
 
+/// PNG for the share sheet: "Save Image", Files, AirDrop and Copy all take it, with a real file name.
+struct ExportedImage: Transferable {
+    let image: UIImage
+    let fileName: String
+
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(exportedContentType: .png) { item in
+            guard let data = item.image.pngData() else { throw CocoaError(.fileWriteUnknown) }
+            return data
+        }
+        .suggestedFileName { $0.fileName }
+    }
+}
+
+#if os(iOS)
+// The Mac client has its own viewer window (ClaudeRemoteMac/Sources/MacImageViewer.swift).
+
 /// Full-screen viewer for images in a transcript (simulator screenshots, pasted images, files the agent
 /// sent): pinch or double-tap to zoom, swipe between the turn's images, swipe down to close, and
 /// Share (Save Image, Files, AirDrop…), Save to Photos or Copy.
@@ -41,7 +58,7 @@ struct ImageViewer: View {
             pages
             if !chromeHidden && dragOffset == 0 { chrome.transition(.opacity) }
         }
-        .statusBarHidden(chromeHidden)
+        .hidesStatusBar(chromeHidden)
         .sensoryFeedback(.success, trigger: saved, condition: Self.succeeded)
         .presentationBackground(.clear)
     }
@@ -173,20 +190,6 @@ private struct ViewerButtonStyle: ButtonStyle {
             .background(.ultraThinMaterial.opacity(configuration.isPressed ? 1 : 0.8), in: Capsule())
             .environment(\.colorScheme, .dark)
             .scaleEffect(configuration.isPressed ? 0.95 : 1)
-    }
-}
-
-/// PNG for the share sheet: "Save Image", Files, AirDrop and Copy all take it, with a real file name.
-struct ExportedImage: Transferable {
-    let image: UIImage
-    let fileName: String
-
-    static var transferRepresentation: some TransferRepresentation {
-        DataRepresentation(exportedContentType: .png) { item in
-            guard let data = item.image.pngData() else { throw CocoaError(.fileWriteUnknown) }
-            return data
-        }
-        .suggestedFileName { $0.fileName }
     }
 }
 
@@ -331,3 +334,4 @@ final class ZoomScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRecogni
         return abs(v.y) > abs(v.x) * 1.4
     }
 }
+#endif

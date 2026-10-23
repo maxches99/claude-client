@@ -25,8 +25,8 @@ struct ProjectBrowserView: View {
             }
             .background(CDS.surface0)
             .navigationTitle(projectName)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
             .navigationDestination(for: BrowserTarget.self) { target in
                 switch target {
@@ -38,7 +38,7 @@ struct ProjectBrowserView: View {
             }
         }
         .searchable(text: $query, prompt: "Search file contents")
-        .textInputAutocapitalization(.never)
+        .noAutocapitalization()
         .autocorrectionDisabled()
         .onChange(of: query) { _, q in
             searchTask?.cancel()
@@ -164,8 +164,8 @@ struct DirectoryListView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CDS.surface0)
         .navigationTitle(path.isEmpty ? (cwd as NSString).lastPathComponent : (path as NSString).lastPathComponent)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(CDS.surface0, for: .navigationBar)
+        .inlineNavigationTitle()
+        .navigationBarBackground(CDS.surface0)
         .refreshable { model.requestDirectory(sessionId, path: path) }
         .onAppear { if entries == nil { model.requestDirectory(sessionId, path: path) } }
     }

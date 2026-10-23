@@ -35,6 +35,37 @@ final class GitTests: XCTestCase {
         XCTAssertTrue(s.isClean)
     }
 
+    func testNumstatFillsLineCounts() throws {
+        var s = GitStatus(branch: "main", files: [
+            GitFile(path: "a.swift", indexStatus: ".", workStatus: "M"),
+            GitFile(path: "logo.png", indexStatus: "M", workStatus: "."),
+            GitFile(path: "notes/new file.md", indexStatus: ".", workStatus: ".", untracked: true),
+        ])
+        XCTAssertNil(s.linesAdded)
+        s.applyNumstat("12\t3\ta.swift\n-\t-\tlogo.png\n")
+        XCTAssertEqual(s.files[0].added, 12)
+        XCTAssertEqual(s.files[0].removed, 3)
+        XCTAssertNil(s.files[1].added)   // binary
+        XCTAssertEqual(s.linesAdded, 12)
+        XCTAssertEqual(s.linesRemoved, 3)
+        // A status from a host that doesn't count lines still decodes.
+        let legacy = try JSONDecoder().decode(GitFile.self, from: Data(#"{"path":"x","indexStatus":".","workStatus":"M","untracked":false,"conflicted":false}"#.utf8))
+        XCTAssertNil(legacy.added)
+    }
+
+    func testPermissionHookMessages() throws {
+        let set = try ProtocolCoding.decode(ClientMessage.self, from: ProtocolCoding.encode(ClientMessage.setPermissionHook(enabled: true)))
+        guard case .setPermissionHook(let enabled) = set else { return XCTFail("not setPermissionHook") }
+        XCTAssertTrue(enabled)
+        let reply = try ProtocolCoding.decode(ServerMessage.self, from: ProtocolCoding.encode(ServerMessage.permissionHook(enabled: false, error: "x")))
+        guard case .permissionHook(let on, let error) = reply else { return XCTFail("not permissionHook") }
+        XCTAssertFalse(on)
+        XCTAssertEqual(error, "x")
+        // A host that predates the field says nothing about the hook.
+        let info = try JSONDecoder().decode(HostInfo.self, from: Data(#"{"hostName":"m","daemonVersion":"1","cliPath":"","protocolVersion":11}"#.utf8))
+        XCTAssertNil(info.permissionHook)
+    }
+
     func testGitMessagesRoundTrip() throws {
         let status = GitStatus(branch: "main", upstream: "origin/main", ahead: 1, files: [GitFile(path: "a.swift", indexStatus: ".", workStatus: "M")], branches: ["main", "dev"], lastCommit: "abc Subject")
         let back = try ProtocolCoding.decode(ServerMessage.self, from: ProtocolCoding.encode(ServerMessage.gitStatus(sessionId: "s", status: status, error: nil)))

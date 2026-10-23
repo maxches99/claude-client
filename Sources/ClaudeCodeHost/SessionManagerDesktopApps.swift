@@ -298,7 +298,6 @@ extension SessionManager {
     /// When Claude Desktop opens a session we still run (possible once it is in Desktop's list), two
     /// processes would write one transcript: an idle one of ours steps aside.
     func yieldSessionsOpenedInDesktop() async {
-        let ownPids = Set(hosted.values.compactMap { $0.process?.pid })
         for live in registry.liveSessions() where !ownPids.contains(live.pid) {
             guard let h = hosted[live.sessionId], h.process != nil, h.state.status == .idle else { continue }
             log("[\(live.sessionId.prefix(8))] opened on the Mac (\(live.entrypoint ?? "desktop")) — letting go of it")

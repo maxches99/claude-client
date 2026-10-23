@@ -20,8 +20,14 @@ struct UserMessageView: View {
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
+        #if os(macOS)
+        // A bubble on the right that hugs the prompt, as in the desktop app.
+        .frame(maxWidth: 640, alignment: .leading)
+        .background(CDS.fillNeutral, in: RoundedRectangle(cornerRadius: CDS.radiusComposer))
+        #else
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(CDS.fillNeutral, in: RoundedRectangle(cornerRadius: CDS.radius + 2))
+        #endif
     }
 }
 
@@ -228,11 +234,12 @@ struct ThinkingStepRow: View {
     }
 }
 
+/// The disclosure triangle of a foldable row ("Ran 6 commands ▸"), turned down when open.
 struct Chevron: View {
     let expanded: Bool
     var body: some View {
-        Image(systemName: "chevron.right")
-            .font(.system(size: 10, weight: .semibold))
+        Image(systemName: "arrowtriangle.right.fill")
+            .font(.system(size: 7, weight: .semibold))
             .foregroundStyle(CDS.textMuted)
             .rotationEffect(.degrees(expanded ? 90 : 0))
     }

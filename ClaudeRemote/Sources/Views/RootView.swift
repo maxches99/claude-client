@@ -2,12 +2,6 @@ import SwiftUI
 import CoreSpotlight
 import ClaudeRemoteCore
 
-/// The two halves of the app: work sessions in a project, and tool-less quick chats.
-enum AppTab: Hashable {
-    case sessions
-    case chats
-}
-
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -104,24 +98,6 @@ extension RootView {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CDS.surface0)
-        .toolbarBackground(CDS.surface0, for: .navigationBar)
-    }
-}
-
-struct ConnectionBanner: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        let status = model.connection.status
-        if status != .connected {
-            CDSBanner(kind: .warning, text: text(for: status), systemImage: "wifi.exclamationmark", showsProgress: status == .connecting)
-        }
-    }
-
-    /// Name the Mac while connecting — with several paired, "Connecting…" alone doesn't say which.
-    private func text(for status: HostConnection.Status) -> String {
-        let cached = model.showingCachedSessions ? " · showing what was last seen" : ""
-        if status == .connecting, let mac = model.activeMac { return "Connecting to \(mac.displayName)…" + cached }
-        return status.label + cached
+        .navigationBarBackground(CDS.surface0)
     }
 }

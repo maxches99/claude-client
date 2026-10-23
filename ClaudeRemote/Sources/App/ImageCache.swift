@@ -1,4 +1,4 @@
-import UIKit
+import SwiftUI
 import Observation
 import ClaudeRemoteCore
 

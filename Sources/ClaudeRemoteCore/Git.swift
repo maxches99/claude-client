@@ -10,15 +10,22 @@ public struct GitFile: Codable, Equatable, Identifiable, Hashable, Sendable {
     public var workStatus: String
     public var untracked: Bool
     public var conflicted: Bool
+    /// Lines added / removed against HEAD (staged and unstaged together; a new file's lines count as
+    /// added). Nil for binary files and from hosts that don't count them.
+    public var added: Int?
+    public var removed: Int?
 
     public var id: String { path }
 
-    public init(path: String, indexStatus: String, workStatus: String, untracked: Bool = false, conflicted: Bool = false) {
+    public init(path: String, indexStatus: String, workStatus: String, untracked: Bool = false, conflicted: Bool = false,
+                added: Int? = nil, removed: Int? = nil) {
         self.path = path
         self.indexStatus = indexStatus
         self.workStatus = workStatus
         self.untracked = untracked
         self.conflicted = conflicted
+        self.added = added
+        self.removed = removed
     }
 
     public var isStaged: Bool { indexStatus != "." && !untracked && !conflicted }
@@ -60,6 +67,26 @@ public struct GitStatus: Codable, Equatable, Sendable {
     public var unstaged: [GitFile] { files.filter { $0.hasWorkChanges && !$0.untracked } }
     public var untracked: [GitFile] { files.filter(\.untracked) }
     public var isClean: Bool { files.isEmpty }
+    /// Lines added / removed over all files, nil when the host sent no counts.
+    public var linesAdded: Int? { files.contains { $0.added != nil } ? files.reduce(0) { $0 + ($1.added ?? 0) } : nil }
+    public var linesRemoved: Int? { files.contains { $0.removed != nil } ? files.reduce(0) { $0 + ($1.removed ?? 0) } : nil }
+
+    /// Fills in the per-file line counts from `git diff --numstat --no-renames HEAD` output
+    /// (`added<TAB>removed<TAB>path`, `-` for binary files).
+    public mutating func applyNumstat(_ output: String) {
+        var counts: [String: (Int?, Int?)] = [:]
+        for line in output.split(separator: "\n") {
+            let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3 else { continue }
+            counts[String(parts[2])] = (Int(parts[0]), Int(parts[1]))
+        }
+        for i in files.indices {
+            if let (added, removed) = counts[files[i].path] {
+                files[i].added = added
+                files[i].removed = removed
+            }
+        }
+    }
 }
 
 /// Something the phone asks the Mac to do in the session's repo. Every action answers with a

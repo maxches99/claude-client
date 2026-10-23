@@ -513,6 +513,21 @@ final class PhoneSession: @unchecked Sendable {
                     send(.hostUpdate(update: HostUpdate(state: .unsupported, current: daemonVersion,
                                                         message: "This host does not update itself — update it where it was installed.")))
                 }
+            case .setPermissionHook(let enabled):
+                #if os(Linux)
+                // The hub has no desktop app sessions to route: nothing prompts on it but its own sessions.
+                _ = enabled
+                send(.permissionHook(enabled: false, error: "This host has no approvals hook — its sessions already ask here."))
+                #else
+                do {
+                    if enabled { try ClaudeHooks.install() } else { try ClaudeHooks.uninstall() }
+                    log("permission hook \(enabled ? "installed" : "removed") by \(deviceLabel)")
+                    await manager.recordEvent(HostEvent(kind: .host, title: enabled ? "Approvals hook turned on" : "Approvals hook turned off", detail: deviceLabel))
+                    send(.permissionHook(enabled: ClaudeHooks.isInstalled(), error: nil))
+                } catch {
+                    send(.permissionHook(enabled: ClaudeHooks.isInstalled(), error: "\(error)"))
+                }
+                #endif
             case .updateHost:
                 guard let updater = HostControl.shared.updater else {
                     send(.hostUpdate(update: HostUpdate(state: .unsupported, current: daemonVersion)))

@@ -1,5 +1,5 @@
 import AppIntents
-import UIKit
+import SwiftUI
 import CoreSpotlight
 import Foundation
 import ClaudeRemoteCore

@@ -8,6 +8,7 @@ import ClaudeRemoteCore
 struct FeedView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @State private var kinds = Set(HostEvent.Kind.allCases)
     @State private var macId: String?
     @State private var problemsOnly = false
@@ -48,15 +49,15 @@ struct FeedView: View {
                     }
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .searchable(text: $query, prompt: "Search the feed")
             .navigationTitle("Feed")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Menu {
                         Toggle("Problems only", isOn: $problemsOnly)
                         if macsWithEvents.count > 1 {
@@ -106,7 +107,7 @@ struct FeedView: View {
 
     private func open(_ item: FeedEvent) {
         if let link = item.event.url, let url = URL(string: link), item.event.sessionId == nil {
-            UIApplication.shared.open(url)
+            openURL(url)
             return
         }
         guard let sessionId = item.event.sessionId else { return }
@@ -179,7 +180,7 @@ struct HealthView: View {
         .scrollContentBackground(.hidden)
         .background(CDS.surface0)
         .navigationTitle("Health")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .refreshable { model.requestHealth(mac: macId) }
         .onAppear { model.requestHealth(mac: macId) }
     }
@@ -249,7 +250,7 @@ struct ShareDraftView: View {
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Send to the Mac")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .tint(CDS.brand)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
             .sheet(isPresented: $makingTask, onDismiss: { dismiss() }) {
@@ -361,7 +362,7 @@ struct SettingsBackupView: View {
         .scrollContentBackground(.hidden)
         .background(CDS.surface0)
         .navigationTitle("Backup")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .data]) { result in
             guard case .success(let url) = result else { return }
             let access = url.startAccessingSecurityScopedResource()

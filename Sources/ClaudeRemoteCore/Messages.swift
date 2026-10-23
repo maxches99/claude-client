@@ -178,6 +178,8 @@ public enum ClientMessage: Codable, Sendable {
     case checkHostUpdate
     /// Download the newest release and restart into it; progress and errors come as `hostUpdate`.
     case updateHost
+    /// Adds or removes the host's PermissionRequest hook (owner only); answered with `permissionHook`.
+    case setPermissionHook(enabled: Bool)
     /// The host's event feed since `since` (nil = its whole kept history); answered with `events`.
     /// New events follow on their own as `events(live: true)`.
     case listEvents(since: Date?)
@@ -275,6 +277,8 @@ public enum ServerMessage: Codable, Sendable {
     case relayConfigured(error: String?)
     case github(account: GitHubAccount, login: GitHubLoginState?, error: String?)
     case hostUpdate(update: HostUpdate)
+    /// Whether the PermissionRequest hook is installed now, after `setPermissionHook`.
+    case permissionHook(enabled: Bool, error: String?)
     /// Events newest last; `live` for ones that just happened.
     case events(items: [HostEvent], live: Bool)
     case health(report: HostHealth)

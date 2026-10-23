@@ -121,6 +121,10 @@ public actor SessionManager {
     private var activityTokens: [String: [UUID: (token: String, approvalNeedsApp: Bool)]] = [:]
     var hosted: [String: Hosted] = [:]
     private var watched: [String: Watched] = [:]
+    /// One-shot `claude -p` runs guessing the next prompt for watched sessions (see PromptSuggester).
+    private var suggesterPids: Set<Int32> = []
+    /// CLI processes this host started itself, which the live-session registry must not list as Desktop sessions.
+    var ownPids: Set<Int32> { Set(hosted.values.compactMap { $0.process?.pid }).union(suggesterPids) }
     private var watchedCodex: [String: WatchedCodex] = [:]
     /// Codex threads someone else has open right now, refreshed with the session list.
     private var codexOpenElsewhere: Set<String> = []
@@ -330,11 +334,15 @@ public actor SessionManager {
             if cachedCodexVersion == nil { cachedCodexVersion = codex.cli.version() }
             codexInfo = CodexInfo(path: codex.cli.path, version: cachedCodexVersion, loggedIn: await codex.loggedIn)
         }
-        return HostInfo(hostName: HostPaths.machineName, daemonVersion: daemonVersion,
+        var info = HostInfo(hostName: HostPaths.machineName, daemonVersion: daemonVersion,
                         cliVersion: cachedCliVersion, cliPath: cli.path, loggedIn: cachedLoggedIn, codex: codexInfo, livePush: livePusher != nil,
                         canShare: shareConfig != nil, workspaceRoot: workspaceRoot, hasGitHubCLI: SessionManager.locateGh() != nil,
                         hasClaude: cli.isInstalled, mirrorsToDesktopApps: mirrorsToDesktopApps, relay: relayRoute,
                         appVersion: hostAppVersion, canUpdate: hostCanUpdate)
+        #if os(macOS)
+        info.permissionHook = ClaudeHooks.isInstalled()
+        #endif
+        return info
     }
 
     /// What the daemon knows and the manager reports to phones: the relay route and the app version.
@@ -440,7 +448,6 @@ public actor SessionManager {
                                          origin: .host, status: h.state.status, agent: h.agent, kind: h.state.kind))
             seen.insert(id)
         }
-        let ownPids = Set(hosted.values.compactMap { $0.process?.pid })
         for live in registry.liveSessions() where !seen.contains(live.sessionId) && !ownPids.contains(live.pid) {
             let s = storedById[live.sessionId]
             let status: SessionStatus = hasHookPermission(sessionId: live.sessionId) ? .awaitingPermission : (live.status == "busy" ? .running : .idle)
@@ -499,7 +506,6 @@ public actor SessionManager {
             return
         }
         let stored = store.session(id: sessionId)
-        let ownPids = Set(hosted.values.compactMap { $0.process?.pid })
         if let live = registry.liveSessions().first(where: { $0.sessionId == sessionId && !ownPids.contains($0.pid) }) {
             // Open in Claude Desktop / a terminal: follow the transcript instead of starting a second process.
             // Prompts are delivered through the process's messaging inbox (see PeerInbox).
@@ -1155,9 +1161,39 @@ public actor SessionManager {
         if w.tailing { attachSubagentTails(to: w, sessionId: sessionId) }
         let status: SessionStatus = hasHookPermission(sessionId: sessionId) ? .awaitingPermission : (live.status == "busy" ? .running : .idle)
         if status != w.state.status {
+            let finishedTurn = w.state.status == .running && status == .idle
             w.state.status = status
+            if status == .running { w.state.suggestion = nil }
             broadcast(.state(state: w.state))
+            if finishedTurn { suggestNextPrompt(sessionId: sessionId) }
         }
+    }
+
+    /// After a watched session's turn, guess its next prompt the way the CLI does for hosted sessions.
+    private func suggestNextPrompt(sessionId: String) {
+        guard cli.isInstalled, let path = watched[sessionId]?.transcriptPath else { return }
+        let cliPath = cli.path
+        Task.detached(priority: .utility) { [weak self] in
+            // The transcript's last lines land a moment after the registry flips to idle.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let exchange = PromptSuggester.lastExchange(path: path) else { return }
+            let suggestion = await PromptSuggester.suggest(cli: cliPath, prompt: exchange.prompt, reply: exchange.reply,
+                                                           workingDirectory: NSTemporaryDirectory()) { pid in
+                Task { await self?.trackSuggester(pid, running: true) }
+            }
+            await self?.deliverSuggestion(sessionId: sessionId, suggestion)
+        }
+    }
+
+    private func trackSuggester(_ pid: Int32, running: Bool) {
+        if running { suggesterPids.insert(pid) } else { suggesterPids.remove(pid) }
+    }
+
+    private func deliverSuggestion(sessionId: String, _ suggestion: String?) {
+        suggesterPids = suggesterPids.filter { kill($0, 0) == 0 }   // the run that just ended is gone
+        guard let suggestion, let w = watched[sessionId], w.state.status == .idle else { return }
+        w.state.suggestion = suggestion
+        broadcast(.state(state: w.state))
     }
 
     private func attachTail(to w: Watched, sessionId: String, path: String, startOffset: UInt64) {
@@ -1383,7 +1419,23 @@ public actor SessionManager {
         if last.code == 0 { let subject = last.out.trimmingCharacters(in: .whitespacesAndNewlines)
             status.lastCommit = subject.isEmpty ? nil : subject
         }
+        // Lines added / removed per file, as the desktop app's "+120 −34". Fails harmlessly before the first commit.
+        let numstat = runGit(["-C", cwd, "diff", "--numstat", "--no-renames", "HEAD"])
+        if numstat.code == 0 { status.applyNumstat(numstat.out) }
+        for i in status.files.indices where status.files[i].untracked {
+            status.files[i].added = Self.lineCount(cwd + "/" + status.files[i].path)
+            status.files[i].removed = 0
+        }
         return status
+    }
+
+    /// Lines in a new file, nil for a large or binary one (git shows those as "-" too).
+    private static func lineCount(_ path: String) -> Int? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let size = attrs[.size] as? Int, size <= 2_000_000,
+              let data = FileManager.default.contents(atPath: path), !data.prefix(8_000).contains(0) else { return nil }
+        let newlines = data.reduce(0) { $0 + ($1 == 0x0A ? 1 : 0) }
+        return newlines + (data.last == 0x0A || data.isEmpty ? 0 : 1)
     }
 
     /// Runs one git action in the repo and returns git's output. Refuses to act on a session whose

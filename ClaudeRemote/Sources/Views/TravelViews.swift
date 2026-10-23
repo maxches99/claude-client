@@ -96,7 +96,7 @@ struct PhrasebookView: View {
         .onAppear { reload() }
         .onChange(of: theirs) { _, _ in reload() }
         .onChange(of: mine) { _, _ in reload() }
-        .fullScreenCover(item: $shown) { phrase in PhraseCard(phrase: phrase, language: theirs.code) }
+        .coverFullScreen(item: $shown) { phrase in PhraseCard(phrase: phrase, language: theirs.code) }
     }
 
     private func reload() {
@@ -200,7 +200,9 @@ struct ReceiptView: View {
         List {
             Section {
                 HStack(spacing: 10) {
-                    Button { showCamera = true } label: { Label("Photo", systemImage: "camera") }
+                    if CameraPicker.isAvailable {
+                        Button { showCamera = true } label: { Label("Photo", systemImage: "camera") }
+                    }
                     Button { showLibrary = true } label: { Label("Library", systemImage: "photo") }
                 }
                 .buttonStyle(CDSButtonStyle(variant: .secondary))
@@ -218,9 +220,9 @@ struct ReceiptView: View {
                 Section("Rate") {
                     HStack {
                         Text("1 \(receipt.currency) =")
-                        TextField("rate", text: $rateText).keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                        TextField("rate", text: $rateText).keyboardKind(.decimal).multilineTextAlignment(.trailing)
                             .onChange(of: rateText) { _, t in rate = Double(t.replacingOccurrences(of: ",", with: ".")) }
-                        TextField("", text: $myCurrency).frame(width: 52).textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        TextField("", text: $myCurrency).frame(width: 52).autocapitalizeCharacters().autocorrectionDisabled()
                     }
                 }
                 Section {
@@ -232,7 +234,9 @@ struct ReceiptView: View {
         }
         .scrollContentBackground(.hidden)
         .background(CDS.surface0)
-        .fullScreenCover(isPresented: $showCamera) { CameraPicker { read($0) }.ignoresSafeArea() }
+        #if os(iOS)
+        .coverFullScreen(isPresented: $showCamera) { CameraPicker { read($0) }.ignoresSafeArea() }
+        #endif
         .photosPicker(isPresented: $showLibrary, selection: $pickerItem, matching: .images)
         .onChange(of: pickerItem) { _, item in
             guard let item else { return }

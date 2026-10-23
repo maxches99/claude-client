@@ -32,10 +32,8 @@ final class Dictation {
         guard await Self.ensureSpeechPermission() else { failure = .speech; return false }
         guard let recognizer = locale.flatMap(SFSpeechRecognizer.init(locale:)) ?? SFSpeechRecognizer(), recognizer.isAvailable else { failure = .unavailable; return false }
 
-        let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
-            try session.setActive(true, options: [])
+            try AudioSession.activate(.record)
         } catch { failure = .unavailable; return false }
 
         let engine = AVAudioEngine()
@@ -91,7 +89,7 @@ final class Dictation {
         task?.cancel()
         engine = nil; request = nil; task = nil
         level = 0
-        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        AudioSession.deactivate()
     }
 
     /// Stops and throws the text away.

@@ -1,5 +1,5 @@
 import SwiftUI
-#if targetEnvironment(macCatalyst)
+#if targetEnvironment(macCatalyst) || os(macOS)
 /// VisionKit's scanner doesn't exist on Mac Catalyst — the Mac pairs by the pasted link or the form instead.
 struct QRScannerView: View {
     var accept: (String) -> Bool = { _ in true }

@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 import ClaudeRemoteCore
 
 /// Terminals running on the Mac, and a way to start one in this project.
@@ -47,15 +46,15 @@ struct TerminalsView: View {
                     }
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Terminals")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Button { model.requestTerminals() } label: { Image(systemName: "arrow.clockwise") }
                 }
             }
@@ -87,17 +86,30 @@ struct TerminalScreenView: View {
     /// An attached shell, or nil to open a new one once the view knows how big it is.
     let existing: TerminalModel?
     let sessionId: String?
+    /// Inside another screen (the Mac's terminal pane under the chat): no title or toolbar of its own.
+    var embedded = false
+    /// The shell this view opened or attached to, so an embedded owner can come back to it.
+    var onOpened: ((TerminalModel) -> Void)?
 
     @State private var terminal: TerminalModel?
     @State private var keyboardUp = false
     @State private var control = false
+    #if os(iOS)
     @State private var fontSize: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 13 : 11.5
+    #else
+    @State private var fontSize: CGFloat = 13
+    #endif
     @State private var opening = false
 
     private var font: UIFont { .monospacedSystemFont(ofSize: fontSize, weight: .regular) }
     private var cell: CGSize {
         let width = ("M" as NSString).size(withAttributes: [.font: font]).width
-        return CGSize(width: max(1, width), height: ceil(font.lineHeight))
+        #if os(iOS)
+        let lineHeight = font.lineHeight
+        #else
+        let lineHeight = font.ascender - font.descender + font.leading
+        #endif
+        return CGSize(width: max(1, width), height: ceil(lineHeight))
     }
 
     var body: some View {
@@ -120,12 +132,13 @@ struct TerminalScreenView: View {
         }
         .padding(.horizontal, 6)
         .background(TerminalPalette(scheme: scheme).background)
-        .safeAreaInset(edge: .bottom) { keyBar }
-        .navigationTitle(terminal?.screen.title ?? "Terminal")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(CDS.surface0, for: .navigationBar)
+        #if os(iOS)
+        .safeAreaInset(edge: .bottom) { keyBar }   // a hardware keyboard has these keys
+        #endif
+        .modifier(TerminalChrome(embedded: embedded, title: terminal?.screen.title ?? "Terminal"))
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            if !embedded {
+            ToolbarItem(placement: .trailingBar) {
                 Menu {
                     Button("Paste", systemImage: "doc.on.clipboard") { paste() }
                     Button("Copy screen and history", systemImage: "doc.on.doc") {
@@ -139,6 +152,7 @@ struct TerminalScreenView: View {
                         Button("Close terminal", systemImage: "xmark", role: .destructive) { model.closeTerminal(terminal.id) }
                     }
                 } label: { Image(systemName: "ellipsis.circle") }
+            }
             }
         }
         .overlay(alignment: .bottom) {
@@ -163,6 +177,7 @@ struct TerminalScreenView: View {
             terminal = existing
             model.resizeTerminal(existing.id, cols: cols, rows: rows)
             keyboardUp = true
+            onOpened?(existing)
             return
         }
         opening = true
@@ -170,6 +185,7 @@ struct TerminalScreenView: View {
             opening = false
             terminal = opened
             keyboardUp = opened != nil
+            if let opened { onOpened?(opened) }
         }
     }
 
@@ -241,6 +257,23 @@ struct TerminalScreenView: View {
                 .background(CDS.fillControl, in: RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// The title bar a terminal screen brings when it is a screen of its own, and not when it is embedded.
+private struct TerminalChrome: ViewModifier {
+    let embedded: Bool
+    let title: String
+
+    func body(content: Content) -> some View {
+        if embedded {
+            content
+        } else {
+            content
+                .navigationTitle(title)
+                .inlineNavigationTitle()
+                .navigationBarBackground(CDS.surface0)
+        }
     }
 }
 
@@ -356,6 +389,7 @@ private struct TerminalGrid: View {
     }
 }
 
+#if os(iOS)
 /// An invisible view that owns the keyboard for the terminal: typed text, delete, Return, and
 /// hardware-keyboard arrows / Esc / Tab / ^letters, all turned into the bytes a terminal expects.
 private struct TerminalKeyInput: UIViewRepresentable {
@@ -446,3 +480,73 @@ private struct TerminalKeyInput: UIViewRepresentable {
         }
     }
 }
+#else
+/// An invisible view that owns the keyboard for the terminal on the Mac: typed characters, Delete,
+/// Return, arrows, Esc, Tab and ⌃letters, all turned into the bytes a terminal expects.
+private struct TerminalKeyInput: NSViewRepresentable {
+    @Binding var isFirstResponder: Bool
+    @Binding var control: Bool
+    let send: ([UInt8]) -> Void
+    /// Keys whose bytes depend on the screen's modes (arrows in application-cursor mode).
+    let key: (TerminalKey) -> Void
+
+    func makeNSView(context: Context) -> KeyView {
+        let view = KeyView()
+        view.onBytes = { bytes in send(bytes) }
+        view.onKey = { k in key(k) }
+        return view
+    }
+
+    func updateNSView(_ view: KeyView, context: Context) {
+        view.onBytes = { bytes in send(bytes) }
+        view.onKey = { k in key(k) }
+        view.control = control
+        view.onControlUsed = { DispatchQueue.main.async { control = false } }
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            if isFirstResponder, window.firstResponder !== view { window.makeFirstResponder(view) }
+            if !isFirstResponder, window.firstResponder === view { window.makeFirstResponder(nil) }
+        }
+    }
+
+    final class KeyView: NSView {
+        var onBytes: (([UInt8]) -> Void)?
+        var onKey: ((TerminalKey) -> Void)?
+        var onControlUsed: (() -> Void)?
+        var control = false
+
+        override var acceptsFirstResponder: Bool { true }
+
+        override func keyDown(with event: NSEvent) {
+            switch Int(event.keyCode) {
+            case 126: onKey?(.up); return
+            case 125: onKey?(.down); return
+            case 123: onKey?(.left); return
+            case 124: onKey?(.right); return
+            case 53: onBytes?([0x1B]); return
+            case 48: onBytes?([0x09]); return
+            case 51: onBytes?([0x7F]); return
+            case 36, 76: onBytes?([0x0D]); return
+            default: break
+            }
+            let ctrl = event.modifierFlags.contains(.control) || control
+            if ctrl, let c = event.charactersIgnoringModifiers?.lowercased().first {
+                if control { control = false; onControlUsed?() }
+                onBytes?(TerminalKey.control(c).bytes(applicationCursor: false))
+                return
+            }
+            guard let text = event.characters, !text.isEmpty else { return }
+            onBytes?(Array(text.replacingOccurrences(of: "\n", with: "\r").utf8))
+        }
+
+        /// ⌘V pastes into the shell rather than nowhere.
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            guard window?.firstResponder === self, event.modifierFlags.contains(.command),
+                  event.charactersIgnoringModifiers == "v",
+                  let text = NSPasteboard.general.string(forType: .string) else { return super.performKeyEquivalent(with: event) }
+            onBytes?(Array(text.replacingOccurrences(of: "\n", with: "\r").utf8))
+            return true
+        }
+    }
+}
+#endif
