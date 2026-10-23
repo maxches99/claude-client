@@ -25,7 +25,7 @@ struct ProcessesView: View {
                         HStack(spacing: 8) {
                             TextField("npm run dev, swift build --watch…", text: $command)
                                 .font(CDS.code)
-                                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                .noAutocapitalization().autocorrectionDisabled()
                                 .onSubmit { start() }
                             Button { start() } label: { Image(systemName: "play.fill") }
                                 .buttonStyle(CDSButtonStyle(variant: .primary))
@@ -47,15 +47,15 @@ struct ProcessesView: View {
                         .listRowBackground(CDS.surface0)
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Processes")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Button { model.requestProcesses() } label: { Image(systemName: "arrow.clockwise") }
                 }
             }

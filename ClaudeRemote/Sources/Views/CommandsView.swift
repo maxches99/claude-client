@@ -22,7 +22,7 @@ struct CommandsView: View {
                     HStack(spacing: 8) {
                         TextField("Any shell command…", text: $custom)
                             .font(CDS.code)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .noAutocapitalization().autocorrectionDisabled()
                             .focused($customFocused)
                             .onSubmit { start(custom) }
                         Button { start(custom) } label: { Image(systemName: "play.fill") }
@@ -64,15 +64,15 @@ struct CommandsView: View {
                     }
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Run")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Button { model.requestCommands(sessionId) } label: { Image(systemName: "arrow.clockwise") }
                 }
             }
@@ -128,10 +128,10 @@ struct CommandRunView: View {
         .background(CDS.surface0)
         .safeAreaInset(edge: .bottom) { statusBar }
         .navigationTitle(run.command)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(CDS.surface0, for: .navigationBar)
+        .inlineNavigationTitle()
+        .navigationBarBackground(CDS.surface0)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingBar) {
                 Menu {
                     Button("Copy output", systemImage: "doc.on.doc") { UIPasteboard.general.string = run.output }
                     Button("Send output to the agent", systemImage: "text.bubble") {

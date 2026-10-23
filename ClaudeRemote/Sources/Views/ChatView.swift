@@ -15,6 +15,21 @@ struct ChatView: View {
     @State private var showSimulator = false
     @State private var showLimits = false
     @State private var showGit = false
+    #if os(macOS)
+    /// The right-hand panel with the environment, context and changes (remembered across sessions).
+    @AppStorage("ccremote.mac.inspector") private var showInspector = true
+    /// Opened by hand while the window is too narrow for it to show by itself.
+    @State private var inspectorForced = false
+    @Environment(\.windowWidth) private var windowWidth
+    /// Room for the sidebar, a readable chat and the panel side by side.
+    private var roomForInspector: Bool { windowWidth >= 1080 }
+    private var inspectorShown: Binding<Bool> {
+        Binding(get: { showInspector && (roomForInspector || inspectorForced) },
+                set: { shown in
+                    if roomForInspector { showInspector = shown } else { inspectorForced = shown; if shown { showInspector = true } }
+                })
+    }
+    #endif
     @State private var showHandover = false
     @State private var showBrowser = false
     @State private var showCommands = false
@@ -37,6 +52,11 @@ struct ChatView: View {
     /// A file the agent linked in its reply (`[Bar.tsx:42](src/Bar.tsx:42)`), opened from the Mac.
     @State private var linkedFile: LinkedFile?
     @FocusState private var composerFocused: Bool
+    /// Where the end of the transcript sits in the scroll view, and how tall the view is: together they
+    /// say whether the reader is at the bottom (and new output should be followed) or reading higher up.
+    @State private var bottomY: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+    private var followsBottom: Bool { bottomY <= viewportHeight + 120 }
     @FocusState private var findFocused: Bool
 
     private var transcript: Transcript { model.transcripts[sessionId] ?? Transcript() }
@@ -51,52 +71,79 @@ struct ChatView: View {
     private var blocks: [TranscriptBlock] { TranscriptLayout.blocks(for: transcript.items, sessionRunning: isRunning) }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ConnectionBanner()
-            if let error = model.errorBanner {
-                CDSBanner(kind: .danger, text: error, systemImage: "exclamationmark.triangle.fill") { model.errorBanner = nil }
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                ConnectionBanner()
+                if let error = model.errorBanner {
+                    CDSBanner(kind: .danger, text: error, systemImage: "exclamationmark.triangle.fill") { model.errorBanner = nil }
+                }
+                if showFind { findBar }
+                if let message = model.handoffMessage {
+                    CDSBanner(kind: message.isError ? .danger : .info, text: message.text,
+                              systemImage: message.isError ? "exclamationmark.triangle.fill" : "desktopcomputer") { model.handoffMessage = nil }
+                }
+                if let notice = model.rewindNotice, notice.sessionId == sessionId {
+                    CDSBanner(kind: .info,
+                              text: "Rewound: this is a copy without the last \(notice.dropped) transcript entr\(notice.dropped == 1 ? "y" : "ies"). Files on the Mac were not reverted.",
+                              systemImage: "arrow.counterclockwise") { model.rewindNotice = nil }
+                }
+                transcriptView
+                ComposerDock(
+                    draft: $draft,
+                    files: $files,
+                    macFiles: $macFiles,
+                    focused: $composerFocused,
+                    sessionId: sessionId,
+                    state: state,
+                    summary: summary,
+                    modelId: state?.model ?? transcript.model,
+                    pending: pending,
+                    isRunning: isRunning,
+                    isDesktop: isDesktop,
+                    isChat: isChat,
+                    handsFree: $handsFree,
+                    onSend: send,
+                    onShowPermission: { presentedPermission = $0 }
+                )
+                .readingColumn()
             }
-            if showFind { findBar }
-            if let message = model.handoffMessage {
-                CDSBanner(kind: message.isError ? .danger : .info, text: message.text,
-                          systemImage: message.isError ? "exclamationmark.triangle.fill" : "desktopcomputer") { model.handoffMessage = nil }
+            .frame(minWidth: 0, maxWidth: .infinity)
+            #if os(macOS)
+            // The session panel on the right (environment, context, changes), as in the desktop app.
+            if inspectorShown.wrappedValue {
+                Rectangle().fill(CDS.border).frame(width: 1)
+                SessionInspector(sessionId: sessionId, onShowGit: { showGit = true })
+                    .frame(width: 300)
+                    .transition(.move(edge: .trailing))
             }
-            if let notice = model.rewindNotice, notice.sessionId == sessionId {
-                CDSBanner(kind: .info,
-                          text: "Rewound: this is a copy without the last \(notice.dropped) transcript entr\(notice.dropped == 1 ? "y" : "ies"). Files on the Mac were not reverted.",
-                          systemImage: "arrow.counterclockwise") { model.rewindNotice = nil }
-            }
-            transcriptView
-            ComposerDock(
-                draft: $draft,
-                files: $files,
-                macFiles: $macFiles,
-                focused: $composerFocused,
-                sessionId: sessionId,
-                state: state,
-                summary: summary,
-                modelId: state?.model ?? transcript.model,
-                pending: pending,
-                isRunning: isRunning,
-                isDesktop: isDesktop,
-                isChat: isChat,
-                handsFree: $handsFree,
-                onSend: send,
-                onShowPermission: { presentedPermission = $0 }
-            )
+            #endif
         }
         .background(CDS.surface0)
-        .toolbarBackground(CDS.surface0, for: .navigationBar)
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackground(CDS.surface0)
+        .inlineNavigationTitle()
+        #if os(macOS)
+        // The window toolbar shows the title on the left, as the desktop app does, with the details under it.
+        .navigationTitle(summary?.title ?? "Session")
+        .navigationSubtitle(subtitle)
+        .animation(.easeInOut(duration: 0.2), value: inspectorShown.wrappedValue)
+        #endif
         .toolbar {
+            #if os(iOS)
             ToolbarItem(placement: .principal) { header }
+            #else
+            ToolbarItem(placement: .primaryAction) {
+                Button { inspectorShown.wrappedValue.toggle() } label: { Image(systemName: "sidebar.right") }
+                    .help(inspectorShown.wrappedValue ? "Hide the session panel" : "Show the session panel")
+                    .keyboardShortcut("i", modifiers: [.command, .option])
+            }
+            #endif
             if !model.simpleUI {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     SimulatorToolbarButton(isPresented: $showSimulator)
                 }
             }
             if !isChat, !model.simpleUI {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Button { showGit = true } label: {
                         Image(systemName: "arrow.triangle.branch").foregroundStyle(CDS.textSecondary)
                             .overlay(alignment: .topTrailing) {
@@ -108,7 +155,7 @@ struct ChatView: View {
                     .accessibilityLabel("Git")
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingBar) {
                 Menu {
                     if !usageSummary.isEmpty || model.contextUsage(sessionId) != nil {
                         Section("Usage") {
@@ -386,7 +433,7 @@ struct ChatView: View {
                 Image(systemName: "magnifyingglass").font(.system(size: 13)).foregroundStyle(CDS.textMuted)
                 TextField("Find in transcript", text: $findQuery)
                     .font(CDS.body).foregroundStyle(CDS.textPrimary)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .noAutocapitalization().autocorrectionDisabled()
                     .submitLabel(.search)
                     .focused($findFocused)
                     .onSubmit { stepFind(1) }
@@ -441,9 +488,11 @@ struct ChatView: View {
     private var transcriptView: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
+                TranscriptStack(spacing: 18) {
                     ForEach(blocks) { block in
                         blockView(block)
+                            // No row may widen the column: a long code line or a wide table stays inside it.
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                             .id(block.id)
                             .overlay {
                                 if showFind, currentMatch?.blockId == block.id {
@@ -459,16 +508,25 @@ struct ChatView: View {
                             .id("status")
                     }
                     Color.clear.frame(height: 1).id("bottom")
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: TranscriptBottomKey.self, value: geo.frame(in: .named("transcript")).minY)
+                        })
                 }
-                .scrollTargetLayout()
                 .padding(.horizontal, CDS.gutter).padding(.top, 12).padding(.bottom, 8)
+                .readingColumn()
             }
+            .coordinateSpace(name: "transcript")
+            .background(GeometryReader { geo in
+                Color.clear.preference(key: TranscriptViewportKey.self, value: geo.size.height)
+            })
+            .onPreferenceChange(TranscriptBottomKey.self) { bottomY = $0 }
+            .onPreferenceChange(TranscriptViewportKey.self) { viewportHeight = $0 }
             // Write-only from our side: if the scroll view could write the top row back into the binding,
             // every drag inside a tall row would re-apply "row at top" and snap the transcript in place.
             .scrollPosition(id: Binding(get: { findTarget }, set: { _ in }), anchor: .top)
             // Bottom-anchored so new rows keep the latest reply in view — except while finding: the anchor
             // also re-pins the bottom whenever a lazy row gets measured, which would drag every jump back down.
-            .defaultScrollAnchor(showFind ? .top : .bottom)
+            .transcriptScrollAnchor(showFind ? .top : .bottom)
             .scrollDismissesKeyboard(.interactively)
             .environment(\.openURL, OpenURLAction { url in
                 guard let link = FileLink.parse(url.absoluteString, cwd: state?.cwd ?? summary?.cwd ?? "") else { return .systemAction }
@@ -481,9 +539,18 @@ struct ChatView: View {
                     .allowsHitTesting(false)
             }
             .overlay {
-                if transcript.items.isEmpty { emptyState }
+                if transcript.items.isEmpty {
+                    if model.loadingHistory.contains(sessionId) {
+                        TranscriptSkeleton().transition(.opacity)
+                    } else {
+                        emptyState
+                    }
+                }
             }
+            .animation(.easeOut(duration: 0.2), value: model.loadingHistory.contains(sessionId))
             .onChange(of: scrollSignature) {
+                // Follow the reply only while the end is in view: someone reading further up stays put.
+                guard followsBottom else { return }
                 withAnimation(.easeOut(duration: 0.15)) { scrollToEnd(proxy) }
             }
             .onChange(of: blocks.count) { old, new in
@@ -619,6 +686,7 @@ struct ChatView: View {
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !files.isEmpty || !macFiles.isEmpty else { return }
+        bottomY = 0   // what was just sent, and the reply to it, should come into view
         // Files already on the Mac travel as path references (the agent reads them in place), not bytes.
         var fullText = text
         if !macFiles.isEmpty {
@@ -685,6 +753,10 @@ struct ComposerDock: View {
         var id: Int { index }
     }
     @State private var silenceTask: Task<Void, Never>?
+    /// The completion row the arrow keys are on, and whether Esc put the panel away for this token.
+    @State private var highlightedRow = 0
+    @State private var dropTargeted = false
+    @State private var completionsDismissed = false
 
     private var agent: AgentKind { state?.agent ?? summary?.agent ?? .claude }
     private var isCodex: Bool { agent == .codex }
@@ -866,92 +938,23 @@ struct ComposerDock: View {
     }
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if hasAttachments || recorder.isRecording { attachmentStrip }
-            if dictation.isListening { dictationStrip }
-            HStack(alignment: .top, spacing: 6) {
-                TextField(suggestion ?? (isDesktop ? "Message this session" : "Message \(agent.label)"), text: $draft, axis: .vertical)
-                    .lineLimit(1...8)
-                    .textFieldStyle(.plain)
-                    .font(CDS.prose)
-                    .foregroundStyle(CDS.textPrimary)
-                    .focused(focused)
-                if let suggestion {
-                    // The terminal takes its suggestion with Tab; here it goes into the field to edit or send.
-                    Button {
-                        draft = suggestion
-                        focused.wrappedValue = true
-                    } label: {
-                        Image(systemName: "arrow.turn.down.left")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(CDS.textSecondary)
-                            .frame(width: 28, height: 24)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Use suggestion")
-                }
-            }
-            .padding(.horizontal, 6).padding(.top, 6)
-            HStack(spacing: 6) {
-                if canAttach {
-                    if recorder.isRecording {
-                        recordingControls
-                    } else if dictation.isListening {
-                        dictationControls
-                    } else {
-                        attachButton
-                        micButton
-                    }
-                }
-                if !isChat, model.supportsQueue, !recorder.isRecording, !dictation.isListening {
-                    paletteButton
-                }
-                // A chat has no tools, so there is nothing to approve — only the model matters.
-                // A session owned by the Mac cannot be reconfigured from here at all.
-                if isDesktop {
-                    EmptyView()
-                } else if isCodex {
-                    Menu { codexModelSection } label: { ComposerChipLabel(text: modelLabel) }
-                    if !isChat {
-                        Menu { codexControlSection } label: { ComposerChipLabel(text: codexModeLabel, systemImage: codexModeIcon) }
-                    }
-                } else if !isDesktop {
-                    Menu { modelSection } label: { ComposerChipLabel(text: modelLabel) }
-                    if !isChat {
-                        Menu { permissionSection } label: { ComposerChipLabel(text: modeLabel, systemImage: modeIcon) }
-                    }
-                }
-                if let context = model.contextUsage(sessionId), context.fraction >= 0.5 {
-                    contextChip(context)
-                }
-                Spacer(minLength: 0)
-                if isRunning, !isDesktop {   // a Desktop session can only be interrupted on the Mac
-                    Button { model.interrupt(sessionId) } label: {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(CDS.onPrimary)
-                            .frame(width: 32, height: 32)
-                            .background(CDS.fillPrimary, in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Stop")
-                }
-                Button(action: onSend) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(canSend ? .white : CDS.textMuted)
-                        .frame(width: 32, height: 32)
-                        .background(canSend ? agent.tint : CDS.fillControl, in: Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
-                .accessibilityLabel("Send")
+        composerLayout
+        // Files and pictures dropped on the composer become attachments (Finder, Photos, a browser).
+        .onDrop(of: [.fileURL, .image], isTargeted: $dropTargeted) { providers in
+            loadDropped(providers)
+            return true
+        }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: CDS.radiusComposer + 4)
+                    .strokeBorder(agent.tint, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    .allowsHitTesting(false)
             }
         }
-        .padding(8)
-        .background(CDS.surface2, in: RoundedRectangle(cornerRadius: CDS.radiusComposer))
-        .overlay(RoundedRectangle(cornerRadius: CDS.radiusComposer).strokeBorder(focused.wrappedValue ? CDS.borderStrong : CDS.border))
-        .shadow(color: .black.opacity(0.05), radius: 8, y: 2)
+        #if os(macOS)
+        // ⌘V with a picture or a copied file on the pasteboard attaches it; text pastes as usual.
+        .onPasteCommand(of: [.fileURL, .image]) { providers in loadDropped(providers) }
+        #endif
         .onChange(of: pickerItems) { _, items in loadPicked(items) }
         .onChange(of: dictation.text) { _, text in
             guard dictation.isListening || !text.isEmpty else { return }
@@ -972,7 +975,8 @@ struct ComposerDock: View {
                       matching: .any(of: [.images, .videos]))
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item],
                       allowsMultipleSelection: true) { result in loadFiles(result) }
-        .fullScreenCover(isPresented: $showCamera) {
+        #if os(iOS)
+        .coverFullScreen(isPresented: $showCamera) {
             CameraPicker { image in
                 if let data = image.jpegData(compressionQuality: 0.9),
                    let att = Media.imageAttachment(from: data, filename: "photo-\(shortStamp()).jpg") {
@@ -981,7 +985,8 @@ struct ComposerDock: View {
             }
             .ignoresSafeArea()
         }
-        .fullScreenCover(item: $markup) { target in
+        #endif
+        .coverFullScreen(item: $markup) { target in
             MarkupView(image: target.image) { marked in
                 guard target.index < files.count, let data = marked.jpegData(compressionQuality: 0.9),
                       let att = Media.imageAttachment(from: data, filename: target.filename) else { return }
@@ -1005,6 +1010,175 @@ struct ComposerDock: View {
         } message: { Text(attachError ?? "") }
     }
 
+    @ViewBuilder private var composerLayout: some View {
+        #if os(macOS)
+        macComposer
+        #else
+        VStack(alignment: .leading, spacing: 8) {
+            if hasAttachments || recorder.isRecording { attachmentStrip }
+            if dictation.isListening { dictationStrip }
+            textInput
+                .padding(.horizontal, 6).padding(.top, 6)
+            HStack(spacing: 6) {
+                if canAttach {
+                    if recorder.isRecording {
+                        recordingControls
+                    } else if dictation.isListening {
+                        dictationControls
+                    } else {
+                        attachButton
+                        micButton
+                    }
+                }
+                if !isChat, model.supportsQueue, !recorder.isRecording, !dictation.isListening {
+                    paletteButton
+                }
+                modelMenu
+                modeMenu
+                if let context = model.contextUsage(sessionId), context.fraction >= 0.5 {
+                    contextChip(context)
+                }
+                Spacer(minLength: 0)
+                sendControls
+            }
+        }
+        .padding(8)
+        .background(CDS.surface2, in: RoundedRectangle(cornerRadius: CDS.radiusComposer))
+        .overlay(RoundedRectangle(cornerRadius: CDS.radiusComposer).strokeBorder(focused.wrappedValue ? CDS.borderStrong : CDS.border))
+        .shadow(color: .black.opacity(0.05), radius: 8, y: 2)
+        #endif
+    }
+
+    #if os(macOS)
+    /// The desktop app's composer: a rounded field with "+" on the left and the mic and send on the right,
+    /// and under it the permission mode on the left and the model on the right.
+    private var macComposer: some View {
+        VStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
+                if hasAttachments || recorder.isRecording { attachmentStrip }
+                if dictation.isListening { dictationStrip }
+                HStack(alignment: .center, spacing: 8) {
+                    if canAttach {
+                        if recorder.isRecording {
+                            recordingControls
+                        } else if dictation.isListening {
+                            dictationControls
+                        } else {
+                            attachButton
+                        }
+                    }
+                    textInput
+                    if canAttach, !recorder.isRecording, !dictation.isListening { micButton }
+                    sendControls
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(CDS.surface2, in: RoundedRectangle(cornerRadius: CDS.radiusComposer + 4))
+            .overlay(RoundedRectangle(cornerRadius: CDS.radiusComposer + 4).strokeBorder(focused.wrappedValue ? CDS.borderStrong : CDS.border))
+            .shadow(color: .black.opacity(0.06), radius: 10, y: 2)
+            HStack(spacing: 6) {
+                modeMenu
+                if !isChat, model.supportsQueue { paletteButton }
+                Spacer(minLength: 0)
+                if let context = model.contextUsage(sessionId), context.fraction >= 0.5 {
+                    contextChip(context)
+                }
+                modelMenu
+            }
+            .padding(.horizontal, 6)
+        }
+    }
+    #endif
+
+    private var textInput: some View {
+        HStack(alignment: .top, spacing: 6) {
+            TextField(suggestion ?? (isDesktop ? "Message this session" : "Message \(agent.label)"), text: $draft, axis: .vertical)
+                .lineLimit(1...8)
+                .textFieldStyle(.plain)
+                .font(CDS.prose)
+                .foregroundStyle(CDS.textPrimary)
+                .focused(focused)
+                #if os(macOS)
+                // Return sends, ⌥Return starts a new line — like the desktop app.
+                .onSubmit { if canSend { onSend() } }
+                #endif
+                // Hardware keyboards (the Mac, an iPad or iPhone with one): the terminal's keys.
+                .onKeyPress(.tab) { acceptCompletionOrSuggestion() ? .handled : .ignored }
+                .onKeyPress(.upArrow) { moveHighlight(-1) || recallLastPrompt() ? .handled : .ignored }
+                .onKeyPress(.downArrow) { moveHighlight(1) ? .handled : .ignored }
+                .onKeyPress(.return, phases: .down) { press in
+                    // Return picks a highlighted completion; ⌥/⇧Return still make a new line.
+                    guard press.modifiers.isEmpty, !suggestionRows.isEmpty else { return .ignored }
+                    suggestionRows[min(highlightedRow, suggestionRows.count - 1)].pick()
+                    return .handled
+                }
+                .onKeyPress(.escape) { escapePressed() ? .handled : .ignored }
+            if let suggestion {
+                // As in the desktop app: Tab takes the suggestion into the field (a tap does on a touch screen).
+                Button {
+                    draft = suggestion
+                    focused.wrappedValue = true
+                } label: {
+                    Text("tab")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(CDS.textSecondary)
+                        .padding(.horizontal, 6).frame(height: 20)
+                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(CDS.borderStrong))
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Use suggestion")
+            }
+        }
+    }
+
+    /// The model picker (hosted sessions; a session owned by the host can't be reconfigured from here).
+    @ViewBuilder private var modelMenu: some View {
+        if isDesktop {
+            EmptyView()
+        } else if isCodex {
+            Menu { codexModelSection } label: { ComposerChipLabel(text: modelLabel) }.plainMenu()
+        } else {
+            Menu { modelSection } label: { ComposerChipLabel(text: modelLabel) }.plainMenu()
+        }
+    }
+
+    /// Permission mode (Claude) or approval policy (Codex); a chat has no tools, so nothing to approve.
+    @ViewBuilder private var modeMenu: some View {
+        if isDesktop || isChat {
+            EmptyView()
+        } else if isCodex {
+            Menu { codexControlSection } label: { ComposerChipLabel(text: codexModeLabel, systemImage: codexModeIcon) }.plainMenu()
+        } else {
+            Menu { permissionSection } label: { ComposerChipLabel(text: modeLabel, systemImage: modeIcon) }.plainMenu()
+        }
+    }
+
+    @ViewBuilder private var sendControls: some View {
+        if isRunning, !isDesktop {   // a Desktop session can only be interrupted on the Mac
+            Button { model.interrupt(sessionId) } label: {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(CDS.onPrimary)
+                    .frame(width: 32, height: 32)
+                    .background(CDS.fillPrimary, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Stop")
+        }
+        Button(action: onSend) {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(canSend ? .white : CDS.textMuted)
+                .frame(width: 32, height: 32)
+                .background(canSend ? agent.tint : CDS.fillControl, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSend)
+        .accessibilityLabel("Send")
+    }
+
     // MARK: attach controls
 
     /// Opens the palette: the project's commands, skills and sub-agents, plus your saved prompts.
@@ -1014,7 +1188,7 @@ struct ComposerDock: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(CDS.textSecondary)
                 .frame(width: 32, height: 32)
-                .background(CDS.fillControl, in: Circle())
+                .background(CDS.composerIconFill, in: Circle())
         }
         .buttonStyle(.plain)
         .disabled(!model.isConnected)
@@ -1043,6 +1217,7 @@ struct ComposerDock: View {
             .background(CDS.fillNeutral, in: Capsule())
             .contentShape(Capsule())
         }
+        .plainMenu()
         .accessibilityLabel("Context \(usage.percentLabel) full")
     }
 
@@ -1065,8 +1240,10 @@ struct ComposerDock: View {
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(CDS.textSecondary)
                 .frame(width: 32, height: 32)
-                .background(CDS.fillControl, in: Circle())
+                .background(CDS.composerIconFill, in: Circle())
+                .contentShape(Circle())
         }
+        .plainMenu()
         .accessibilityLabel("Attach a photo, video, or file")
     }
 
@@ -1080,10 +1257,12 @@ struct ComposerDock: View {
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(CDS.textSecondary)
                 .frame(width: 32, height: 32)
-                .background(CDS.fillControl, in: Circle())
+                .background(CDS.composerIconFill, in: Circle())
+                .contentShape(Circle())
         } primaryAction: {
             Task { await startDictation() }
         }
+        .plainMenu()
         .accessibilityLabel("Dictate (hold for a voice memo)")
     }
 
@@ -1213,6 +1392,7 @@ struct ComposerDock: View {
     }
 
     private var suggestionRows: [SuggestionRow] {
+        if completionsDismissed { return [] }
         if !slashMatches.isEmpty {
             return slashMatches.map { cmd in
                 SuggestionRow(id: "/\(cmd)", icon: "terminal", title: "/\(cmd)", mono: true) { draft = "/\(cmd) " }
@@ -1231,7 +1411,7 @@ struct ComposerDock: View {
         if !rows.isEmpty {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(rows) { row in
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                         Button(action: row.pick) {
                             HStack(spacing: 8) {
                                 Image(systemName: row.icon)
@@ -1242,9 +1422,11 @@ struct ComposerDock: View {
                                 Spacer(minLength: 0)
                             }
                             .padding(.horizontal, 10).padding(.vertical, 9)
+                            .background(index == min(highlightedRow, rows.count - 1) ? CDS.fillNeutral : .clear)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .id(row.id)
                         if row.id != rows.last?.id { Divider().overlay(CDS.border).padding(.leading, 36) }
                     }
                 }
@@ -1255,6 +1437,53 @@ struct ComposerDock: View {
         }
     }
 
+    /// Tab: the highlighted "/" or "@" completion, else the predicted next prompt into the empty field.
+    private func acceptCompletionOrSuggestion() -> Bool {
+        let rows = suggestionRows
+        if !rows.isEmpty {
+            rows[min(highlightedRow, rows.count - 1)].pick()
+            return true
+        }
+        if let suggestion {
+            draft = suggestion
+            return true
+        }
+        return false
+    }
+
+    private func moveHighlight(_ delta: Int) -> Bool {
+        let count = suggestionRows.count
+        guard count > 0 else { return false }
+        highlightedRow = (min(highlightedRow, count - 1) + delta + count) % count
+        return true
+    }
+
+    /// ↑ in an empty field brings back the last prompt to edit and send again, as in the terminal.
+    private func recallLastPrompt() -> Bool {
+        guard draft.isEmpty else { return false }
+        let items = model.transcripts[sessionId]?.items ?? []
+        for item in items.reversed() {
+            if case .user(let text, _) = item.kind, !text.isEmpty {
+                draft = text
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Esc closes the completions; with none open it stops the running turn (a hosted session's).
+    private func escapePressed() -> Bool {
+        if !suggestionRows.isEmpty {
+            completionsDismissed = true
+            return true
+        }
+        if isRunning, !isDesktop {
+            model.interrupt(sessionId)
+            return true
+        }
+        return false
+    }
+
     private func insertMention(_ path: String) {
         guard let at = draft.lastIndex(of: "@") else { return }
         draft = String(draft[..<at]) + "@" + path + " "
@@ -1262,6 +1491,8 @@ struct ComposerDock: View {
 
     /// Debounced file search for the "@" picker; cancels when the mention token goes away.
     private func handleDraftChange() {
+        highlightedRow = 0
+        if slashQuery == nil, mentionQuery == nil { completionsDismissed = false }
         guard let q = mentionQuery else { fileSearchTask?.cancel(); return }
         fileSearchTask?.cancel()
         fileSearchTask = Task { @MainActor in
@@ -1383,6 +1614,28 @@ struct ComposerDock: View {
                 }
             }
             pickerItems = []
+        }
+    }
+
+    /// Dropped or pasted items: files by URL (any kind), pictures as downscaled JPEGs.
+    private func loadDropped(_ providers: [NSItemProvider]) {
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in loadFiles(.success([url])) }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                    Task { @MainActor in
+                        if let data, let att = Media.imageAttachment(from: data, filename: "image-\(shortStamp()).jpg") {
+                            files.append(att)
+                        } else {
+                            attachError = "That image could not be read."
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1637,8 +1890,8 @@ struct MacFilePicker: View {
             .onChange(of: query) { _, q in model.requestFiles(sessionId, query: q) }
             .onAppear { model.requestFiles(sessionId, query: "") }
             .navigationTitle("Attach from Mac")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
     }
@@ -1691,3 +1944,47 @@ private struct LinkedFile: Identifiable {
     let link: FileLink
     var id: String { "\(link.path):\(link.line ?? 0)" }
 }
+
+/// The transcript's rows. Lazy on the phone; on the Mac every row is laid out up front, because a lazy
+/// stack measures rows only as they scroll in and the changing height makes the wheel jump around.
+private struct TranscriptStack<Content: View>: View {
+    let spacing: CGFloat
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        #if os(macOS)
+        VStack(alignment: .leading, spacing: spacing, content: content).scrollTargetLayout()
+        #else
+        LazyVStack(alignment: .leading, spacing: spacing, content: content).scrollTargetLayout()
+        #endif
+    }
+}
+
+/// The end-of-transcript marker's top in the scroll view; far away (or not laid out) reads as "not at the bottom".
+private struct TranscriptBottomKey: PreferenceKey {
+    static let defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+private struct TranscriptViewportKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+private extension View {
+    /// Bottom-anchored so a session opens on the latest reply. Where the OS allows it, the anchor only
+    /// sets where the transcript opens — growing content is followed by the chat itself, and only while
+    /// the reader is at the end, instead of the anchor dragging the view back down.
+    @ViewBuilder func transcriptScrollAnchor(_ anchor: UnitPoint) -> some View {
+        if #available(iOS 18.0, macOS 15.0, *) {
+            #if os(macOS)
+            defaultScrollAnchor(anchor, for: .initialOffset)
+            #else
+            defaultScrollAnchor(anchor)
+            #endif
+        } else {
+            defaultScrollAnchor(anchor)
+        }
+    }
+}
+

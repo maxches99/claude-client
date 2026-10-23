@@ -43,8 +43,8 @@ struct ApprovalsInboxView: View {
             }
             .background(CDS.surface0)
             .navigationTitle(approvals.isEmpty ? "Inbox" : "Waiting · \(approvals.count)")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
             }

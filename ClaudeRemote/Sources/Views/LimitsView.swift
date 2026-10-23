@@ -37,11 +37,11 @@ struct LimitsView: View {
             }
             .background(CDS.surface0)
             .navigationTitle("Plan limits")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Button { model.requestUsage(sessionId) } label: { Image(systemName: "arrow.clockwise") }
                 }
             }

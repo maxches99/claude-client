@@ -407,3 +407,6 @@ final class HostModel {
         }
     }
 }
+
+/// The daemon asks the Host app to update itself (from the menu or from a phone).
+extension AppUpdater: HostUpdater {}

@@ -65,15 +65,15 @@ struct ReviewView: View {
                     }
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Review")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Menu {
                         Button("Add a general remark…", systemImage: "text.bubble") { remarkText = ""; generalRemark = true }
                         Button("Reload", systemImage: "arrow.clockwise") { model.requestReview(sessionId, base: review?.base) }
@@ -185,10 +185,10 @@ struct ReviewFileView: View {
             }
         }
         .navigationTitle(file.fileName)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(CDS.surface0, for: .navigationBar)
+        .inlineNavigationTitle()
+        .navigationBarBackground(CDS.surface0)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingBar) {
                 Button { text = ""; fileRemark = true } label: { Image(systemName: "text.bubble") }
                     .accessibilityLabel("Remark on the file")
             }

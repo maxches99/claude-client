@@ -127,7 +127,7 @@ struct HandoverView: View {
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Hand over")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .onAppear {
@@ -199,7 +199,7 @@ struct PackageImportView: View {
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Take over a session")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { model.incomingPackage = nil } } }
         }
         .onAppear { model.importResult = nil }
@@ -258,7 +258,7 @@ struct PeopleView: View {
         .scrollContentBackground(.hidden)
         .background(CDS.surface0)
         .navigationTitle("People")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .onAppear {
             model.invitation = nil
             model.requestUsers()
@@ -298,7 +298,7 @@ struct MemberAccountView: View {
             }
             Section {
                 SecureField("Token from claude setup-token", text: $token)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .noAutocapitalization().autocorrectionDisabled()
                 Button("Use my account") { model.setOwnClaudeToken(token); token = "" }
                     .disabled(token.trimmingCharacters(in: .whitespaces).count < 20)
                 if me?.ownClaudeLogin == true {
@@ -311,7 +311,7 @@ struct MemberAccountView: View {
         .scrollContentBackground(.hidden)
         .background(CDS.surface0)
         .navigationTitle("Your account")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .onAppear { model.requestUsers() }
     }
 }

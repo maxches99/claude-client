@@ -83,7 +83,7 @@ struct DuelView: View {
                     if duel.status == .decided, let verdict = duel.verdict { verdictSection(duel, verdict) }
                     ForEach(model.tasks(of: duel)) { side in lane(duel, side) }
                 }
-                .listStyle(.insetGrouped)
+                .groupedListStyle()
                 .scrollContentBackground(.hidden)
             } else {
                 Text("This duel is gone.").font(CDS.body).foregroundStyle(CDS.textMuted)
@@ -91,10 +91,10 @@ struct DuelView: View {
         }
         .background(CDS.surface0)
         .navigationTitle("Duel")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(CDS.surface0, for: .navigationBar)
+        .inlineNavigationTitle()
+        .navigationBarBackground(CDS.surface0)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingBar) {
                 Menu {
                     if let duel, duel.status == .decided || duel.status == .failed {
                         Section("Ask the judge again") {
@@ -318,7 +318,7 @@ struct DuelEditor: View {
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("New duel")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

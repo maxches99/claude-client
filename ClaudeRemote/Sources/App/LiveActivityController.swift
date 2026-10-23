@@ -1,6 +1,6 @@
 import Foundation
 import ClaudeRemoteCore
-#if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
+#if os(iOS) && !targetEnvironment(macCatalyst)
 import ActivityKit
 import UIKit
 

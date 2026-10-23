@@ -1,11 +1,15 @@
 #!/usr/bin/swift
-// Renders the ClaudeRemote Host app icon (a phone with radio waves on a clay squircle) into
-// ClaudeRemoteHost/Assets.xcassets/AppIcon.appiconset. Run from the repo root:
-//   swift scripts/make-icon.swift
-// Pure geometry — no SF Symbols (they may not be used in app icons).
+// Renders the app icons on a clay squircle. Run from the repo root:
+//   swift scripts/make-icon.swift            # Host: a phone with radio waves → ClaudeRemoteHost/Assets.xcassets
+//   swift scripts/make-icon.swift --client   # Mac client: a window with a sidebar and a chat → ClaudeRemoteMac/Assets.xcassets
+// An extra argument overrides the output folder. Pure geometry — no SF Symbols (they may not be used in app icons).
 import AppKit
 
-let root = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "ClaudeRemoteHost/Assets.xcassets/AppIcon.appiconset")
+var arguments = Array(CommandLine.arguments.dropFirst())
+let client = arguments.first == "--client"
+if client { arguments.removeFirst() }
+let defaultRoot = client ? "ClaudeRemoteMac/Assets.xcassets/AppIcon.appiconset" : "ClaudeRemoteHost/Assets.xcassets/AppIcon.appiconset"
+let root = URL(fileURLWithPath: arguments.first ?? defaultRoot)
 try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
 func draw(size: CGFloat) -> NSImage {
@@ -21,6 +25,12 @@ func draw(size: CGFloat) -> NSImage {
     let clay = NSColor(srgbRed: 0.85, green: 0.47, blue: 0.34, alpha: 1)        // #D97757
     let clayDark = NSColor(srgbRed: 0.72, green: 0.36, blue: 0.23, alpha: 1)
     NSGradient(starting: clay, ending: clayDark)!.draw(in: squircle, angle: -90)
+
+    if client {
+        drawWindow(scale: s)
+        image.unlockFocus()
+        return image
+    }
 
     // Phone body: rounded outline, centre-left.
     let ink = NSColor(white: 1, alpha: 0.96)
@@ -48,6 +58,32 @@ func draw(size: CGFloat) -> NSImage {
 
     image.unlockFocus()
     return image
+}
+
+/// The Mac client's glyph: a window with a sidebar of rows and a chat of two bubbles.
+func drawWindow(scale s: CGFloat) {
+    let ink = NSColor(white: 1, alpha: 0.96)
+    let window = NSRect(x: 232 * s, y: 292 * s, width: 560 * s, height: 440 * s)
+    let frame = NSBezierPath(roundedRect: window, xRadius: 48 * s, yRadius: 48 * s)
+    frame.lineWidth = 36 * s
+    ink.setStroke()
+    frame.stroke()
+    // Sidebar divider.
+    let divider = NSBezierPath()
+    divider.move(to: NSPoint(x: window.minX + 180 * s, y: window.minY))
+    divider.line(to: NSPoint(x: window.minX + 180 * s, y: window.maxY))
+    divider.lineWidth = 28 * s
+    divider.stroke()
+    ink.setFill()
+    // Sidebar rows.
+    for i in 0..<3 {
+        let y = window.maxY - (100 + CGFloat(i) * 80) * s
+        NSBezierPath(roundedRect: NSRect(x: window.minX + 50 * s, y: y, width: 90 * s, height: 26 * s), xRadius: 13 * s, yRadius: 13 * s).fill()
+    }
+    // Chat: a reply on the left, the prompt on the right.
+    NSBezierPath(roundedRect: NSRect(x: window.minX + 230 * s, y: window.maxY - 170 * s, width: 210 * s, height: 70 * s), xRadius: 35 * s, yRadius: 35 * s).fill()
+    NSColor(white: 1, alpha: 0.7).setFill()
+    NSBezierPath(roundedRect: NSRect(x: window.maxX - 250 * s, y: window.minY + 80 * s, width: 200 * s, height: 70 * s), xRadius: 35 * s, yRadius: 35 * s).fill()
 }
 
 func png(_ image: NSImage, pixels: Int) -> Data {

@@ -1,8 +1,14 @@
 import Foundation
 import Observation
-import UIKit
+import SwiftUI
 import WidgetKit
 import ClaudeRemoteCore
+
+/// The two halves of the app: work sessions in a project, and tool-less quick chats.
+enum AppTab: Hashable {
+    case sessions
+    case chats
+}
 
 @MainActor
 @Observable
@@ -111,6 +117,8 @@ final class AppModel {
     var outboxAwaitingAttach: Set<String> = []
     /// Sessions and chats are separate tabs, each with its own navigation stack.
     var tab: AppTab = .sessions
+    /// Sessions whose history was asked for and has not arrived yet (the chat shows a skeleton).
+    var loadingHistory: Set<String> = []
     var sessionPath: [String] = []
     var chatPath: [String] = []
     /// Everything currently on screen, for re-attaching after a reconnect.
@@ -157,9 +165,11 @@ final class AppModel {
         AppModel.shared = self
         liveActivities.onPushToken = { [weak self] sessionId, token in self?.registerActivityToken(sessionId, token: token) }
         liveActivities.adoptExisting()
+        #if os(iOS)
         LiveActivityDecisions.shared.handler = { sessionId, requestId, allow in
             await AppModel.shared?.decideFromActivity(sessionId: sessionId, requestId: requestId, allow: allow)
         }
+        #endif
         let saved = PairedMacs.load()
         macs = saved.macs
         activeMacId = saved.activeId ?? saved.macs.first?.id
@@ -532,6 +542,7 @@ final class AppModel {
         projects = []
         states = [:]
         transcripts = [:]
+        loadingHistory = []
         lastSeq = [:]
         rawEntries = [:]
         cacheDirty = []
@@ -595,7 +606,18 @@ final class AppModel {
     func open(_ sessionId: String) {
         if transcripts[sessionId] == nil { transcripts[sessionId] = Transcript() }
         if !isConnected { _ = openFromCache(sessionId) }
+        if isConnected, transcripts[sessionId]?.items.isEmpty ?? true { markLoading(sessionId) }
         sendMessage(.open(sessionId: sessionId))
+    }
+
+    /// The chat shows placeholder rows until the host answers with the history — or gives up after a
+    /// while, so a host that never replies leaves the ordinary empty state rather than an endless shimmer.
+    private func markLoading(_ sessionId: String) {
+        loadingHistory.insert(sessionId)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            self?.loadingHistory.remove(sessionId)
+        }
     }
 
     /// Attach once per visit; a reload is explicit (menu) so re-entering a chat doesn't flash.
@@ -619,6 +641,11 @@ final class AppModel {
     /// Opens a session on its own tab (chats and work sessions never share a stack).
     func present(_ sessionId: String, kind: SessionKind) {
         tab = kind == .chat ? .chats : .sessions
+        #if os(macOS)
+        // The Mac shows one session beside the sidebar: opening another replaces it rather than stacking.
+        if kind == .chat { chatPath = [sessionId] } else { sessionPath = [sessionId] }
+        return
+        #endif
         if kind == .chat {
             if !chatPath.contains(sessionId) { chatPath.append(sessionId) }
         } else if !sessionPath.contains(sessionId) {
@@ -1087,6 +1114,7 @@ final class AppModel {
             flushOutbox(macId)
             if parkedTasks { requestTasks() }
         case .error(let text, let sessionId):
+            if let sessionId { loadingHistory.remove(sessionId) }
             if let sessionId, outboxAwaitingAttach.contains(sessionId) { parkedSessionFailed(sessionId) }
             if isActive { errorBanner = text }
         case .sessions(let items):
@@ -1106,6 +1134,7 @@ final class AppModel {
             var transcript = Transcript()
             transcript.apply(entries: entries)
             transcripts[sessionId] = transcript
+            loadingHistory.remove(sessionId)
             lastSeq[sessionId] = nil
             remember(sessionId, entries: entries, replace: true)
             if awaitingCreatedSession {
@@ -1120,6 +1149,7 @@ final class AppModel {
             defer { releaseParkedPrompts(sessionId, from: macId) }
             guard isActive else { return }
             guard transcripts[sessionId] != nil else { return }
+            loadingHistory.remove(sessionId)
             transcripts[sessionId]?.apply(entries: entries)
             lastSeq[sessionId] = seq
             remember(sessionId, entries: entries, replace: false)
@@ -1370,8 +1400,10 @@ final class AppModel {
     /// A decision made from the Dynamic Island / lock screen. The intent may have launched the app in
     /// the background, so wait for the connection to come up before sending.
     func decideFromActivity(sessionId: String, requestId: String, allow: Bool) async {
+        #if os(iOS)
         let task = UIApplication.shared.beginBackgroundTask(withName: "ccremote.activity.decide")
         defer { if task != .invalid { UIApplication.shared.endBackgroundTask(task) } }
+        #endif
         for _ in 0..<60 where !isConnected {   // up to ~15 s
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
@@ -1391,24 +1423,30 @@ final class AppModel {
 
     /// Keep the socket a little longer after the app leaves the foreground while an activity is
     /// showing, so the last few updates land before iOS suspends us.
+    #if os(iOS)
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    #endif
 
     func enteredBackground() {
         markSeen()
         flushCache()
         updateWidget()
+        #if os(iOS)
         guard !liveActivities.activeSessionIds.isEmpty, backgroundTask == .invalid else { return }
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "ccremote.activity.linger") { [weak self] in
             self?.endBackgroundTask()
         }
+        #endif
     }
 
     func enteredForeground() { endBackgroundTask() }
 
     private func endBackgroundTask() {
+        #if os(iOS)
         guard backgroundTask != .invalid else { return }
         UIApplication.shared.endBackgroundTask(backgroundTask)
         backgroundTask = .invalid
+        #endif
     }
 
     // MARK: simulator live view

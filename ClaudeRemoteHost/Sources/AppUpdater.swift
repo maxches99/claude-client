@@ -1,20 +1,21 @@
 import AppKit
 import CryptoKit
 import ClaudeRemoteCore
-import ClaudeRemoteDaemon
 
-/// Updates the Host app from the newest GitHub release: downloads `ClaudeRemote-Host.zip`, checks it
-/// against the release's `SHA256SUMS`, swaps the bundle in place and relaunches. Asked for from the
-/// menu or from a phone.
-final class AppUpdater: HostUpdater, @unchecked Sendable {
+/// Updates a Mac app from the newest GitHub release: downloads its zip (`ClaudeRemote-Host.zip` for the
+/// Host, `ClaudeRemote-Mac.zip` for the client), checks it against the release's `SHA256SUMS`, swaps the
+/// bundle in place and relaunches. Compiled into both Mac apps.
+final class AppUpdater: @unchecked Sendable {
     static let repository = "maxches99/claude-client"
-    static let asset = "ClaudeRemote-Host.zip"
+    /// The release asset this app ships as.
+    let asset: String
 
     private let log: @Sendable (String) -> Void
     private let lock = NSLock()
     private var running = false
 
-    init(log: @escaping @Sendable (String) -> Void) {
+    init(asset: String = "ClaudeRemote-Host.zip", log: @escaping @Sendable (String) -> Void) {
+        self.asset = asset
         self.log = log
     }
 
@@ -56,7 +57,8 @@ final class AppUpdater: HostUpdater, @unchecked Sendable {
     func check() async -> HostUpdate {
         do {
             let release = try await latestRelease()
-            let newer = HostUpdate.isNewer(release.tag, than: current)
+            // A release without this app's zip (older releases had no Mac client) is nothing to offer.
+            let newer = HostUpdate.isNewer(release.tag, than: current) && release.assets[asset] != nil
             return HostUpdate(state: newer ? .available : .upToDate, current: current, latest: release.tag.trimmingCharacters(in: CharacterSet(charactersIn: "v")),
                               notesURL: release.page)
         } catch {
@@ -81,20 +83,20 @@ final class AppUpdater: HostUpdater, @unchecked Sendable {
             let bundle = Bundle.main.bundleURL
             let parent = bundle.deletingLastPathComponent().path
             guard FileManager.default.isWritableFile(atPath: parent) else { throw UpdateError.notWritable(parent) }
-            guard let zipURL = release.assets[Self.asset] else { throw UpdateError.noAsset }
+            guard let zipURL = release.assets[asset] else { throw UpdateError.noAsset }
 
             progress(HostUpdate(state: .updating, current: current, latest: latest, message: "Downloading \(release.tag)…"))
             log("update: downloading \(release.tag)")
             let work = FileManager.default.temporaryDirectory.appendingPathComponent("ccremote-update-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
             let (zipTemp, _) = try await URLSession.shared.download(from: zipURL)
-            let zip = work.appendingPathComponent(Self.asset)
+            let zip = work.appendingPathComponent(asset)
             try FileManager.default.moveItem(at: zipTemp, to: zip)
 
             if let sumsURL = release.assets["SHA256SUMS"] {
                 let (sums, _) = try await URLSession.shared.data(from: sumsURL)
                 let expected = String(decoding: sums, as: UTF8.self).split(separator: "\n")
-                    .first { $0.hasSuffix(Self.asset) }.map { String($0.split(separator: " ").first ?? "") }
+                    .first { $0.hasSuffix(self.asset) }.map { String($0.split(separator: " ").first ?? "") }
                 let actual = SHA256.hash(data: try Data(contentsOf: zip)).map { String(format: "%02x", $0) }.joined()
                 guard let expected, expected == actual else { throw UpdateError.checksum }
             }

@@ -255,8 +255,8 @@ struct QuestionSheet: View {
                     .overlay(alignment: .top) { Divider().overlay(CDS.border) }
             }
             .navigationTitle("Question")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
         }
     }
 }
@@ -340,10 +340,10 @@ struct PlanSheet: View {
             .background(CDS.surface0)
             .safeAreaInset(edge: .bottom) { actionBar }
             .navigationTitle("Plan")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     ShareLink(item: plan, preview: SharePreview("Plan", image: Image(systemName: "list.bullet.clipboard"))) {
                         Image(systemName: "square.and.arrow.up")
                     }

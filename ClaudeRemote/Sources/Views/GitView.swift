@@ -40,13 +40,13 @@ struct GitView: View {
             }
             .background(CDS.surface0)
             .navigationTitle("Git")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .sheet(isPresented: $showWorktrees) { WorktreesView(sessionId: sessionId) }
             .sheet(isPresented: $showReview) { ReviewView(sessionId: sessionId) }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     if busy {
                         ProgressView().controlSize(.small)
                     } else {
@@ -84,7 +84,7 @@ struct GitView: View {
             }
             .alert("New branch", isPresented: $showNewBranch) {
                 TextField("branch-name", text: $newBranchName)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .noAutocapitalization().autocorrectionDisabled()
                 Button("Create") { run(.createBranch(name: newBranchName)); newBranchName = "" }
                 Button("Cancel", role: .cancel) { newBranchName = "" }
             } message: {
@@ -177,7 +177,7 @@ struct GitView: View {
                 }
             }
             .navigationTitle("New pull request")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showNewPR = false } }
                 ToolbarItem(placement: .confirmationAction) {
@@ -482,8 +482,8 @@ struct GitFileDiffView: View {
             }
         }
         .navigationTitle(file.fileName)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(CDS.surface0, for: .navigationBar)
+        .inlineNavigationTitle()
+        .navigationBarBackground(CDS.surface0)
         .toolbar {
             if hasBothSides {
                 ToolbarItem(placement: .principal) {
@@ -494,7 +494,7 @@ struct GitFileDiffView: View {
                     .pickerStyle(.segmented).frame(width: 180)
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingBar) {
                 if model.gitBusy.contains(sessionId) {
                     ProgressView().controlSize(.small)
                 } else if showStaged {
@@ -503,7 +503,7 @@ struct GitFileDiffView: View {
                     Button("Stage") { model.runGit(sessionId, .stage(paths: [file.path])) }
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingBar) {
                 if let diff, !diff.isEmpty {
                     ShareLink(item: diff, preview: SharePreview("\(file.fileName).diff")) {
                         Image(systemName: "square.and.arrow.up")

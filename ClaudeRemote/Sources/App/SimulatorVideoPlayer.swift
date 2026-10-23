@@ -1,4 +1,3 @@
-import UIKit
 import SwiftUI
 import AVFoundation
 import CoreMedia
@@ -12,13 +11,13 @@ import ClaudeRemoteCore
 final class SimulatorVideoPlayer {
     let layer = AVSampleBufferDisplayLayer()
     /// The host view currently showing the layer (see `SimulatorVideoView`).
-    weak var activeHost: UIView?
+    weak var activeHost: SimulatorVideoView.LayerHostView?
     /// Every host view alive, so the layer can be handed to another one when its owner goes away —
     /// SwiftUI does not re-run `updateUIView` on a covered host just because the cover went.
     let hosts = NSHashTable<SimulatorVideoView.LayerHostView>.weakObjects()
 
     /// `host` stops showing the layer: give it to another host that is on screen, if any.
-    func rehome(from host: UIView) {
+    func rehome(from host: SimulatorVideoView.LayerHostView) {
         if activeHost === host { activeHost = nil }
         guard let next = hosts.allObjects.first(where: { $0 !== host && $0.window != nil }) else { return }
         activeHost = next
@@ -99,16 +98,26 @@ final class SimulatorVideoPlayer {
 /// One player layer can only live in one view: the host that most recently came on screen owns it
 /// (the full-screen view takes it from the sheet, which re-renders every second and would otherwise
 /// steal it back), and hands it back when it leaves the window.
-struct SimulatorVideoView: UIViewRepresentable {
+#if os(iOS)
+typealias PlatformViewRepresentable = UIViewRepresentable
+typealias PlatformView = UIView
+#else
+typealias PlatformViewRepresentable = NSViewRepresentable
+typealias PlatformView = NSView
+#endif
+
+struct SimulatorVideoView: PlatformViewRepresentable {
     let player: SimulatorVideoPlayer
 
-    func makeUIView(context: Context) -> LayerHostView {
+    private func makeHost() -> LayerHostView {
         let view = LayerHostView()
-        view.backgroundColor = .black
         view.player = player
         player.hosts.add(view)
         return view
     }
+
+    #if os(iOS)
+    func makeUIView(context: Context) -> LayerHostView { makeHost() }
 
     func updateUIView(_ uiView: LayerHostView, context: Context) {
         uiView.player = player
@@ -118,12 +127,62 @@ struct SimulatorVideoView: UIViewRepresentable {
     static func dismantleUIView(_ uiView: LayerHostView, coordinator: ()) {
         uiView.release()
     }
+    #else
+    func makeNSView(context: Context) -> LayerHostView { makeHost() }
 
-    final class LayerHostView: UIView {
+    func updateNSView(_ nsView: LayerHostView, context: Context) {
+        nsView.player = player
+        nsView.claimLayer()
+    }
+
+    static func dismantleNSView(_ nsView: LayerHostView, coordinator: ()) {
+        nsView.release()
+    }
+    #endif
+
+    final class LayerHostView: PlatformView {
         var player: SimulatorVideoPlayer?
+
+        #if os(iOS)
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            backgroundColor = .black
+        }
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
+            windowChanged()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            relayout()
+        }
+
+        private var hostLayer: CALayer { layer }
+        #else
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            wantsLayer = true
+            layer?.backgroundColor = NSColor.black.cgColor
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            windowChanged()
+        }
+
+        override func layout() {
+            super.layout()
+            relayout()
+        }
+
+        private var hostLayer: CALayer { layer! }
+        #endif
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+        private func windowChanged() {
             if window != nil {
                 player?.activeHost = self
             } else {
@@ -132,18 +191,17 @@ struct SimulatorVideoView: UIViewRepresentable {
             claimLayer()
         }
 
-        /// Give the layer up (leaving the window, or the full-screen view closing).
-        func release() {
-            player?.rehome(from: self)
-        }
-
-        override func layoutSubviews() {
-            super.layoutSubviews()
+        private func relayout() {
             claimLayer()
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            layer.sublayers?.forEach { $0.frame = bounds }
+            hostLayer.sublayers?.forEach { $0.frame = bounds }
             CATransaction.commit()
+        }
+
+        /// Give the layer up (leaving the window, or the full-screen view closing).
+        func release() {
+            player?.rehome(from: self)
         }
 
         func claimLayer() {
@@ -152,10 +210,10 @@ struct SimulatorVideoView: UIViewRepresentable {
             if player.activeHost == nil || player.activeHost?.window == nil { player.activeHost = self }
             guard player.activeHost === self else { return }
             let playerLayer = player.layer
-            guard playerLayer.superlayer !== layer else { return }
+            guard playerLayer.superlayer !== hostLayer else { return }
             let moved = playerLayer.superlayer != nil
             playerLayer.removeFromSuperlayer()
-            layer.addSublayer(playerLayer)
+            hostLayer.addSublayer(playerLayer)
             playerLayer.frame = bounds
             if moved {
                 // The renderer stops decoding once its layer changes hosts; flush and start from a fresh key frame.

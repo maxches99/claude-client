@@ -54,7 +54,7 @@ struct IssuePicker: View {
             .background(CDS.surface0)
             .searchable(text: $query, prompt: "Filter issues")
             .navigationTitle("Issues")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
             .refreshable { model.requestIssues(cwd: cwd) }
         }
@@ -91,7 +91,7 @@ struct TemplateForm: View {
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle(template.name)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
@@ -157,14 +157,14 @@ struct AuditView: View {
                     }
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Audit")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Menu {
                         ForEach([AuditEvent.Kind.command, .write, .delete, .fetch, .tool], id: \.self) { kind in
                             Toggle(isOn: Binding(get: { kinds.contains(kind) }, set: { on in if on { kinds.insert(kind) } else { kinds.remove(kind) } })) {
@@ -350,9 +350,9 @@ struct RelayJoinView: View {
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Join a relay")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .fullScreenCover(isPresented: $scanning) {
+            .coverFullScreen(isPresented: $scanning) {
                 QRScannerView(accept: { RelaySetup.parse($0) != nil }, onScan: { payload in
                     scanning = false
                     if let setup = RelaySetup.parse(payload) { model.joinRelay(setup, mac: macId) }
@@ -395,7 +395,7 @@ struct GitHubHostView: View {
                 }
                 Section {
                     TextField("Name", text: $name).textContentType(.name)
-                    TextField("Email", text: $email).textContentType(.emailAddress).keyboardType(.emailAddress).textInputAutocapitalization(.never)
+                    TextField("Email", text: $email).textContentType(.emailAddress).keyboardKind(.email).noAutocapitalization()
                     Button("Save") { model.setGitIdentity(name: name, email: email, mac: macId) }
                         .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || !email.contains("@"))
                 } header: { Text("Commits are signed as") } footer: {
@@ -405,7 +405,7 @@ struct GitHubHostView: View {
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("GitHub")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .onAppear {

@@ -5,5 +5,6 @@ let workspace = Workspace(
     projects: [
         "ClaudeRemote",       // iOS app + widget, watch app + complication
         "ClaudeRemoteHost",   // Mac menu-bar app hosting the daemon
+        "ClaudeRemoteMac",    // native Mac client for other hosts (another Mac, the Linux hub)
     ]
 )

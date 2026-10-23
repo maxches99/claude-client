@@ -30,6 +30,7 @@ permissions, interrupt, switch model / permission mode, and start or resume sess
 | `ClaudeRemoteHost/` | **Mac menu-bar app** hosting the daemon: status, paired phones, QR, settings, open-at-login, keep-awake (Tuist project) |
 | `relay/` | Node relay for reaching the Mac off-network, and the host of share links (`relay/README.md`) |
 | `ClaudeRemote/` | iOS app + widget, watchOS app + complication (Tuist project) |
+| `ClaudeRemoteMac/` | **Native Mac client** for other hosts (another Mac, the Linux hub): compiles the iOS app's model and screens for macOS (`ClaudeRemote/Sources/App/Platform.swift` bridges the UIKit spellings), with its own window, menu commands, menu-bar approvals, Dock badge and notifications (Tuist project) |
 | `Tests/` | Reducer / protocol tests (`swift test`) |
 | `Tuist.swift`, `Workspace.swift`, `Tuist/` | Tuist config: `tuist generate` writes `ClaudeRemote.xcworkspace` with both app projects; your Apple team goes into the untracked `Tuist/team.xcconfig` |
 
@@ -128,6 +129,36 @@ This is the only way to get the Watch app on.
 
 On first launch scan the QR from the Mac (menu-bar panel or pairing window), or pick the Mac from the
 Bonjour list and enter the token.
+
+### Mac client
+
+To drive another host from a Mac — the Linux hub, a second Mac — there is a native Mac app with the
+same screens as the phone: hosts and their sessions in the sidebar, the chat on the right (Return sends,
+⌥Return is a new line), and everything from the phone's "…" menu in the **Tools** menu.
+
+```bash
+scripts/build-mac-client.sh --install   # builds dist/ClaudeRemote.app (+ ClaudeRemote-Mac.zip), installs, launches
+```
+
+Pair it by pasting the host's pairing link (Host menu → **Copy link**, or `ccremote --print-pairing` on
+the hub), by picking a Mac from the Bonjour list, or by opening the `ccremote://pair?…` link. Closing the
+window keeps it connected in the menu bar: the menu-bar item lists approvals waiting on every host with
+Allow / Deny, the Dock icon counts them, and each new one arrives as a notification with the same two
+buttons; a turn that finishes while you are in another app is announced too. Shortcuts: ⌘K go to a
+session or command, ⌘N new session, ⇧⌘N new chat, ⌘1 / ⌘2 sessions / chats, ⌥⌘↑ / ⌥⌘↓ previous / next
+session, ⌃⌘1…9 switch host, ⌃` terminal under the chat, ⌥⌘I session panel, ⇧⌘A approvals inbox,
+⇧⌘T task queue, ⌘R refresh. In the composer: Tab takes the suggested next prompt (or the highlighted
+`/` / `@` completion), ↑ in an empty field recalls the last prompt, Esc stops the turn; drop files or
+pictures on it, or paste a picture with ⌘V. A session's context menu opens it in a window of its own.
+The session panel on the right shows the host, folder and branch, the context window, and the changed
+files with their `+added −removed` lines (click one for its diff). The app updates itself from GitHub
+releases (Check for Updates… in the app menu). No camera scanning, Live Activities, Watch or widgets
+on the Mac.
+
+**Next-prompt suggestions.** Sessions started from the phone or the Mac client get the CLI's own guess
+at the next prompt; for sessions open in Claude Desktop or a terminal — which keep theirs to
+themselves — the host asks Haiku once after each turn while someone has the session open. It shows in
+the empty composer; Tab (or a tap on the `tab` key) puts it in the field.
 
 ## Sessions
 

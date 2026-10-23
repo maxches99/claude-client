@@ -52,15 +52,15 @@ struct TasksView: View {
                         .listRowBackground(CDS.surface0)
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Queue")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     if model.supportsPipelines && (model.hasBothAgents || model.supportsAutomation) && !model.simpleUI {
                         Menu {
                             Button("New task", systemImage: "plus") { showNew = true }
@@ -507,8 +507,8 @@ struct TaskEditor: View {
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle(task == nil ? "New task" : "Edit task")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
@@ -747,7 +747,7 @@ struct RunHistoryView: View {
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle(task.title)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
     }

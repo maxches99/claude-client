@@ -44,12 +44,12 @@ struct CrashesView: View {
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("Crashes")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 if !model.crashSources.isEmpty {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .trailingBar) {
                         Button { model.checkCrashesNow() } label: { Image(systemName: "arrow.clockwise") }
                             .disabled(!model.isConnected)
                             .accessibilityLabel("Check now")
@@ -163,15 +163,15 @@ struct CrashSourceEditor: View {
                 Section {
                     TextField("Organization slug", text: $organization)
                     TextField("Project slug", text: $project)
-                    TextField("Address", text: $baseURL).keyboardType(.URL)
+                    TextField("Address", text: $baseURL).keyboardKind(.url)
                 } header: { Text("Sentry project") } footer: {
                     Text("The slugs are in the project's address: sentry.io/organizations/<organization>/projects/<project>. Change the address only for a self-hosted Sentry.")
                 }
-                .textInputAutocapitalization(.never)
+                .noAutocapitalization()
                 .autocorrectionDisabled()
                 Section {
                     SecureField(source?.hasToken == true ? "Stored on the Mac — paste to replace" : "Auth token", text: $token)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .noAutocapitalization().autocorrectionDisabled()
                 } header: { Text("Token") } footer: {
                     Text("An auth token with the event:read scope (Settings → Auth Tokens). It is kept on the Mac only and never sent back to a phone.")
                 }
@@ -195,7 +195,7 @@ struct CrashSourceEditor: View {
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle(source == nil ? "Connect Sentry" : source!.label)
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("Save") { save() }.disabled(!canSave || !model.isConnected) }

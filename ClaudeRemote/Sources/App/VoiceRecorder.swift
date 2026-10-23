@@ -19,10 +19,8 @@ final class VoiceRecorder {
     /// Requests mic permission and starts recording. Returns false if denied or setup failed.
     func start() async -> Bool {
         guard await Self.ensureMicPermission() else { return false }
-        let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers])
-            try session.setActive(true, options: [])
+            try AudioSession.activate(.playAndRecord)
         } catch { return false }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("voice-\(UUID().uuidString).m4a")
         let settings: [String: Any] = [
@@ -54,7 +52,7 @@ final class VoiceRecorder {
         timer?.invalidate(); timer = nil
         recorder?.stop(); recorder = nil
         isRecording = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        AudioSession.deactivate()
         return fileURL
     }
 

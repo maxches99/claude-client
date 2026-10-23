@@ -145,10 +145,10 @@ struct TranslatorView: View {
             .background(CDS.surface0)
             .fastTranslator(fast, mine: mineCode, theirs: theirsCode)
             .navigationTitle("Translator")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { stopListening(); dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Menu {
                         Picker("Translate with", selection: $engine) { ForEach(TranslatorEngine.allCases) { Text($0.label).tag($0) } }
                         Picker("When you speak", selection: $tone) { ForEach(TranslatorTone.allCases) { Text($0.label).tag($0) } }
@@ -159,16 +159,18 @@ struct TranslatorView: View {
                     }
                     .accessibilityLabel("Translator settings")
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Toggle(isOn: $speakTranslations) { Image(systemName: speakTranslations ? "speaker.wave.2.fill" : "speaker.slash") }
                         .toggleStyle(.button)
                         .accessibilityLabel("Read translations aloud")
                 }
             }
-            .fullScreenCover(isPresented: $showCamera) {
+            #if os(iOS)
+            .coverFullScreen(isPresented: $showCamera) {
                 CameraPicker { image in send(photo: image) }.ignoresSafeArea()
             }
-            .fullScreenCover(isPresented: $showLiveCamera) { LiveCameraTranslateView(fast: fast, theirs: theirs, mine: mine) }
+            .coverFullScreen(isPresented: $showLiveCamera) { LiveCameraTranslateView(fast: fast, theirs: theirs, mine: mine) }
+            #endif
             .sheet(isPresented: $showTrip) { TripLogView(mine: mine, theirs: theirs) }
             .alert("Food notes", isPresented: $editingFood) {
                 TextField("No pork, allergic to peanuts…", text: $foodDraft)
@@ -339,8 +341,10 @@ struct TranslatorView: View {
     private var controls: some View {
         HStack(spacing: 12) {
             Menu {
-                Button("Live camera", systemImage: "text.viewfinder") { showLiveCamera = true }.disabled(!onDevice)
-                Button("Take a photo", systemImage: "camera") { showCamera = true }
+                if CameraPicker.isAvailable {
+                    Button("Live camera", systemImage: "text.viewfinder") { showLiveCamera = true }.disabled(!onDevice)
+                    Button("Take a photo", systemImage: "camera") { showCamera = true }
+                }
                 Button("From the library", systemImage: "photo") { showLibrary = true }
             } label: {
                 bigButton("camera.fill", "Photo", active: false)

@@ -47,10 +47,10 @@ struct SimulatorView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(CDS.surface0)
             .navigationTitle(device?.name ?? "Simulator")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .leadingBar) {
                     devicesMenu
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -61,10 +61,10 @@ struct SimulatorView: View {
                 if let udid = selected { SimulatorAppsView(udid: udid) }
             }
             .sheet(isPresented: $showBoot) { SimulatorBootView() }
-            .fullScreenCover(isPresented: $fullScreen) { SimulatorFullScreenView(onCapture: onCapture) }
+            .coverFullScreen(isPresented: $fullScreen) { SimulatorFullScreenView(onCapture: onCapture) }
             .alert("Open URL in \(device?.name ?? "the simulator")", isPresented: $showOpenURL) {
                 TextField("https://… or myapp://…", text: $urlDraft)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                    .noAutocapitalization().autocorrectionDisabled().keyboardKind(.url)
                 Button("Open") {
                     let url = urlDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                     if let selected, !url.isEmpty { model.sendSimulatorAction(.openURL(url: url), udid: selected) }
@@ -332,7 +332,7 @@ struct SimulatorAppsView: View {
                                 }
                             }
                         }
-                        .listStyle(.insetGrouped)
+                        .groupedListStyle()
                         .searchable(text: $query, prompt: "Name or bundle id")
                     }
                 } else {
@@ -341,7 +341,7 @@ struct SimulatorAppsView: View {
             }
             .background(CDS.surface0)
             .navigationTitle("Open an app")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
     }
@@ -380,11 +380,11 @@ struct SimulatorBootView: View {
                     }
                 }
             }
-            .listStyle(.insetGrouped)
+            .groupedListStyle()
             .searchable(text: $query, prompt: "Device or runtime")
             .background(CDS.surface0)
             .navigationTitle("Boot a simulator")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
     }
@@ -480,7 +480,7 @@ struct SimulatorFullScreenView: View {
             .padding(.top, 8).padding(.trailing, 12)
             .accessibilityLabel("Leave full screen")
         }
-        .statusBarHidden(true)
+        .hidesStatusBar(true)
         .onChange(of: feed.booted.isEmpty) { _, empty in if empty { dismiss() } }
         .onDisappear {
             // Hand the video layer back to the sheet underneath (its host gets no SwiftUI update for this).

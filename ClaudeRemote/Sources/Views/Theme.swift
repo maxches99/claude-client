@@ -64,6 +64,13 @@ enum CDS {
     static let radiusSmall: CGFloat = 6
     /// Horizontal page gutter of the transcript.
     static let gutter: CGFloat = 16
+    /// Behind the composer's round icon buttons: a filled circle on the phone, bare glyphs on the Mac
+    /// (as in the desktop app's composer).
+    #if os(macOS)
+    static let composerIconFill = Color.clear
+    #else
+    static let composerIconFill = fillControl
+    #endif
 
     // MARK: fonts
 
@@ -77,9 +84,15 @@ enum CDS {
     static let codeSmall = Font.system(.caption, design: .monospaced)
 
     private static func dynamic(light: UInt32, dark: UInt32) -> Color {
+        #if os(iOS)
         Color(uiColor: UIColor { traits in
             UIColor(hex: traits.userInterfaceStyle == .dark ? dark : light)
         })
+        #else
+        Color(nsColor: NSColor(name: nil) { appearance in
+            NSColor(hex: appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light)
+        })
+        #endif
     }
 }
 

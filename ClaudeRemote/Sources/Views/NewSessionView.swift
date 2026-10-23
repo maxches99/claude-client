@@ -61,10 +61,10 @@ struct NewSessionView: View {
                             .tag(p.path)
                         }
                     }
-                    .pickerStyle(.navigationLink)
+                    .longListPickerStyle()
                     if isCustom {
                         TextField("/Users/you/project", text: $customPath)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .noAutocapitalization().autocorrectionDisabled()
                     }
                     if let desktopHint {
                         Text(desktopHint).font(.footnote).foregroundStyle(CDS.textSecondary)
@@ -75,8 +75,8 @@ struct NewSessionView: View {
             .scrollContentBackground(.hidden)
             .background(CDS.surface0)
             .navigationTitle("New session")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(CDS.surface0, for: .navigationBar)
+            .inlineNavigationTitle()
+            .navigationBarBackground(CDS.surface0)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

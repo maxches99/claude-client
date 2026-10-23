@@ -53,3 +53,8 @@ jobs:
           xcodebuild -workspace ClaudeRemote.xcworkspace -scheme ClaudeRemoteHost \
             -destination 'platform=macOS' -derivedDataPath .build/xcode \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Build the Mac client
+        run: |
+          xcodebuild -workspace ClaudeRemote.xcworkspace -scheme ClaudeRemoteMac \
+            -destination 'platform=macOS' -derivedDataPath .build/xcode \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
