@@ -53,6 +53,19 @@ final class GitTests: XCTestCase {
         XCTAssertNil(legacy.added)
     }
 
+    func testPermissionHookMessages() throws {
+        let set = try ProtocolCoding.decode(ClientMessage.self, from: ProtocolCoding.encode(ClientMessage.setPermissionHook(enabled: true)))
+        guard case .setPermissionHook(let enabled) = set else { return XCTFail("not setPermissionHook") }
+        XCTAssertTrue(enabled)
+        let reply = try ProtocolCoding.decode(ServerMessage.self, from: ProtocolCoding.encode(ServerMessage.permissionHook(enabled: false, error: "x")))
+        guard case .permissionHook(let on, let error) = reply else { return XCTFail("not permissionHook") }
+        XCTAssertFalse(on)
+        XCTAssertEqual(error, "x")
+        // A host that predates the field says nothing about the hook.
+        let info = try JSONDecoder().decode(HostInfo.self, from: Data(#"{"hostName":"m","daemonVersion":"1","cliPath":"","protocolVersion":11}"#.utf8))
+        XCTAssertNil(info.permissionHook)
+    }
+
     func testGitMessagesRoundTrip() throws {
         let status = GitStatus(branch: "main", upstream: "origin/main", ahead: 1, files: [GitFile(path: "a.swift", indexStatus: ".", workStatus: "M")], branches: ["main", "dev"], lastCommit: "abc Subject")
         let back = try ProtocolCoding.decode(ServerMessage.self, from: ProtocolCoding.encode(ServerMessage.gitStatus(sessionId: "s", status: status, error: nil)))

@@ -15,6 +15,9 @@ struct MacSidebar: View {
     @State private var newSessionCwd: String?
     @State private var showNewSession = false
     @State private var showArchived = false
+    /// The search field shows once the magnifier at the bottom (or ⌘F in the sidebar) asks for it.
+    @State private var searching = false
+    @FocusState private var searchFocused: Bool
 
     private var isChats: Bool { model.tab == .chats }
     private var unified: Bool { model.showAllMacs && model.macs.count > 1 }
@@ -56,8 +59,9 @@ struct MacSidebar: View {
         VStack(spacing: 0) {
             header
             UpdateBanner()
-            searchField.padding(.horizontal, 10).padding(.top, 4)
-            newRow.padding(.horizontal, 10).padding(.top, 6)
+            if searching || !search.isEmpty {
+                searchField.padding(.horizontal, 10).padding(.top, 4)
+            }
             ConnectionBanner()
             if let error = model.errorBanner {
                 CDSBanner(kind: .danger, text: error, systemImage: "exclamationmark.triangle.fill") { model.errorBanner = nil }
@@ -122,6 +126,16 @@ struct MacSidebar: View {
     /// Chats / code, as the two-icon toggle in the corner of the desktop app's sidebar.
     private var header: some View {
         HStack(spacing: 8) {
+            Button {
+                if isChats { model.startChat(model.defaultAgent) } else { newSessionCwd = nil; showNewSession = true }
+            } label: {
+                Image(systemName: "square.and.pencil").font(.system(size: 13, weight: .medium)).frame(width: 26, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(CDS.textSecondary)
+            .disabled(!model.isConnected)
+            .help(isChats ? "New chat (⇧⌘N)" : "New session (⌘N)")
             Spacer()
             ApprovalsToolbarButton(isPresented: Binding(get: { ui.sheet == .inbox }, set: { ui.sheet = $0 ? .inbox : nil }))
                 .buttonStyle(.plain)
@@ -154,6 +168,8 @@ struct MacSidebar: View {
             TextField("Search", text: $search)
                 .textFieldStyle(.plain)
                 .font(CDS.body)
+                .focused($searchFocused)
+                .onExitCommand { search = ""; searching = false }
             if !search.isEmpty {
                 Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(CDS.textMuted) }
                     .buttonStyle(.plain)
@@ -161,18 +177,6 @@ struct MacSidebar: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(CDS.fillNeutral, in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var newRow: some View {
-        SidebarButton {
-            if isChats { model.startChat(model.defaultAgent) } else { newSessionCwd = nil; showNewSession = true }
-        } label: {
-            Image(systemName: "plus").font(.system(size: 13, weight: .medium)).frame(width: 16)
-            Text(isChats ? "New chat" : "New session").font(CDS.body)
-            Spacer()
-        }
-        .disabled(!model.isConnected)
-        .foregroundStyle(CDS.textPrimary)
     }
 
     // MARK: list
@@ -193,9 +197,7 @@ struct MacSidebar: View {
             } label: {
                 HStack(spacing: 5) {
                     Text(group.name).lineLimit(1)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                    Chevron(expanded: !isCollapsed)
                     if busy { Circle().fill(CDS.brand).frame(width: 6, height: 6) }
                     Spacer(minLength: 0)
                 }
@@ -229,8 +231,8 @@ struct MacSidebar: View {
                 StatusDot(status: session.status, origin: session.origin, agent: session.agent)
             }
             Text(session.title)
-                .font(CDS.body)
-                .foregroundStyle(selected ? CDS.textPrimary : CDS.textSecondary)
+                .font(CDS.prose)
+                .foregroundStyle(CDS.textPrimary)
                 .lineLimit(1)
             Spacer(minLength: 4)
             if showsProject {
@@ -298,6 +300,26 @@ struct MacSidebar: View {
 
     /// The host this window is talking to, where the desktop app shows the account: switch, add, settings.
     private var hostBar: some View {
+        HStack(spacing: 6) {
+            hostMenu
+            SettingsLink { Image(systemName: "gearshape") }
+                .buttonStyle(.plain)
+                .help("Settings (⌘,)")
+            Button {
+                searching.toggle()
+                if searching { DispatchQueue.main.async { searchFocused = true } } else { search = "" }
+            } label: { Image(systemName: "magnifyingglass") }
+                .buttonStyle(.plain)
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .help("Search sessions and transcripts (⇧⌘F)")
+        }
+        .font(.system(size: 13))
+        .foregroundStyle(CDS.textSecondary)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .overlay(alignment: .top) { Rectangle().fill(CDS.border).frame(height: 1) }
+    }
+
+    private var hostMenu: some View {
         Menu {
             ForEach(model.macs) { mac in
                 Button {
@@ -311,6 +333,10 @@ struct MacSidebar: View {
                 Toggle("Show Every Host", isOn: Binding(get: { model.showAllMacs }, set: { model.showAllMacs = $0 }))
             }
             Toggle("Show Archived", isOn: $showArchived)
+            if let hook = model.permissionHookOn, !model.isMember {
+                // Sessions in the desktop app or a terminal on the host ask here before prompting there.
+                Toggle("Approve Desktop Sessions Here", isOn: Binding(get: { hook }, set: { model.setPermissionHook($0) }))
+            }
             Divider()
             Button("Add Host…") { ui.sheet = .addHost }
             SettingsLink { Text("Settings…") }
@@ -326,20 +352,18 @@ struct MacSidebar: View {
                             .frame(width: 7, height: 7)
                             .overlay(Circle().strokeBorder(CDS.surface0, lineWidth: 1.5))
                     }
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(model.activeMac?.displayName ?? "No host").font(CDS.bodyMedium).foregroundStyle(CDS.textPrimary).lineLimit(1)
-                    Text(model.connection.status.label).font(CDS.caption).foregroundStyle(CDS.textMuted).lineLimit(1)
-                }
+                // "Max · Connected ⌄", where the desktop app shows the account.
+                (Text(model.activeMac?.displayName ?? "No host").font(CDS.bodyMedium).foregroundStyle(CDS.textPrimary)
+                 + Text(" · " + model.connection.status.label).font(CDS.body).foregroundStyle(CDS.textMuted))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(CDS.textMuted)
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.up.chevron.down").font(.system(size: 10)).foregroundStyle(CDS.textMuted)
             }
             .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .overlay(alignment: .top) { Rectangle().fill(CDS.border).frame(height: 1) }
     }
 
     private func initials(_ name: String) -> String {

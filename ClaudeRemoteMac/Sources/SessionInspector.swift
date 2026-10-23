@@ -62,21 +62,8 @@ struct SessionInspector: View {
     }
 
     private var context: some View {
-        InspectorCard(title: "Context") {
+        InspectorCard(title: "Context", summary: { contextSummary }) {
             if let usage = model.contextUsage(sessionId) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("\(usage.percentLabel) used").font(CDS.bodyMedium).foregroundStyle(CDS.textPrimary)
-                    Spacer()
-                    Text(usage.label).font(CDS.caption.monospacedDigit()).foregroundStyle(CDS.textMuted)
-                }
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(CDS.fillNeutral)
-                        Capsule().fill(usage.isCritical ? CDS.dangerFill : (usage.isTight ? CDS.warningFill : CDS.accent))
-                            .frame(width: max(4, geo.size.width * usage.fraction))
-                    }
-                }
-                .frame(height: 5)
                 if usage.isTight {
                     Text("The agent compacts the conversation on its own soon.")
                         .font(CDS.caption).foregroundStyle(CDS.textMuted)
@@ -86,8 +73,6 @@ struct SessionInspector: View {
                         .buttonStyle(CDSButtonStyle(variant: .secondary))
                         .disabled(!model.isConnected)
                 }
-            } else {
-                Text("Shows up after the first reply.").font(CDS.caption).foregroundStyle(CDS.textMuted)
             }
             if transcript.totalCostUSD > 0 {
                 HStack {
@@ -100,19 +85,32 @@ struct SessionInspector: View {
         }
     }
 
-    private var changes: some View {
-        InspectorCard(title: "Changes", accessory: {
-            if let git, let added = git.linesAdded, let removed = git.linesRemoved, !git.isClean {
-                HStack(spacing: 5) {
-                    Text("+\(added)").foregroundStyle(CDS.gitAdded)
-                    Text("−\(removed)").foregroundStyle(CDS.gitRemoved)
-                }
-                .font(CDS.captionMedium.monospacedDigit())
+    /// "12% used · 122.6k / 1M" and the bar: what the card shows even when folded.
+    @ViewBuilder private var contextSummary: some View {
+        if let usage = model.contextUsage(sessionId) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(usage.percentLabel) used").font(CDS.bodyMedium).foregroundStyle(CDS.textPrimary)
+                Spacer()
+                Text(usage.label).font(CDS.caption.monospacedDigit()).foregroundStyle(CDS.textMuted)
             }
-        }) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(CDS.fillNeutral)
+                    Capsule().fill(usage.isCritical ? CDS.dangerFill : (usage.isTight ? CDS.warningFill : CDS.accent))
+                        .frame(width: max(4, geo.size.width * usage.fraction))
+                }
+            }
+            .frame(height: 5)
+        } else {
+            Text("Shows up after the first reply.").font(CDS.caption).foregroundStyle(CDS.textMuted)
+        }
+    }
+
+    private var changes: some View {
+        InspectorCard(title: "Changes", summary: { changesSummary }) {
             if let git {
                 if git.isClean {
-                    Text("Working tree is clean.").font(CDS.caption).foregroundStyle(CDS.textMuted)
+                    EmptyView()
                 } else {
                     HStack(spacing: 12) {
                         count(git.staged.count, "staged", CDS.gitAdded)
@@ -135,11 +133,37 @@ struct SessionInspector: View {
                 }
                 Button("Review changes…", action: onShowGit)
                     .buttonStyle(CDSButtonStyle(variant: .secondary))
+            }
+        }
+    }
+
+    /// "+37,128 −4,404  [Create PR]": what the card shows even when folded.
+    @ViewBuilder private var changesSummary: some View {
+        if let git {
+            if git.isClean {
+                Text("Working tree is clean.").font(CDS.caption).foregroundStyle(CDS.textMuted)
             } else {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.mini)
-                    Text("Reading git status…").font(CDS.caption).foregroundStyle(CDS.textMuted)
+                HStack(spacing: 8) {
+                    Image(systemName: "plus.forwardslash.minus").font(.system(size: 11)).foregroundStyle(CDS.textMuted)
+                    if let added = git.linesAdded, let removed = git.linesRemoved {
+                        Text("+\(added.formatted())").foregroundStyle(CDS.gitAdded)
+                        Text("−\(removed.formatted())").foregroundStyle(CDS.gitRemoved)
+                    } else {
+                        Text("\(git.files.count) files").foregroundStyle(CDS.textSecondary)
+                    }
+                    Spacer(minLength: 4)
+                    // The pull request form lives in the Git sheet (title, body, draft).
+                    Button("Create PR", action: onShowGit)
+                        .buttonStyle(CDSButtonStyle(variant: .secondary))
+                        .controlSize(.small)
+                        .disabled(git.branch == nil)
                 }
+                .font(CDS.bodyMedium.monospacedDigit())
+            }
+        } else {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Reading git status…").font(CDS.caption).foregroundStyle(CDS.textMuted)
             }
         }
     }
@@ -227,25 +251,36 @@ struct SessionInspector: View {
 }
 
 /// A rounded card with a small title, the way the desktop app's side panel groups things.
-private struct InspectorCard<Accessory: View, Content: View>: View {
+/// A rounded card with a title that folds it (▾), the way the desktop app's side panel groups things.
+/// `summary` stays visible when folded; the fold is remembered per card.
+private struct InspectorCard<Summary: View, Content: View>: View {
     let title: String
-    @ViewBuilder let accessory: () -> Accessory
+    @ViewBuilder let summary: () -> Summary
     @ViewBuilder let content: () -> Content
+    @AppStorage private var folded: Bool
 
-    init(title: String, @ViewBuilder accessory: @escaping () -> Accessory = { EmptyView() }, @ViewBuilder content: @escaping () -> Content) {
+    init(title: String, @ViewBuilder summary: @escaping () -> Summary = { EmptyView() }, @ViewBuilder content: @escaping () -> Content) {
         self.title = title
-        self.accessory = accessory
+        self.summary = summary
         self.content = content
+        _folded = AppStorage(wrappedValue: false, "ccremote.mac.panel.folded.\(title)")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Text(title).font(CDS.bodyMedium).foregroundStyle(CDS.textPrimary)
-                Spacer()
-                accessory()
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { folded.toggle() }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(title).font(CDS.bodyMedium).foregroundStyle(CDS.textPrimary)
+                    Chevron(expanded: !folded)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
             }
-            content()
+            .buttonStyle(.plain)
+            summary()
+            if !folded { content() }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

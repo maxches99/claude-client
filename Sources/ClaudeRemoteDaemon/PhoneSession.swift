@@ -510,6 +510,15 @@ final class PhoneSession: @unchecked Sendable {
                     send(.hostUpdate(update: HostUpdate(state: .unsupported, current: daemonVersion,
                                                         message: "This host does not update itself — update it where it was installed.")))
                 }
+            case .setPermissionHook(let enabled):
+                do {
+                    if enabled { try ClaudeHooks.install() } else { try ClaudeHooks.uninstall() }
+                    log("permission hook \(enabled ? "installed" : "removed") by \(deviceLabel)")
+                    await manager.recordEvent(HostEvent(kind: .host, title: enabled ? "Approvals hook turned on" : "Approvals hook turned off", detail: deviceLabel))
+                    send(.permissionHook(enabled: ClaudeHooks.isInstalled(), error: nil))
+                } catch {
+                    send(.permissionHook(enabled: ClaudeHooks.isInstalled(), error: "\(error)"))
+                }
             case .updateHost:
                 guard let updater = HostControl.shared.updater else {
                     send(.hostUpdate(update: HostUpdate(state: .unsupported, current: daemonVersion)))

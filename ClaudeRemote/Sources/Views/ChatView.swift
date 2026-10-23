@@ -18,6 +18,8 @@ struct ChatView: View {
     #if os(macOS)
     /// The right-hand panel with the environment, context and changes (remembered across sessions).
     @AppStorage("ccremote.mac.inspector") private var showInspector = true
+    @State private var renaming = false
+    @State private var renameText = ""
     /// Opened by hand while the window is too narrow for it to show by itself.
     @State private var inspectorForced = false
     @Environment(\.windowWidth) private var windowWidth
@@ -122,9 +124,29 @@ struct ChatView: View {
         .navigationBarBackground(CDS.surface0)
         .inlineNavigationTitle()
         #if os(macOS)
-        // The window toolbar shows the title on the left, as the desktop app does, with the details under it.
+        // The title on the left with its menu (⌄), as the desktop app does; the details live in the side panel.
         .navigationTitle(summary?.title ?? "Session")
-        .navigationSubtitle(subtitle)
+        .toolbarTitleMenu {
+            Button("Rename…") { renameText = summary?.title ?? ""; renaming = true }
+                .disabled(!model.isConnected)
+            if model.pinnedSessions.contains(sessionId) {
+                Button("Unpin") { model.setPinned(sessionId, false) }
+            } else {
+                Button("Pin") { model.setPinned(sessionId, true) }
+            }
+            Button("Find in Transcript") { openFind() }
+            Button("Reload Transcript") { model.open(sessionId) }
+            Divider()
+            Button("Copy Session ID") { UIPasteboard.general.string = sessionId }
+        }
+        .alert("Rename", isPresented: $renaming) {
+            TextField("Title", text: $renameText)
+            Button("Save") { model.renameSession(sessionId, title: renameText) }
+                .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The title is saved with the session on the host.")
+        }
         .animation(.easeInOut(duration: 0.2), value: inspectorShown.wrappedValue)
         #endif
         .toolbar {
@@ -605,8 +627,17 @@ struct ChatView: View {
         switch block {
         case .user(let item):
             if case .user(let text, let images) = item.kind {
+                #if os(macOS)
+                VStack(alignment: .trailing, spacing: 6) {
+                    UserMessageView(text: text, images: images, keyPrefix: item.id)
+                        .contextMenu { messageMenu(text, itemId: item.id) }
+                    promptFooter(text, item: item)
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                #else
                 UserMessageView(text: text, images: images, keyPrefix: item.id)
                     .contextMenu { messageMenu(text, itemId: item.id) }
+                #endif
             }
         case .assistant(let item):
             if case .assistantText(let text, let streaming) = item.kind {
@@ -627,6 +658,27 @@ struct ChatView: View {
             }
         }
     }
+
+    #if os(macOS)
+    /// Under a prompt: when it was sent, and copy / rewind to it — always in reach, as in the desktop app.
+    private func promptFooter(_ text: String, item: TranscriptItem) -> some View {
+        HStack(spacing: 10) {
+            if let at = item.timestamp {
+                Text(RelativeTime.string(at)).font(CDS.caption).foregroundStyle(CDS.textMuted)
+            }
+            Button { UIPasteboard.general.string = text } label: { Image(systemName: "doc.on.doc") }
+                .help("Copy")
+            if canRewind(item.id) {
+                Button { confirmRewind = item.id } label: { Image(systemName: "arrow.counterclockwise") }
+                    .help("Rewind to here")
+            }
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 11))
+        .foregroundStyle(CDS.textMuted)
+        .padding(.trailing, 4)
+    }
+    #endif
 
     /// Can the conversation be cut here? Only at a prompt of a Claude session the Mac still has.
     private func canRewind(_ itemId: String) -> Bool {
@@ -794,6 +846,7 @@ struct ComposerDock: View {
             }
             if isDesktop {
                 notice(desktopNotice, tint: CDS.textMuted)
+                if agent == .claude, model.permissionHookOn == false, !model.isMember { hookOffCard }
                 if !isChat {
                     // What you type here reaches the agent as a message from another session, not from you:
                     // it will not take it as your go-ahead for anything outward (a push, a release).
@@ -927,7 +980,31 @@ struct ComposerDock: View {
         if agent == .codex {
             return "Open in the Codex app on the Mac — this is a live view; what you send is queued there for the session to pick up."
         }
-        return "Open in \(summary?.sourceLabel ?? "Desktop") on the Mac — messages are delivered there. Permission prompts come here when the Mac's hook is on (Host → Settings), otherwise they're answered on the Mac."
+        let source = summary?.sourceLabel ?? "Desktop"
+        switch model.permissionHookOn {
+        case true?: return "Open in \(source) on the Mac — messages are delivered there, and its permission prompts come here."
+        case false?: return "Open in \(source) on the Mac — messages are delivered there."
+        case nil: return "Open in \(source) on the Mac — messages are delivered there. Permission prompts come here when the Mac's hook is on (Host → Settings), otherwise they're answered on the Mac."
+        }
+    }
+
+    /// The host prompts for this session's permissions itself: offer to route them here instead.
+    private var hookOffCard: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "hand.raised").foregroundStyle(CDS.warning)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Permission prompts of this session stay on \(model.activeMac?.displayName ?? "the host").")
+                    .font(CDS.captionMedium).foregroundStyle(CDS.textPrimary)
+                Text(model.permissionHookError ?? "Turn on the approvals hook there and they come here instead — for sessions started after that (restart this one in Desktop).")
+                    .font(CDS.caption).foregroundStyle(model.permissionHookError == nil ? CDS.textSecondary : CDS.danger)
+            }
+            Spacer(minLength: 4)
+            Button("Turn on") { model.setPermissionHook(true) }
+                .buttonStyle(CDSButtonStyle(variant: .secondary))
+                .disabled(!model.isConnected)
+        }
+        .padding(8)
+        .background(CDS.warningBackground, in: RoundedRectangle(cornerRadius: CDS.radius))
     }
 
     private func notice(_ text: String, tint: Color) -> some View {
@@ -1092,7 +1169,7 @@ struct ComposerDock: View {
 
     private var textInput: some View {
         HStack(alignment: .top, spacing: 6) {
-            TextField(suggestion ?? (isDesktop ? "Message this session" : "Message \(agent.label)"), text: $draft, axis: .vertical)
+            TextField(suggestion ?? placeholder, text: $draft, axis: .vertical)
                 .lineLimit(1...8)
                 .textFieldStyle(.plain)
                 .font(CDS.prose)
@@ -1133,14 +1210,31 @@ struct ComposerDock: View {
         }
     }
 
+    private var placeholder: String {
+        if isDesktop { return "Message this session" }
+        #if os(macOS)
+        return isRunning ? "↩ to queue for after this turn" : "↩ to send, ⌥↩ for a new line"
+        #else
+        return "Message \(agent.label)"
+        #endif
+    }
+
+    /// "Opus 5.5 Medium": the model, and the reasoning effort when one is set.
+    private var modelChipText: String {
+        #if os(macOS)
+        if let effort = state?.effort, !effort.isEmpty { return "\(modelLabel) \(effort.capitalized)" }
+        #endif
+        return modelLabel
+    }
+
     /// The model picker (hosted sessions; a session owned by the host can't be reconfigured from here).
     @ViewBuilder private var modelMenu: some View {
         if isDesktop {
             EmptyView()
         } else if isCodex {
-            Menu { codexModelSection } label: { ComposerChipLabel(text: modelLabel) }.plainMenu()
+            Menu { codexModelSection } label: { ComposerChipLabel(text: modelChipText) }.plainMenu()
         } else {
-            Menu { modelSection } label: { ComposerChipLabel(text: modelLabel) }.plainMenu()
+            Menu { modelSection } label: { ComposerChipLabel(text: modelChipText) }.plainMenu()
         }
     }
 
@@ -1156,6 +1250,22 @@ struct ComposerDock: View {
     }
 
     @ViewBuilder private var sendControls: some View {
+        #if os(macOS)
+        // A square stop while the turn runs and nothing is typed; the send arrow otherwise (it queues mid-turn).
+        if isRunning, !isDesktop, !canSend {
+            Button { model.interrupt(sessionId) } label: {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(CDS.textPrimary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Stop (Esc)")
+        } else {
+            sendButton
+        }
+        #else
         if isRunning, !isDesktop {   // a Desktop session can only be interrupted on the Mac
             Button { model.interrupt(sessionId) } label: {
                 Image(systemName: "stop.fill")
@@ -1167,6 +1277,11 @@ struct ComposerDock: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Stop")
         }
+        sendButton
+        #endif
+    }
+
+    private var sendButton: some View {
         Button(action: onSend) {
             Image(systemName: "arrow.up")
                 .font(.system(size: 14, weight: .bold))

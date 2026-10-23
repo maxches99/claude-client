@@ -96,6 +96,19 @@ extension AppModel {
 
     // MARK: host updates
 
+    /// Whether Desktop / terminal sessions on the active host ask this app before prompting there.
+    /// Nil when the host doesn't say (older hosts).
+    var permissionHookOn: Bool? {
+        guard let macId = activeMacId else { return nil }
+        return permissionHookByMac[macId] ?? hostByMac[macId]?.permissionHook
+    }
+
+    func setPermissionHook(_ enabled: Bool) {
+        guard let macId = activeMacId else { return }
+        permissionHookError = nil
+        send(.setPermissionHook(enabled: enabled), toMac: macId)
+    }
+
     func checkHostUpdate(mac macId: String) {
         send(.checkHostUpdate, toMac: macId)
     }
@@ -155,6 +168,9 @@ extension AppModel {
             githubByMac[macId] = panel
         case .hostUpdate(let update):
             hostUpdates[macId] = update
+        case .permissionHook(let enabled, let error):
+            permissionHookByMac[macId] = enabled
+            permissionHookError = error
         default:
             break
         }

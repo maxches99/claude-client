@@ -297,11 +297,13 @@ public actor SessionManager {
             if cachedCodexVersion == nil { cachedCodexVersion = codex.cli.version() }
             codexInfo = CodexInfo(path: codex.cli.path, version: cachedCodexVersion, loggedIn: await codex.loggedIn)
         }
-        return HostInfo(hostName: Host.current().localizedName ?? ProcessInfo.processInfo.hostName, daemonVersion: daemonVersion,
+        var info = HostInfo(hostName: Host.current().localizedName ?? ProcessInfo.processInfo.hostName, daemonVersion: daemonVersion,
                         cliVersion: cachedCliVersion, cliPath: cli.path, loggedIn: cachedLoggedIn, codex: codexInfo, livePush: livePusher != nil,
                         canShare: shareConfig != nil, workspaceRoot: workspaceRoot, hasGitHubCLI: SessionManager.locateGh() != nil,
                         hasClaude: cli.isInstalled, mirrorsToDesktopApps: mirrorsToDesktopApps, relay: relayRoute,
                         appVersion: hostAppVersion, canUpdate: hostCanUpdate)
+        info.permissionHook = ClaudeHooks.isInstalled()
+        return info
     }
 
     /// What the daemon knows and the manager reports to phones: the relay route and the app version.

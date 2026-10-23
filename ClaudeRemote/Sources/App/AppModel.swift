@@ -1054,6 +1054,9 @@ final class AppModel {
     var relayJoins: [String: RelayJoin] = [:]
     var githubByMac: [String: GitHubPanel] = [:]
     var hostUpdates: [String: HostUpdate] = [:]
+    /// The hook's state as changed from here, ahead of the next `welcome`; and what went wrong, if anything.
+    var permissionHookByMac: [String: Bool] = [:]
+    var permissionHookError: String?
     /// Per Mac: its event feed (oldest first) and its last health report (AppModel+Operations.swift).
     var eventsByMac: [String: [HostEvent]] = [:]
     var healthByMac: [String: HostHealth] = [:]
@@ -1355,7 +1358,7 @@ final class AppModel {
             guard isActive else { return }
             digestSchedule = schedule
             digestScheduleError = error
-        case .issues, .templates, .audit, .relaySetup, .relayConfigured, .github, .hostUpdate, .crashes:
+        case .issues, .templates, .audit, .relaySetup, .relayConfigured, .github, .hostUpdate, .permissionHook, .crashes:
             receiveAutomation(message, from: macId, isActive: isActive)
         case .events, .health:
             receiveOperations(message, from: macId)

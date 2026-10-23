@@ -214,13 +214,19 @@ struct ComposerChipLabel: View {
         HStack(spacing: 4) {
             if let systemImage { Image(systemName: systemImage).font(.system(size: 11, weight: .medium)) }
             Text(text).lineLimit(1)
+            #if os(iOS)
             Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(CDS.textMuted)
+            #endif
         }
         .font(.caption.weight(.medium))
         .foregroundStyle(CDS.textSecondary)
         .padding(.horizontal, 8).frame(height: 28)
+        #if os(macOS)
+        .contentShape(Rectangle())   // plain text under the composer, as in the desktop app
+        #else
         .background(CDS.fillNeutral, in: Capsule())
         .contentShape(Capsule())
+        #endif
     }
 }
 
