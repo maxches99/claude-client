@@ -519,6 +519,34 @@ final class PhoneSession: @unchecked Sendable {
                 } catch {
                     send(.permissionHook(enabled: ClaudeHooks.isInstalled(), error: "\(error)"))
                 }
+            case .answerSitePrompt(let sessionId, let answer):
+                do {
+                    let card = try await manager.answerSitePrompt(sessionId: sessionId, answer: answer)
+                    log("site prompt in \(sessionId.prefix(8)) answered \(answer.rawValue) by \(deviceLabel)")
+                    await manager.recordEvent(HostEvent(kind: .permission, title: "Site prompt answered: \(answer.rawValue)",
+                                                        detail: card.isEmpty ? deviceLabel : card, sessionId: sessionId))
+                    send(.sitePromptAnswered(sessionId: sessionId, answer: answer, error: nil))
+                } catch {
+                    send(.sitePromptAnswered(sessionId: sessionId, answer: answer, error: "\(error)"))
+                }
+            case .desktopBrowser:
+                do {
+                    send(.desktopBrowser(snapshot: try await manager.desktopBrowserSnapshot(), error: nil))
+                } catch {
+                    send(.desktopBrowser(snapshot: nil, error: "\(error)"))
+                }
+            case .desktopLayout:
+                send(.desktopLayout(layout: await manager.desktopLayout()))
+            case .listTrust:
+                send(.trust(items: await manager.activeTrust()))
+            case .addTrust(var grant):
+                grant.by = deviceLabel
+                await manager.addTrust(grant)
+                log("trust grant for \(grant.toolLabel) until \(grant.expiresAt) by \(deviceLabel)")
+                send(.trust(items: await manager.activeTrust()))
+            case .removeTrust(let id):
+                await manager.removeTrust(id: id)
+                send(.trust(items: await manager.activeTrust()))
             case .updateHost:
                 guard let updater = HostControl.shared.updater else {
                     send(.hostUpdate(update: HostUpdate(state: .unsupported, current: daemonVersion)))
@@ -634,7 +662,7 @@ extension ClientMessage {
              .setModel(let id, _), .setPermissionMode(let id, _), .setEffort(let id, _), .setSandbox(let id, _), .close(let id),
              .rewind(let id, _), .listPalette(let id), .listWorktrees(let id), .worktreeAction(let id, _),
              .listHandoffTargets(let id), .handoff(let id, _), .shareTranscript(let id, _, _), .reviewDiff(let id, _),
-             .writeFile(let id, _, _, _), .exportSession(let id):
+             .writeFile(let id, _, _, _), .exportSession(let id), .answerSitePrompt(let id, _):
             return id
         default:
             return nil

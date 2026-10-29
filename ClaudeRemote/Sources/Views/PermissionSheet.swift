@@ -127,6 +127,9 @@ struct PermissionSheet: View {
                 }
                 .buttonStyle(CDSButtonStyle(variant: request.canRemember ? .secondary : .primary, fullWidth: true))
             }
+            if model.supportsTrust(model.macId(forSession: request.sessionId)), request.runsCode {
+                TrustMenu(request: request) { dismiss() }
+            }
         }
         .padding()
         .background(CDS.surface0)

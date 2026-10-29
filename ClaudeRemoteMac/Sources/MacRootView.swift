@@ -119,6 +119,7 @@ struct MacRootView: View {
         case .audit: AuditView()
         case .simulator: SimulatorView()
         case .translator: TranslatorView()
+        case .fanOut: FanOutListView().frame(minWidth: 900, minHeight: 600)
         case .quickOpen: EmptyView()   // presented on its own above, at its own size
         }
     }

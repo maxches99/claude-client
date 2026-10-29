@@ -28,3 +28,10 @@ public enum BrowserWait {
         return toolName
     }
 }
+
+/// The buttons of Claude Desktop's "allow this site?" card.
+public enum SitePromptAnswer: String, Codable, CaseIterable, Sendable {
+    case allowOnce
+    case alwaysAllow
+    case cancel
+}

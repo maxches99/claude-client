@@ -140,6 +140,11 @@ public actor SessionManager {
     }
     private var hookWaiters: [String: HookWaiter] = [:]
 
+    /// Time-limited "allow everything here" grants (logic in SessionManagerTrust.swift).
+    var trustGrants: [TrustGrant] = []
+    /// The browser each phone session was started with (SessionManagerBrowser.swift).
+    var sessionBrowsers: [String: SessionBrowser] = [:]
+
     // MARK: desktop apps (logic in SessionManagerDesktopApps.swift)
 
     /// Work sessions started from the phone, kept in `phone-sessions.json`.
@@ -228,6 +233,8 @@ public actor SessionManager {
             await self?.loadDigestSchedule()
             await self?.loadCrashes()
             await self?.loadPhoneSessions()
+            await self?.loadTrust()
+            await self?.loadSessionBrowsers()
         }
     }
 
@@ -303,6 +310,7 @@ public actor SessionManager {
                         hasClaude: cli.isInstalled, mirrorsToDesktopApps: mirrorsToDesktopApps, relay: relayRoute,
                         appVersion: hostAppVersion, canUpdate: hostCanUpdate)
         info.permissionHook = ClaudeHooks.isInstalled()
+        if cli.isInstalled { info.browsers = SessionManager.availableBrowsers() }
         return info
     }
 
@@ -578,6 +586,7 @@ public actor SessionManager {
             config.settingSources = ""         // no CLAUDE.md, no project settings
         } else {
             config.permissionMode = options.permissionMode
+            setBrowser(options.browser, for: sessionId)
         }
         let h = try spawn(sessionId: sessionId, config: config, origin: .host, kind: options.kind)
         broadcast(.sessions(items: listSessions()))
@@ -602,6 +611,7 @@ public actor SessionManager {
         config.resume = sessionId
         config.forkSession = true
         config.sessionId = newId
+        setBrowser(sessionBrowsers[sessionId], for: newId)
         let h = try spawn(sessionId: newId, config: config, origin: .host)
         h.title = stored.title
         h.forkedFromPath = stored.path
@@ -631,6 +641,7 @@ public actor SessionManager {
         config.environment.merge(environment(forSession: sessionId)) { current, _ in current }
         // A chat has no tools and no next step to predict.
         config.promptSuggestions = kind != .chat && config.tools != ""
+        config.extraArgs += browserArgs(for: sessionId)
         let process = CLIProcess(config: config)
         let state = SessionState(id: sessionId, origin: origin, status: .idle, cwd: config.cwd, model: config.model,
                                  permissionMode: config.permissionMode, kind: kind, effort: config.effort)
@@ -844,10 +855,16 @@ public actor SessionManager {
     /// connected or the session is one of ours (its `can_use_tool` already reaches the phone).
     public func requestHookPermission(requestId: String, sessionId: String, toolName: String, input: JSONValue, suggestions: JSONValue?,
                                       cwd: String?) async -> JSONValue? {
-        guard hosted[sessionId] == nil, !subscribers.isEmpty else { return nil }
+        guard hosted[sessionId] == nil else { return nil }
         let shown = SessionManager.enrichedInput(toolName: toolName, input: input)
         let request = PermissionRequest(id: requestId, sessionId: sessionId, toolName: toolName, input: shown,
                                         title: nil, description: nil, displayName: nil, decisionReason: nil, toolUseId: nil, suggestions: suggestions)
+        if let grant = trustGrant(covering: request, cwd: cwd) {
+            recordApproval(request, allow: true, remember: false, by: grant.by, source: "trust")
+            log("[\(sessionId.prefix(8))] hook permission allowed by a trust grant: \(toolName)")
+            return SessionManager.decision(allow: true, input: input, updatedInput: nil, suggestions: nil, remember: false, message: nil, echoInput: false)
+        }
+        guard !subscribers.isEmpty else { return nil }
         log("[\(sessionId.prefix(8))] hook permission: \(toolName)")
         let response: JSONValue? = await withCheckedContinuation { continuation in
             hookWaiters[requestId] = HookWaiter(request: request, originalInput: input, continuation: continuation)
@@ -862,6 +879,9 @@ public actor SessionManager {
         }
         return response
     }
+
+    /// Requests from Desktop / terminal sessions waiting on a phone.
+    func pendingHookRequests() -> [PermissionRequest] { hookWaiters.values.map(\.request) }
 
     /// The hook gave up waiting (its connection closed): forget the request; the Mac prompts.
     public func cancelHookPermission(requestId: String) {
@@ -1932,6 +1952,11 @@ public actor SessionManager {
                 decisionReason: request["decision_reason"]?.string,
                 toolUseId: request["tool_use_id"]?.string,
                 suggestions: request["permission_suggestions"])
+            if let grant = trustGrant(covering: permission, cwd: h.state.cwd) {
+                recordApproval(permission, allow: true, remember: false, by: grant.by, source: "trust")
+                log("[\(sessionId.prefix(8))] \(toolName) allowed by a trust grant")
+                return SessionManager.decision(allow: true, input: input, updatedInput: nil, suggestions: nil, remember: false, message: nil, echoInput: true)
+            }
             schedulePermissionNotification(sessionId: sessionId, requestId: requestId, permission: permission)
             let response: JSONValue? = await withCheckedContinuation { continuation in
                 h.pending[requestId] = permission
@@ -2025,6 +2050,11 @@ public actor SessionManager {
         case .approval(let threadId, let request):
             guard let h = hosted[threadId] else {
                 Task { await codex?.decide(requestId: request.id, allow: false) }
+                return
+            }
+            if let grant = trustGrant(covering: request, cwd: h.state.cwd) {
+                recordApproval(request, allow: true, remember: false, by: grant.by, source: "trust")
+                Task { await codex?.decide(requestId: request.id, allow: true) }
                 return
             }
             h.pending[request.id] = request

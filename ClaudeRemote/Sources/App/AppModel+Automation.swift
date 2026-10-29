@@ -30,6 +30,15 @@ struct GitHubPanel: Equatable {
     var loading = true
 }
 
+/// Where an answer to Claude Desktop's site prompt stands.
+struct SitePromptState: Equatable {
+    /// The browser tool call the answer was for; a later stall starts afresh.
+    var toolUseId: String?
+    var busy = false
+    var answered: SitePromptAnswer?
+    var error: String?
+}
+
 extension AppModel {
     /// Sends to one paired Mac, whichever is on screen.
     func send(_ message: ClientMessage, toMac macId: String) {
@@ -109,6 +118,13 @@ extension AppModel {
         send(.setPermissionHook(enabled: enabled), toMac: macId)
     }
 
+    /// Press a button on Claude Desktop's site prompt in a session open there (protocol 12).
+    func answerSitePrompt(_ sessionId: String, answer: SitePromptAnswer, toolUseId: String?, mac macId: String? = nil) {
+        guard let macId = macId ?? activeMacId else { return }
+        sitePrompts[sessionId] = SitePromptState(toolUseId: toolUseId, busy: true)
+        send(.answerSitePrompt(sessionId: sessionId, answer: answer), toMac: macId)
+    }
+
     func checkHostUpdate(mac macId: String) {
         send(.checkHostUpdate, toMac: macId)
     }
@@ -171,6 +187,15 @@ extension AppModel {
         case .permissionHook(let enabled, let error):
             permissionHookByMac[macId] = enabled
             permissionHookError = error
+        case .trust(let items):
+            trustByMac[macId] = items
+        case .desktopLayout(let layout):
+            desktopLayoutByMac[macId] = layout
+        case .desktopBrowser(let snapshot, let error):
+            desktopBrowserByMac[macId] = (snapshot ?? desktopBrowserByMac[macId]?.snapshot, error)
+        case .sitePromptAnswered(let sessionId, let answer, let error):
+            sitePrompts[sessionId] = SitePromptState(toolUseId: sitePrompts[sessionId]?.toolUseId,
+                                                     answered: error == nil ? answer : nil, error: error)
         default:
             break
         }

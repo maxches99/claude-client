@@ -13,6 +13,7 @@ final class MacAttention: NSObject, UNUserNotificationCenterDelegate {
     private var announced: Set<String> = []
     private static let category = "ccremote.approval"
     private static let doneCategory = "ccremote.done"
+    private static let siteCategory = "ccremote.site"
     /// Last seen status of every session on every host, to notice a turn ending.
     private var statuses: [String: SessionStatus] = [:]
     /// Browser tool calls already announced as waiting on the Mac (one notification each).
@@ -30,6 +31,11 @@ final class MacAttention: NSObject, UNUserNotificationCenterDelegate {
                 UNNotificationAction(identifier: "deny", title: "Deny", options: [.destructive]),
             ], intentIdentifiers: []),
             UNNotificationCategory(identifier: Self.doneCategory, actions: [], intentIdentifiers: []),
+            UNNotificationCategory(identifier: Self.siteCategory, actions: [
+                UNNotificationAction(identifier: SitePromptAnswer.allowOnce.rawValue, title: "Allow Once"),
+                UNNotificationAction(identifier: SitePromptAnswer.alwaysAllow.rawValue, title: "Always Allow"),
+                UNNotificationAction(identifier: SitePromptAnswer.cancel.rawValue, title: "Cancel", options: [.destructive]),
+            ], intentIdentifiers: []),
         ])
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
         // Requests already waiting when the app starts are on screen; only later ones are news.
@@ -52,10 +58,12 @@ final class MacAttention: NSObject, UNUserNotificationCenterDelegate {
             let content = UNMutableNotificationContent()
             content.title = model.summary(for: sessionId)?.title ?? "Session"
             content.subtitle = "\(BrowserWait.shortName(stall.toolName)) is waiting"
-            content.body = "Claude Desktop on \(model.activeMac?.displayName ?? "the Mac") is probably asking to allow a site — answer it there."
+            let canAnswer = model.supportsSitePrompt && !model.isMember
+            content.body = "Claude Desktop on \(model.activeMac?.displayName ?? "the Mac") is probably asking to allow a site — "
+                + (canAnswer ? "answer it here." : "answer it there.")
             content.sound = .default
-            content.categoryIdentifier = Self.doneCategory
-            content.userInfo = ["macId": model.activeMacId ?? "", "sessionId": sessionId, "kind": "agent"]
+            content.categoryIdentifier = canAnswer ? Self.siteCategory : Self.doneCategory
+            content.userInfo = ["macId": model.activeMacId ?? "", "sessionId": sessionId, "kind": "agent", "toolUseId": stall.toolUseId]
             UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "browser-" + stall.toolUseId, content: content, trigger: nil))
         }
     }
@@ -145,6 +153,11 @@ final class MacAttention: NSObject, UNUserNotificationCenterDelegate {
         let requestId = response.notification.request.identifier
         let action = response.actionIdentifier
         let info = response.notification.request.content.userInfo
+        if let macId = info["macId"] as? String, let sessionId = info["sessionId"] as? String,
+           let answer = SitePromptAnswer(rawValue: action) {
+            await MainActor.run { model?.answerSitePrompt(sessionId, answer: answer, toolUseId: info["toolUseId"] as? String, mac: macId) }
+            return
+        }
         if let macId = info["macId"] as? String, let sessionId = info["sessionId"] as? String {
             let kind: SessionKind = info["kind"] as? String == "chat" ? .chat : .agent
             await MainActor.run {

@@ -16,6 +16,8 @@ struct NewSessionView: View {
     /// Empty = the CLI's own default for the model.
     @State private var claudeEffort = ""
     @State private var mode: PermissionMode = .manual
+    /// Remembered: whoever wants a browser once usually wants it again.
+    @AppStorage("ccremote.newSession.browser") private var browser: SessionBrowser = .none
     // Codex knobs
     @State private var codexModelId = ""
     @State private var codexEffort = ""
@@ -129,7 +131,9 @@ struct NewSessionView: View {
     private func options(cwd: String) -> NewSessionOptions {
         switch agent {
         case .claude:
-            return NewSessionOptions(cwd: cwd, model: modelId, permissionMode: mode.rawValue, effort: claudeEffort.isEmpty ? nil : claudeEffort)
+            let offered = model.host?.browsers ?? []
+            return NewSessionOptions(cwd: cwd, model: modelId, permissionMode: mode.rawValue, effort: claudeEffort.isEmpty ? nil : claudeEffort,
+                                     browser: offered.contains(browser) && browser != .none ? browser : nil)
         case .codex:
             return NewSessionOptions(cwd: cwd, model: codexModelId.isEmpty ? nil : codexModelId, permissionMode: approvalPolicy.rawValue,
                                      effort: codexEffort.isEmpty ? nil : codexEffort, agent: .codex, sandbox: sandbox.rawValue)
@@ -167,6 +171,22 @@ struct NewSessionView: View {
                 ForEach(PermissionMode.allCases, id: \.self) { m in Text(m.label).tag(m) }
             }
             Text(modeHint).font(.footnote).foregroundStyle(CDS.textSecondary)
+        }
+        if let offered = model.host?.browsers, offered.count > 1 {
+            Section("Browser") {
+                Picker("Browser", selection: $browser) {
+                    ForEach(offered, id: \.self) { Text($0.label).tag($0) }
+                }
+                Text(browserHint).font(.footnote).foregroundStyle(CDS.textSecondary)
+            }
+        }
+    }
+
+    private var browserHint: String {
+        switch browser {
+        case .none: return "Claude Desktop's built-in browser stays in the app; a session started here has none unless you pick one."
+        case .chrome: return "Works in Chrome on the Mac through the Claude extension — signed in as you there. Chrome must be running with the extension on."
+        case .playwright: return "A headless browser of its own on the Mac. Its screenshots come back into the chat. The first start downloads it."
         }
     }
 

@@ -29,6 +29,7 @@ struct SessionListView: View {
     @State private var showFeed = false
     @State private var showCrashes = false
     @State private var showTranslator = false
+    @State private var showFanOut = false
 
     private var isChats: Bool { scope == .chats }
     /// One list across every paired Mac (only worth it when there is more than one).
@@ -232,6 +233,10 @@ struct SessionListView: View {
             ToolbarItem(placement: .trailingBar) {
                 Menu {
                     Button("Approvals inbox", systemImage: "tray.full") { showInbox = true }
+                    if !isChats {
+                        Button("Fan-out…", systemImage: "arrow.triangle.branch") { showFanOut = true }
+                            .disabled(!model.isConnected)
+                    }
                     if model.supportsMacTools {
                         Button("Catch up…", systemImage: "sun.horizon") {
                             // Since the phone last looked, or the last day when it never has.
@@ -311,6 +316,7 @@ struct SessionListView: View {
         .sheet(isPresented: $showCrashes) { CrashesView() }
         .coverFullScreen(isPresented: $showTranslator) { TranslatorView() }
         .sheet(isPresented: $showClone) { CloneRepositoryView() }
+        .sheet(isPresented: $showFanOut) { FanOutListView() }
         .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Title", text: $renameText)
             Button("Save") {
