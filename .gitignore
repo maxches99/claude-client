@@ -15,3 +15,7 @@ dist/
 
 # Tuist: your Apple team, see Tuist/team.xcconfig.example
 Tuist/team.xcconfig
+
+# local promo videos and the hub pairing QR (holds the pairing secret)
+brag-output/
+hub-pairing-qr.png
