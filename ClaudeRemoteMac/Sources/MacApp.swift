@@ -76,7 +76,7 @@ final class MacUI {
     static let sessionWindowId = "session"
 
     enum Sheet: String, Identifiable {
-        case newSession, addHost, inbox, tasks, processes, terminals, digest, feed, crashes, clone, audit, simulator, translator, quickOpen
+        case newSession, addHost, inbox, tasks, processes, terminals, digest, feed, crashes, clone, audit, simulator, translator, quickOpen, fanOut
         var id: String { rawValue }
     }
 

@@ -28,6 +28,8 @@ final class AppModel {
     let simulatorFeed = SimulatorFeed()
     let liveActivities = LiveActivityController()
     let narrator = Narrator()
+    /// One prompt sent to several Macs / agents / models at once (AppModel+FanOut.swift).
+    let fanOut = FanOutCenter()
 
     /// Every Mac this phone has paired with; `activeMacId` is the one the app is connected to.
     private(set) var macs: [PairingInfo] = []
@@ -73,6 +75,8 @@ final class AppModel {
     var supportsReviewAnswers: Bool { (host?.protocolVersion ?? 1) >= 10 }
     /// Tasks on weekdays / every N hours, pause and skip, run history.
     var supportsSchedules: Bool { (host?.protocolVersion ?? 1) >= 11 }
+    /// Answering Claude Desktop's site prompt for its built-in browser (protocol 12).
+    var supportsSitePrompt: Bool { (host?.protocolVersion ?? 1) >= 12 }
     /// This phone is a member of the host, not its owner.
     var isMember: Bool { host?.me.map { !$0.isOwner } ?? false }
     /// Chats, sessions and tasks only — for someone who wants just that, and for a host's members.
@@ -1057,6 +1061,14 @@ final class AppModel {
     /// The hook's state as changed from here, ahead of the next `welcome`; and what went wrong, if anything.
     var permissionHookByMac: [String: Bool] = [:]
     var permissionHookError: String?
+    /// Answers to Claude Desktop's site prompt, by session, while the card about it is up.
+    var sitePrompts: [String: SitePromptState] = [:]
+    /// Each host's live trust grants (AppModel+Trust.swift).
+    var trustByMac: [String: [TrustGrant]] = [:]
+    /// Claude Desktop's own sidebar layout on each host (pins, sections, project order).
+    var desktopLayoutByMac: [String: DesktopLayout] = [:]
+    /// The latest look at Claude Desktop's built-in browser on each host, or why there is none.
+    var desktopBrowserByMac: [String: (snapshot: DesktopBrowserSnapshot?, error: String?)] = [:]
     /// Per Mac: its event feed (oldest first) and its last health report (AppModel+Operations.swift).
     var eventsByMac: [String: [HostEvent]] = [:]
     var healthByMac: [String: HostHealth] = [:]
@@ -1082,6 +1094,7 @@ final class AppModel {
     // MARK: inbound
 
     private func handle(_ message: ServerMessage, from macId: String) {
+        fanOutReceive(message, from: macId)
         // A Mac we only monitor keeps its session list and its approvals flowing; everything else
         // (transcripts, git, simulators…) belongs to the Mac on screen.
         let isActive = macId == activeMacId
@@ -1358,7 +1371,7 @@ final class AppModel {
             guard isActive else { return }
             digestSchedule = schedule
             digestScheduleError = error
-        case .issues, .templates, .audit, .relaySetup, .relayConfigured, .github, .hostUpdate, .permissionHook, .crashes:
+        case .issues, .templates, .audit, .relaySetup, .relayConfigured, .github, .hostUpdate, .permissionHook, .sitePromptAnswered, .trust, .desktopLayout, .desktopBrowser, .crashes:
             receiveAutomation(message, from: macId, isActive: isActive)
         case .events, .health:
             receiveOperations(message, from: macId)

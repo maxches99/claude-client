@@ -183,6 +183,35 @@ enum ClaudeDesktopSessions {
 extension SessionManager {
     static let phoneSessionLimit = 50
 
+    /// Claude Desktop's own sidebar layout, read from its settings file (never written).
+    public func desktopLayout() -> DesktopLayout {
+        let config = NSHomeDirectory() + "/Library/Application Support/Claude/claude_desktop_config.json"
+        guard let data = FileManager.default.contents(atPath: config),
+              let root = try? JSONDecoder().decode(JSONValue.self, from: data),
+              let prefs = root["preferences"]?["epitaxyPrefs"] else { return DesktopLayout() }
+        var cliIdForLocal: [String: String] = [:]
+        if let dir = ClaudeDesktopSessions.activeDirectory() {
+            for file in (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [] where file.hasPrefix("local_") {
+                guard let data = FileManager.default.contents(atPath: dir + "/" + file),
+                      let record = try? JSONDecoder().decode(JSONValue.self, from: data),
+                      let local = record["sessionId"]?.string, let cli = record["cliSessionId"]?.string else { continue }
+                cliIdForLocal[local] = cli
+            }
+        }
+        return DesktopLayout.parse(prefs: prefs, cliIdForLocal: cliIdForLocal)
+    }
+
+    #if os(macOS)
+    /// Answers Claude Desktop's site prompt in the Desktop session running `sessionId` (see
+    /// `DesktopSitePrompt`). Returns the card's text.
+    public func answerSitePrompt(sessionId: String, answer: SitePromptAnswer) async throws -> String {
+        let title = listSessions().first { $0.id == sessionId }?.title
+        return try await Task.detached(priority: .userInitiated) {
+            try DesktopSitePrompt.answer(answer, sessionId: sessionId, fallbackTitle: title)
+        }.value
+    }
+    #endif
+
     var phoneSessionStorePath: String? {
         taskStorePath.map { (($0 as NSString).deletingLastPathComponent as NSString).appendingPathComponent("phone-sessions.json") }
     }

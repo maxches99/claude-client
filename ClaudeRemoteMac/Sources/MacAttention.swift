@@ -13,8 +13,12 @@ final class MacAttention: NSObject, UNUserNotificationCenterDelegate {
     private var announced: Set<String> = []
     private static let category = "ccremote.approval"
     private static let doneCategory = "ccremote.done"
+    private static let siteCategory = "ccremote.site"
     /// Last seen status of every session on every host, to notice a turn ending.
     private var statuses: [String: SessionStatus] = [:]
+    /// Browser tool calls already announced as waiting on the Mac (one notification each).
+    private var announcedStalls: Set<String> = []
+    private var stallTimer: Timer?
 
     func attach(_ model: AppModel) {
         guard self.model == nil else { return }
@@ -27,12 +31,41 @@ final class MacAttention: NSObject, UNUserNotificationCenterDelegate {
                 UNNotificationAction(identifier: "deny", title: "Deny", options: [.destructive]),
             ], intentIdentifiers: []),
             UNNotificationCategory(identifier: Self.doneCategory, actions: [], intentIdentifiers: []),
+            UNNotificationCategory(identifier: Self.siteCategory, actions: [
+                UNNotificationAction(identifier: SitePromptAnswer.allowOnce.rawValue, title: "Allow Once"),
+                UNNotificationAction(identifier: SitePromptAnswer.alwaysAllow.rawValue, title: "Always Allow"),
+                UNNotificationAction(identifier: SitePromptAnswer.cancel.rawValue, title: "Cancel", options: [.destructive]),
+            ], intentIdentifiers: []),
         ])
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
         // Requests already waiting when the app starts are on screen; only later ones are news.
         announced = Set(model.pendingApprovals.map(\.id))
         observe()
         observeTurns()
+        stallTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { _ in
+            Task { @MainActor in MacAttention.shared.checkBrowserStalls() }
+        }
+    }
+
+    /// A Desktop session whose browser tool went quiet is most likely waiting on a site prompt on that
+    /// Mac — say so once, so the turn doesn't sit there unnoticed.
+    private func checkBrowserStalls() {
+        guard let model, !NSApp.isActive else { return }
+        for (sessionId, transcript) in model.transcripts {
+            guard let state = model.states[sessionId], state.origin == .desktop, state.status == .running,
+                  let stall = BrowserWait.stalled(in: transcript.items), !announcedStalls.contains(stall.toolUseId) else { continue }
+            announcedStalls.insert(stall.toolUseId)
+            let content = UNMutableNotificationContent()
+            content.title = model.summary(for: sessionId)?.title ?? "Session"
+            content.subtitle = "\(BrowserWait.shortName(stall.toolName)) is waiting"
+            let canAnswer = model.supportsSitePrompt && !model.isMember
+            content.body = "Claude Desktop on \(model.activeMac?.displayName ?? "the Mac") is probably asking to allow a site — "
+                + (canAnswer ? "answer it here." : "answer it there.")
+            content.sound = .default
+            content.categoryIdentifier = canAnswer ? Self.siteCategory : Self.doneCategory
+            content.userInfo = ["macId": model.activeMacId ?? "", "sessionId": sessionId, "kind": "agent", "toolUseId": stall.toolUseId]
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "browser-" + stall.toolUseId, content: content, trigger: nil))
+        }
     }
 
     /// A session going from working to idle while you are elsewhere: "done", with the start of the reply.
@@ -120,6 +153,11 @@ final class MacAttention: NSObject, UNUserNotificationCenterDelegate {
         let requestId = response.notification.request.identifier
         let action = response.actionIdentifier
         let info = response.notification.request.content.userInfo
+        if let macId = info["macId"] as? String, let sessionId = info["sessionId"] as? String,
+           let answer = SitePromptAnswer(rawValue: action) {
+            await MainActor.run { model?.answerSitePrompt(sessionId, answer: answer, toolUseId: info["toolUseId"] as? String, mac: macId) }
+            return
+        }
         if let macId = info["macId"] as? String, let sessionId = info["sessionId"] as? String {
             let kind: SessionKind = info["kind"] as? String == "chat" ? .chat : .agent
             await MainActor.run {

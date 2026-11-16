@@ -180,6 +180,17 @@ public enum ClientMessage: Codable, Sendable {
     case updateHost
     /// Adds or removes the host's PermissionRequest hook (owner only); answered with `permissionHook`.
     case setPermissionHook(enabled: Bool)
+    /// Press a button on Claude Desktop's "allow this site?" card for its built-in browser, in a session
+    /// open there (protocol 12); answered with `sitePromptAnswered`.
+    case answerSitePrompt(sessionId: String, answer: SitePromptAnswer)
+    /// Trust grants (owner only, protocol 12); each answered with `trust`.
+    case listTrust
+    case addTrust(grant: TrustGrant)
+    case removeTrust(id: String)
+    /// Claude Desktop's pins, sections and project order on this host (protocol 12); answered with `desktopLayout`.
+    case desktopLayout
+    /// What Claude Desktop's built-in browser shows now (protocol 12); answered with `desktopBrowser`.
+    case desktopBrowser
     /// The host's event feed since `since` (nil = its whole kept history); answered with `events`.
     /// New events follow on their own as `events(live: true)`.
     case listEvents(since: Date?)
@@ -279,6 +290,12 @@ public enum ServerMessage: Codable, Sendable {
     case hostUpdate(update: HostUpdate)
     /// Whether the PermissionRequest hook is installed now, after `setPermissionHook`.
     case permissionHook(enabled: Bool, error: String?)
+    /// After `answerSitePrompt`: `error` when the card could not be answered.
+    case sitePromptAnswered(sessionId: String, answer: SitePromptAnswer, error: String?)
+    /// The host's live trust grants, soonest to expire first.
+    case trust(items: [TrustGrant])
+    case desktopLayout(layout: DesktopLayout)
+    case desktopBrowser(snapshot: DesktopBrowserSnapshot?, error: String?)
     /// Events newest last; `live` for ones that just happened.
     case events(items: [HostEvent], live: Bool)
     case health(report: HostHealth)

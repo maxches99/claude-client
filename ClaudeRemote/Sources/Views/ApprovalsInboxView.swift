@@ -22,10 +22,11 @@ struct ApprovalsInboxView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if approvals.isEmpty {
+                if approvals.isEmpty && model.allTrust.isEmpty {
                     empty
                 } else {
                     List {
+                        TrustListSection()
                         ForEach(byMac, id: \.macId) { group in
                             Section {
                                 ForEach(group.items) { approval in row(approval) }
@@ -42,6 +43,7 @@ struct ApprovalsInboxView: View {
                 }
             }
             .background(CDS.surface0)
+            .task { for mac in model.macs { model.loadTrust(mac: mac.id) } }
             .navigationTitle(approvals.isEmpty ? "Inbox" : "Waiting · \(approvals.count)")
             .inlineNavigationTitle()
             .navigationBarBackground(CDS.surface0)

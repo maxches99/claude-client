@@ -34,6 +34,8 @@ struct MacCommands: Commands {
             Button("New Session…") { ui.tab(.sessions); ui.sheet = .newSession }
                 .keyboardShortcut("n", modifiers: .command)
                 .disabled(!model.isConnected)
+            Button("Fan-out…") { ui.sheet = .fanOut }
+                .disabled(!model.isConnected)
             Button("New Chat") { ui.tab(.chats); model.startChat(.claude) }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(!model.isConnected || !model.supportsChats)

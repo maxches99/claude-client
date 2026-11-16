@@ -794,6 +794,7 @@ struct ComposerDock: View {
     @State private var voiceDecision: PermissionRequest?
     @State private var voiceRetried = false
     @State private var showPalette = false
+    @State private var showDesktopBrowser = false
     @State private var showCamera = false
     @State private var markup: MarkupTarget?
 
@@ -847,6 +848,8 @@ struct ComposerDock: View {
             if isDesktop {
                 notice(desktopNotice, tint: CDS.textMuted)
                 if agent == .claude, model.permissionHookOn == false, !model.isMember { hookOffCard }
+                if isRunning { browserWaitCard }
+                if usesBrowser, model.supportsTrust(model.activeMacId) { desktopBrowserLink }
                 if !isChat {
                     // What you type here reaches the agent as a message from another session, not from you:
                     // it will not take it as your go-ahead for anything outward (a push, a release).
@@ -985,6 +988,76 @@ struct ComposerDock: View {
         case true?: return "Open in \(source) on the Mac — messages are delivered there, and its permission prompts come here."
         case false?: return "Open in \(source) on the Mac — messages are delivered there."
         case nil: return "Open in \(source) on the Mac — messages are delivered there. Permission prompts come here when the Mac's hook is on (Host → Settings), otherwise they're answered on the Mac."
+        }
+    }
+
+    /// Whether this Desktop session has used the built-in browser lately.
+    private var usesBrowser: Bool {
+        (model.transcripts[sessionId]?.items.suffix(200) ?? []).contains { item in
+            if case .toolUse(_, let name, _, _, _) = item.kind { return BrowserWait.toolPrefixes.contains(where: name.hasPrefix) }
+            return false
+        }
+    }
+
+    private var desktopBrowserLink: some View {
+        Button {
+            showDesktopBrowser = true
+        } label: {
+            Label("See Desktop's browser", systemImage: "safari")
+                .font(CDS.captionMedium)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(CDS.brand)
+        .sheet(isPresented: $showDesktopBrowser) {
+            if let macId = model.activeMacId { DesktopBrowserView(macId: macId) }
+        }
+    }
+
+    /// A browser tool that has gone quiet: the desktop app is most likely asking on the Mac whether the
+    /// site may be used — a prompt of its own that no hook reaches. Say so, and answer it from here: the
+    /// host presses the card's button in Desktop for us (protocol 12).
+    private var browserWaitCard: some View {
+        TimelineView(.periodic(from: .now, by: 15)) { context in
+            if let stall = BrowserWait.stalled(in: model.transcripts[sessionId]?.items ?? [], now: context.date) {
+                let prompt = model.sitePrompts[sessionId].flatMap { $0.toolUseId == stall.toolUseId ? $0 : nil }
+                let canAnswer = model.supportsSitePrompt && !model.isMember
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "globe.badge.chevron.backward").foregroundStyle(CDS.warning)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(BrowserWait.shortName(stall.toolName)) has been waiting \(ActivitySummary.format(context.date.timeIntervalSince(stall.since)))")
+                                .font(CDS.captionMedium).foregroundStyle(CDS.textPrimary)
+                            if let error = prompt?.error {
+                                Text(error).font(CDS.caption).foregroundStyle(CDS.danger)
+                            } else if prompt?.answered != nil {
+                                Text("Answered in Claude Desktop — the browser should carry on.")
+                                    .font(CDS.caption).foregroundStyle(CDS.textSecondary)
+                            } else {
+                                Text(canAnswer
+                                     ? "Claude Desktop on \(model.activeMac?.displayName ?? "the Mac") is probably asking to allow a site. Answer it from here — “Always allow” keeps it from asking again."
+                                     : "Claude Desktop on \(model.activeMac?.displayName ?? "the Mac") is probably asking to allow a site. Answer it there — “Always allow” keeps it from asking again.")
+                                    .font(CDS.caption).foregroundStyle(CDS.textSecondary)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                        if prompt?.busy == true { ProgressView().controlSize(.small) }
+                    }
+                    if canAnswer, prompt?.answered == nil {
+                        HStack(spacing: 6) {
+                            Button("Allow once") { model.answerSitePrompt(sessionId, answer: .allowOnce, toolUseId: stall.toolUseId) }
+                                .buttonStyle(CDSButtonStyle(variant: .secondary))
+                            Button("Always allow") { model.answerSitePrompt(sessionId, answer: .alwaysAllow, toolUseId: stall.toolUseId) }
+                                .buttonStyle(CDSButtonStyle(variant: .primary))
+                            Spacer(minLength: 0)
+                            Button("Cancel") { model.answerSitePrompt(sessionId, answer: .cancel, toolUseId: stall.toolUseId) }
+                                .buttonStyle(CDSButtonStyle(variant: .secondary))
+                        }
+                        .disabled(!model.isConnected || prompt?.busy == true)
+                    }
+                }
+                .padding(8)
+                .background(CDS.warningBackground, in: RoundedRectangle(cornerRadius: CDS.radius))
+            }
         }
     }
 

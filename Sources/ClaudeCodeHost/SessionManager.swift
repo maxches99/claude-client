@@ -15,6 +15,7 @@ public actor SessionManager {
         case cwdMissing(String)
         case spawnFailed(String)
         case claudeMissing
+        case claudeLoggedOut
 
         public var description: String {
             switch self {
@@ -23,6 +24,7 @@ public actor SessionManager {
             case .cwdMissing(let p): return p.isEmpty ? "No project directory was given" : "Directory does not exist: \(p)"
             case .spawnFailed(let why): return "Could not start claude: \(why)"
             case .claudeMissing: return "The Claude CLI is not installed on this Mac — start a Codex session instead."
+            case .claudeLoggedOut: return "The Claude CLI on this Mac is not logged in, so it can't read the plan limits. Run `claude auth login` in Terminal on the Mac."
             }
         }
     }
@@ -148,6 +150,11 @@ public actor SessionManager {
     /// hub). `nil` = keep them until closed. Reopening resumes from the transcript.
     private var idleTimeout: TimeInterval?
     private var idleReaper: DispatchSourceTimer?
+    /// Time-limited "allow everything here" grants (logic in SessionManagerTrust.swift).
+    var trustGrants: [TrustGrant] = []
+    /// The browser each phone session was started with (SessionManagerBrowser.swift).
+    var sessionBrowsers: [String: SessionBrowser] = [:]
+
     // MARK: desktop apps (logic in SessionManagerDesktopApps.swift)
 
     /// Work sessions started from the phone, kept in `phone-sessions.json`.
@@ -236,6 +243,8 @@ public actor SessionManager {
             await self?.loadDigestSchedule()
             await self?.loadCrashes()
             await self?.loadPhoneSessions()
+            await self?.loadTrust()
+            await self?.loadSessionBrowsers()
         }
     }
 
@@ -342,6 +351,7 @@ public actor SessionManager {
         #if os(macOS)
         info.permissionHook = ClaudeHooks.isInstalled()
         #endif
+        if cli.isInstalled { info.browsers = SessionManager.availableBrowsers() }
         return info
     }
 
@@ -618,6 +628,7 @@ public actor SessionManager {
             config.settingSources = ""         // no CLAUDE.md, no project settings
         } else {
             config.permissionMode = options.permissionMode
+            setBrowser(options.browser, for: sessionId)
         }
         let h = try spawn(sessionId: sessionId, config: config, origin: .host, kind: options.kind)
         broadcast(.sessions(items: listSessions()))
@@ -642,6 +653,7 @@ public actor SessionManager {
         config.resume = sessionId
         config.forkSession = true
         config.sessionId = newId
+        setBrowser(sessionBrowsers[sessionId], for: newId)
         let h = try spawn(sessionId: newId, config: config, origin: .host)
         h.title = stored.title
         h.forkedFromPath = stored.path
@@ -671,6 +683,7 @@ public actor SessionManager {
         config.environment.merge(environment(forSession: sessionId)) { current, _ in current }
         // A chat has no tools and no next step to predict.
         config.promptSuggestions = kind != .chat && config.tools != ""
+        config.extraArgs += browserArgs(for: sessionId)
         let process = CLIProcess(config: config)
         let state = SessionState(id: sessionId, origin: origin, status: .idle, cwd: config.cwd, model: config.model,
                                  permissionMode: config.permissionMode, kind: kind, effort: config.effort)
@@ -902,10 +915,16 @@ public actor SessionManager {
     /// connected or the session is one of ours (its `can_use_tool` already reaches the phone).
     public func requestHookPermission(requestId: String, sessionId: String, toolName: String, input: JSONValue, suggestions: JSONValue?,
                                       cwd: String?) async -> JSONValue? {
-        guard hosted[sessionId] == nil, !subscribers.isEmpty else { return nil }
+        guard hosted[sessionId] == nil else { return nil }
         let shown = SessionManager.enrichedInput(toolName: toolName, input: input)
         let request = PermissionRequest(id: requestId, sessionId: sessionId, toolName: toolName, input: shown,
                                         title: nil, description: nil, displayName: nil, decisionReason: nil, toolUseId: nil, suggestions: suggestions)
+        if let grant = trustGrant(covering: request, cwd: cwd) {
+            recordApproval(request, allow: true, remember: false, by: grant.by, source: "trust")
+            log("[\(sessionId.prefix(8))] hook permission allowed by a trust grant: \(toolName)")
+            return SessionManager.decision(allow: true, input: input, updatedInput: nil, suggestions: nil, remember: false, message: nil, echoInput: false)
+        }
+        guard !subscribers.isEmpty else { return nil }
         log("[\(sessionId.prefix(8))] hook permission: \(toolName)")
         let response: JSONValue? = await withCheckedContinuation { continuation in
             hookWaiters[requestId] = HookWaiter(request: request, originalInput: input, continuation: continuation)
@@ -920,6 +939,9 @@ public actor SessionManager {
         }
         return response
     }
+
+    /// Requests from Desktop / terminal sessions waiting on a phone.
+    func pendingHookRequests() -> [PermissionRequest] { hookWaiters.values.map(\.request) }
 
     /// The hook gave up waiting (its connection closed): forget the request; the Mac prompts.
     public func cancelHookPermission(requestId: String) {
@@ -1348,7 +1370,17 @@ public actor SessionManager {
         try probe.start()
         defer { probe.terminate() }
         _ = try await probe.initialize()
-        return try await probe.getUsage()
+        return try await checkedUsage(probe.getUsage())
+    }
+
+    /// A logged-out CLI answers `get_usage` like an API-key account (`rate_limits_available: false`);
+    /// tell the phone the real reason instead.
+    private func checkedUsage(_ report: JSONValue) throws -> JSONValue {
+        guard report["rate_limits_available"]?.bool == false else { return report }
+        let loggedIn = cli.authStatus()?.loggedIn
+        cachedLoggedIn = loggedIn
+        if loggedIn == false { throw ManagerError.claudeLoggedOut }
+        return report
     }
 
     public func gitDiff(sessionId: String, path: String? = nil, staged: Bool = false) throws -> String {
@@ -1992,6 +2024,11 @@ public actor SessionManager {
                 decisionReason: request["decision_reason"]?.string,
                 toolUseId: request["tool_use_id"]?.string,
                 suggestions: request["permission_suggestions"])
+            if let grant = trustGrant(covering: permission, cwd: h.state.cwd) {
+                recordApproval(permission, allow: true, remember: false, by: grant.by, source: "trust")
+                log("[\(sessionId.prefix(8))] \(toolName) allowed by a trust grant")
+                return SessionManager.decision(allow: true, input: input, updatedInput: nil, suggestions: nil, remember: false, message: nil, echoInput: true)
+            }
             schedulePermissionNotification(sessionId: sessionId, requestId: requestId, permission: permission)
             let response: JSONValue? = await withCheckedContinuation { continuation in
                 h.pending[requestId] = permission
@@ -2086,6 +2123,11 @@ public actor SessionManager {
         case .approval(let threadId, let request):
             guard let h = hosted[threadId] else {
                 Task { await codex?.decide(requestId: request.id, allow: false) }
+                return
+            }
+            if let grant = trustGrant(covering: request, cwd: h.state.cwd) {
+                recordApproval(request, allow: true, remember: false, by: grant.by, source: "trust")
+                Task { await codex?.decide(requestId: request.id, allow: true) }
                 return
             }
             h.pending[request.id] = request

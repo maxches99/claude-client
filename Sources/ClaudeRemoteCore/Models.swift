@@ -5,7 +5,8 @@ import Foundation
 /// 5: the digest, terminals, handoff to the Mac and share links.
 /// 6: pull requests from tasks, branch review, cloning into the workspace, duels, the scheduled digest.
 /// 11: tasks that repeat on weekdays or every N hours, pause / skip the next run, run history.
-public let protocolVersion = 11
+/// 12: Claude Desktop's site prompt, its browser and sidebar layout; trust grants; a browser for phone sessions.
+public let protocolVersion = 12
 
 /// Which coding agent runs a session. Claude Code is the default everywhere a field is missing,
 /// so messages from an older build still decode.
@@ -74,6 +75,8 @@ public struct HostInfo: Codable, Equatable, Sendable {
     /// The PermissionRequest hook is in the host's `~/.claude/settings.json`, so sessions open in Claude
     /// Desktop or a terminal ask the phones before prompting on the host. Nil from hosts that don't say.
     public var permissionHook: Bool?
+    /// Browsers a phone session can be given here (protocol 12); nil from older hosts.
+    public var browsers: [SessionBrowser]?
 
     /// Claude sessions can be started here.
     public var claudeInstalled: Bool { hasClaude ?? true }
@@ -351,9 +354,11 @@ public struct NewSessionOptions: Codable, Equatable, Sendable {
     /// `.chat` ignores `cwd`, `permissionMode` and `sandbox`: the host runs the agent with no tools
     /// in its own scratch directory.
     public var kind: SessionKind
+    /// Claude only: a browser for the agent (nil = none).
+    public var browser: SessionBrowser?
 
     public init(cwd: String, model: String? = nil, permissionMode: String? = nil, effort: String? = nil, agent: AgentKind = .claude,
-                sandbox: String? = nil, kind: SessionKind = .agent) {
+                sandbox: String? = nil, kind: SessionKind = .agent, browser: SessionBrowser? = nil) {
         self.cwd = cwd
         self.model = model
         self.permissionMode = permissionMode
@@ -361,6 +366,7 @@ public struct NewSessionOptions: Codable, Equatable, Sendable {
         self.agent = agent
         self.sandbox = sandbox
         self.kind = kind
+        self.browser = browser
     }
 
     public init(from decoder: Decoder) throws {
@@ -372,6 +378,7 @@ public struct NewSessionOptions: Codable, Equatable, Sendable {
         agent = try c.decodeIfPresent(AgentKind.self, forKey: .agent) ?? .claude
         sandbox = try c.decodeIfPresent(String.self, forKey: .sandbox)
         kind = try c.decodeIfPresent(SessionKind.self, forKey: .kind) ?? .agent
+        browser = try c.decodeIfPresent(SessionBrowser.self, forKey: .browser)
     }
 
     /// A quick question: no project, no tools.
