@@ -13,6 +13,7 @@ public actor SessionManager {
         case cwdMissing(String)
         case spawnFailed(String)
         case claudeMissing
+        case claudeLoggedOut
 
         public var description: String {
             switch self {
@@ -21,6 +22,7 @@ public actor SessionManager {
             case .cwdMissing(let p): return p.isEmpty ? "No project directory was given" : "Directory does not exist: \(p)"
             case .spawnFailed(let why): return "Could not start claude: \(why)"
             case .claudeMissing: return "The Claude CLI is not installed on this Mac — start a Codex session instead."
+            case .claudeLoggedOut: return "The Claude CLI on this Mac is not logged in, so it can't read the plan limits. Run `claude auth login` in Terminal on the Mac."
             }
         }
     }
@@ -1310,7 +1312,17 @@ public actor SessionManager {
         try probe.start()
         defer { probe.terminate() }
         _ = try await probe.initialize()
-        return try await probe.getUsage()
+        return try await checkedUsage(probe.getUsage())
+    }
+
+    /// A logged-out CLI answers `get_usage` like an API-key account (`rate_limits_available: false`);
+    /// tell the phone the real reason instead.
+    private func checkedUsage(_ report: JSONValue) throws -> JSONValue {
+        guard report["rate_limits_available"]?.bool == false else { return report }
+        let loggedIn = cli.authStatus()?.loggedIn
+        cachedLoggedIn = loggedIn
+        if loggedIn == false { throw ManagerError.claudeLoggedOut }
+        return report
     }
 
     public func gitDiff(sessionId: String, path: String? = nil, staged: Bool = false) throws -> String {
