@@ -2,11 +2,33 @@
 import Foundation
 
 /// Locates and describes the `claude` binary on this Mac.
-public struct ClaudeCLI: Sendable {
-    public let path: String
+///
+/// A found binary is looked up again once its file is gone: Claude Desktop updates its bundled
+/// CLI into a new version folder and deletes the old one, so a path taken at launch goes stale
+/// while the host keeps running.
+public final class ClaudeCLI: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _path: String
+    private let relocatable: Bool
 
     public init(path: String) {
-        self.path = path
+        self._path = path
+        self.relocatable = false
+    }
+
+    private init(located path: String) {
+        self._path = path
+        self.relocatable = true
+    }
+
+    public var path: String {
+        lock.withLock {
+            if relocatable, !FileManager.default.isExecutableFile(atPath: _path),
+               let fresh = ClaudeCLI.locate(), fresh._path != _path {
+                _path = fresh._path
+            }
+            return _path
+        }
     }
 
     /// A Mac with Codex and no Claude CLI: the daemon still runs, Claude sessions are refused.
@@ -23,9 +45,9 @@ public struct ClaudeCLI: Sendable {
             return ClaudeCLI(path: override)
         }
         let home = NSHomeDirectory()
-        if let bundled = desktopBundled(root: home + "/Library/Application Support/Claude/claude-code") { return ClaudeCLI(path: bundled) }
+        if let bundled = desktopBundled(root: home + "/Library/Application Support/Claude/claude-code") { return ClaudeCLI(located: bundled) }
         for candidate in [home + "/.claude/local/claude", home + "/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"] {
-            if fm.isExecutableFile(atPath: candidate) { return ClaudeCLI(path: candidate) }
+            if fm.isExecutableFile(atPath: candidate) { return ClaudeCLI(located: candidate) }
         }
         return nil
     }

@@ -127,6 +127,7 @@ public actor SessionManager {
     /// Codex threads someone else has open right now, refreshed with the session list.
     private var codexOpenElsewhere: Set<String> = []
     private var cachedCliVersion: String?
+    private var cachedCliVersionPath: String?
     private var cachedLoggedIn: Bool?
     private var cachedCodexVersion: String?
     /// Codex threads on disk, as last fetched from the app-server (see `refreshSources`).
@@ -299,7 +300,10 @@ public actor SessionManager {
     // MARK: info
 
     public func hostInfo(daemonVersion: String) async -> HostInfo {
-        if cachedCliVersion == nil { cachedCliVersion = cli.version() }
+        if cachedCliVersion == nil || cachedCliVersionPath != cli.path {
+            cachedCliVersionPath = cli.path
+            cachedCliVersion = cli.version()
+        }
         if cachedLoggedIn == nil { cachedLoggedIn = cli.authStatus()?.loggedIn }
         var codexInfo: CodexInfo?
         if let codex {
